@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { getBoletoConfig, activateBoleto, getActivationStatus, createBoletoQuote, getBoletoStatus } from '../api'
+import { getBoletoConfig, activateBoleto, getActivationStatus, createBoletoQuote, getBoletoStatus, payInvoice } from '../api'
 import { getLocale } from '../i18n'
 import QRCode from 'qrcode'
 
@@ -54,6 +54,7 @@ const fmt = (n: number, locale: string) =>
 const fmtSats = (n: number, locale: string) =>
   new Intl.NumberFormat(locale).format(n) + ' sats'
 
+// ─── Activation persistence (saves full object for QR on page return) ─
 const savePendingActivation = (activation: ActivationData | null) => {
   try {
     if (activation) {
@@ -86,6 +87,56 @@ const loadPendingActivation = (): ActivationData | null => {
   }
 }
 
+// ─── Countdown hook ───────────────────────────────────────────────────
+function useCountdown(expiresAt: string | undefined | null) {
+  const [remaining, setRemaining] = useState('')
+  const [expired, setExpired] = useState(false)
+
+  useEffect(() => {
+    if (!expiresAt) { setRemaining(''); setExpired(false); return }
+    const tick = () => {
+      const diff = new Date(expiresAt).getTime() - Date.now()
+      if (diff <= 0) { setRemaining('0:00'); setExpired(true); return }
+      const m = Math.floor(diff / 60000)
+      const s = Math.floor((diff % 60000) / 1000)
+      setRemaining(`${m}:${s.toString().padStart(2, '0')}`)
+      setExpired(false)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [expiresAt])
+
+  return { remaining, expired }
+}
+
+// ─── Or-divider component ─────────────────────────────────────────────
+function OrDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 my-1">
+      <div className="flex-1 h-px bg-white/10" />
+      <span className="text-fog/40 text-xs uppercase tracking-wider">{label}</span>
+      <div className="flex-1 h-px bg-white/10" />
+    </div>
+  )
+}
+
+// ─── Status badge component ──────────────────────────────────────────
+function StatusBadge({ status, label }: { status: string; label: string }) {
+  const colors: Record<string, string> = {
+    completed: 'bg-emerald-500/20 text-emerald-400',
+    failed: 'bg-red-500/20 text-red-400',
+    expired: 'bg-red-500/20 text-red-400',
+    pending: 'bg-amber-500/20 text-amber-400',
+    processing: 'bg-blue-500/20 text-blue-400',
+  }
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || colors.pending}`}>
+      {label}
+    </span>
+  )
+}
+
 export default function PayBoleto() {
   const { t } = useTranslation()
   const locale = getLocale()
@@ -108,6 +159,15 @@ export default function PayBoleto() {
   const [activationCopied, setActivationCopied] = useState(false)
   const activationPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [activationQr, setActivationQr] = useState<string | null>(null)
+  const [payingWithNode, setPayingWithNode] = useState(false)
+  const [paidWithNode, setPaidWithNode] = useState(false)
+
+  // QR code for boleto payment invoice
+  const [payingQr, setPayingQr] = useState<string | null>(null)
+
+  // Expiration countdowns
+  const activationCountdown = useCountdown(activation?.expiresAt)
+  const quoteCountdown = useCountdown(step === 'paying' ? quote?.expiresAt : null)
 
   const clearActivationPoll = useCallback(() => {
     if (activationPollRef.current) {
@@ -205,6 +265,38 @@ export default function PayBoleto() {
       .catch(() => setActivationQr(null))
   }, [activation?.invoice])
 
+  // Generate QR code for boleto payment invoice
+  useEffect(() => {
+    if (step !== 'paying' || !quote?.invoice) {
+      setPayingQr(null)
+      return
+    }
+    QRCode.toDataURL(quote.invoice, { width: 220, margin: 1 })
+      .then(setPayingQr)
+      .catch(() => setPayingQr(null))
+  }, [step, quote?.invoice])
+
+  // Auto-expire activation if countdown reaches zero
+  useEffect(() => {
+    if (activationCountdown.expired && activation) {
+      clearActivationPoll()
+      savePendingActivation(null)
+      setActivation(null)
+      setActivating(false)
+      setActivationQr(null)
+      setError(t('boleto.activationExpired'))
+    }
+  }, [activationCountdown.expired, activation, t, clearActivationPoll])
+
+  // Auto-expire boleto quote if countdown reaches zero
+  useEffect(() => {
+    if (quoteCountdown.expired && step === 'paying') {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      setStep('error')
+      setError(t('boleto.quoteExpired'))
+    }
+  }, [quoteCountdown.expired, step, t])
+
   // ─── Activation flow ────────────────────────────────────────────────
 
   const handleActivate = useCallback(async () => {
@@ -220,6 +312,20 @@ export default function PayBoleto() {
       setActivating(false)
     }
   }, [startActivationPolling, t])
+
+  const handlePayWithNode = useCallback(async (invoice: string) => {
+    setPayingWithNode(true)
+    setError('')
+    try {
+      await payInvoice({ payment_request: invoice })
+      setPaidWithNode(true)
+      // Payment sent — polling will detect completion
+    } catch (err: any) {
+      setError(err.message || t('boleto.payWithNodeError'))
+    } finally {
+      setPayingWithNode(false)
+    }
+  }, [t])
 
   const copyActivationInvoice = useCallback(() => {
     if (!activation) return
@@ -252,6 +358,8 @@ export default function PayBoleto() {
     if (!quote) return
     setStep('paying')
     setCopied(false)
+    setError('')
+    setPaidWithNode(false)
 
     // Save to history
     setHistory(prev => [{
@@ -298,6 +406,8 @@ export default function PayBoleto() {
     setStatus(null)
     setError('')
     setCopied(false)
+    setPaidWithNode(false)
+    setPayingQr(null)
     if (pollRef.current) {
       clearInterval(pollRef.current)
       pollRef.current = null
@@ -368,18 +478,37 @@ export default function PayBoleto() {
               <h3 className="text-lg font-semibold text-fog">{t('boleto.activationPayTitle')}</h3>
               <p className="text-fog/70 text-sm">{t('boleto.activationPayDesc', { sats: new Intl.NumberFormat(locale).format(activation.sats) })}</p>
 
+              {/* Pay with Node — primary action */}
+              <button
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                onClick={() => handlePayWithNode(activation.invoice)}
+                disabled={payingWithNode || paidWithNode}
+              >
+                {paidWithNode ? (
+                  <>
+                    <svg className="w-4 h-4 text-ink" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    {t('boleto.paymentSent')}
+                  </>
+                ) : (
+                  <>
+                    <span>⚡</span>
+                    {payingWithNode ? t('boleto.payingWithNode') : t('boleto.payWithNode')}
+                  </>
+                )}
+              </button>
+
+              <OrDivider label={t('boleto.orExternal')} />
+
+              {/* QR code */}
               <div className="bg-white rounded-xl p-4 mx-auto w-fit">
                 {activationQr ? (
-                  <img
-                    src={activationQr}
-                    alt="QR Code"
-                    className="w-[220px] h-[220px]"
-                  />
+                  <img src={activationQr} alt="QR Code" className="w-[220px] h-[220px]" />
                 ) : (
-                  <div className="w-[220px] h-[220px] flex items-center justify-center text-fog/40 text-sm">Generating QR...</div>
+                  <div className="w-[220px] h-[220px] flex items-center justify-center text-gray-400 text-sm">Generating QR...</div>
                 )}
               </div>
 
+              {/* Invoice copy */}
               <div>
                 <label className="block text-sm text-fog/70 mb-1">{t('boleto.invoiceLabel')}</label>
                 <div className="flex gap-2">
@@ -395,9 +524,19 @@ export default function PayBoleto() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 text-fog/60 text-sm">
-                <div className="w-3 h-3 rounded-full bg-amber-400 animate-pulse" />
-                {t('boleto.activationWaiting')}
+              {error && <p className="text-red-400 text-sm">{error}</p>}
+
+              {/* Status + countdown */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-fog/60 text-sm">
+                  <div className="w-3 h-3 rounded-full bg-amber-400 animate-pulse" />
+                  {t('boleto.activationWaiting')}
+                </div>
+                {activationCountdown.remaining && (
+                  <span className={`text-xs font-mono ${activationCountdown.expired ? 'text-red-400' : 'text-fog/40'}`}>
+                    ⏱ {activationCountdown.remaining}
+                  </span>
+                )}
               </div>
             </>
           )}
@@ -420,13 +559,13 @@ export default function PayBoleto() {
           <h3 className="text-lg font-semibold text-fog">{t('boleto.inputTitle')}</h3>
           <div>
             <label className="block text-sm text-fog/70 mb-1">{t('boleto.barcodeLabel')}</label>
-            <input
-              type="text"
-              className="input-field font-mono"
+            <textarea
+              className="input-field font-mono text-sm resize-none"
+              rows={3}
               placeholder={t('boleto.barcodePlaceholder')}
               value={barcode}
               onChange={e => setBarcode(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleQuote()}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleQuote() } }}
               disabled={quoting}
             />
           </div>
@@ -498,40 +637,99 @@ export default function PayBoleto() {
       {step === 'paying' && quote && (
         <div className="section-card space-y-4">
           <h3 className="text-lg font-semibold text-fog">{t('boleto.payingTitle')}</h3>
-          <p className="text-fog/60 text-sm">{t('boleto.payingSubtitle')}</p>
 
-          {/* Invoice to pay */}
-          <div className="bg-ink/40 rounded-2xl p-4 space-y-2">
-            <span className="text-fog/50 text-xs block">{t('boleto.invoiceLabel')}</span>
-            <div className="font-mono text-xs text-fog/80 break-all leading-relaxed max-h-24 overflow-y-auto">
-              {quote.invoice}
-            </div>
-            <button
-              className="btn-secondary text-xs py-1 px-3"
-              onClick={copyInvoice}
-            >
-              {copied ? t('boleto.copied') : t('boleto.copyInvoice')}
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2 text-sm text-fog/60">
-            <svg className="w-4 h-4 animate-spin text-glow" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            {status?.invoicePaid
-              ? t('boleto.processingBoleto')
-              : t('boleto.waitingPayment')}
-          </div>
-
+          {/* Amount — prominent at top */}
           <div className="text-center">
             <span className="text-2xl font-bold text-glow">{fmtSats(quote.totalSats, locale)}</span>
             <span className="text-fog/50 text-sm block">{fmt(quote.amountBrl, locale)}</span>
           </div>
 
-          <button className="btn-secondary w-full text-sm" onClick={handleReset}>
-            {t('boleto.cancel')}
-          </button>
+          {/* Pay with Node — primary action */}
+          {!status?.invoicePaid && (
+            <>
+              <button
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                onClick={() => handlePayWithNode(quote.invoice)}
+                disabled={payingWithNode || paidWithNode}
+              >
+                {paidWithNode ? (
+                  <>
+                    <svg className="w-4 h-4 text-ink" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    {t('boleto.paymentSent')}
+                  </>
+                ) : (
+                  <>
+                    <span>⚡</span>
+                    {payingWithNode ? t('boleto.payingWithNode') : t('boleto.payWithNode')}
+                  </>
+                )}
+              </button>
+
+              <OrDivider label={t('boleto.orExternal')} />
+            </>
+          )}
+
+          {/* QR code for external wallet */}
+          {!status?.invoicePaid && (
+            <div className="bg-white rounded-xl p-4 mx-auto w-fit">
+              {payingQr ? (
+                <img src={payingQr} alt="QR Code" className="w-[220px] h-[220px]" />
+              ) : (
+                <div className="w-[220px] h-[220px] flex items-center justify-center text-gray-400 text-sm">Generating QR...</div>
+              )}
+            </div>
+          )}
+
+          {/* Invoice copy */}
+          {!status?.invoicePaid && (
+            <div className="bg-ink/40 rounded-2xl p-4 space-y-2">
+              <span className="text-fog/50 text-xs block">{t('boleto.invoiceLabel')}</span>
+              <div className="font-mono text-xs text-fog/80 break-all leading-relaxed max-h-20 overflow-y-auto">
+                {quote.invoice}
+              </div>
+              <button
+                className="btn-secondary text-xs py-1 px-3"
+                onClick={copyInvoice}
+              >
+                {copied ? t('boleto.copied') : t('boleto.copyInvoice')}
+              </button>
+            </div>
+          )}
+
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+
+          {/* Status indicator */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm">
+              {status?.invoicePaid ? (
+                <>
+                  <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-emerald-400">{t('boleto.processingBoleto')}</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4 animate-spin text-glow" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span className="text-fog/60">{t('boleto.waitingPayment')}</span>
+                </>
+              )}
+            </div>
+            {!status?.invoicePaid && quoteCountdown.remaining && (
+              <span className={`text-xs font-mono ${quoteCountdown.expired ? 'text-red-400' : 'text-fog/40'}`}>
+                ⏱ {quoteCountdown.remaining}
+              </span>
+            )}
+          </div>
+
+          {!status?.invoicePaid && (
+            <button className="btn-secondary w-full text-sm" onClick={handleReset}>
+              {t('boleto.cancel')}
+            </button>
+          )}
         </div>
       )}
 
@@ -591,35 +789,24 @@ export default function PayBoleto() {
       {history.length > 0 && (
         <div className="section-card">
           <h3 className="text-lg font-semibold text-fog mb-3">{t('boleto.history')}</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-fog/50 border-b border-white/10">
-                  <th className="text-left py-2 pr-4">{t('boleto.bank')}</th>
-                  <th className="text-right py-2 pr-4">{t('boleto.valueBrl')}</th>
-                  <th className="text-right py-2 pr-4">Sats</th>
-                  <th className="text-center py-2">{t('boleto.statusLabel')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map(h => (
-                  <tr key={h.paymentHash} className="border-b border-white/5">
-                    <td className="py-2 pr-4 text-fog">{h.bankName}</td>
-                    <td className="py-2 pr-4 text-right text-fog">{fmt(h.amountBrl, locale)}</td>
-                    <td className="py-2 pr-4 text-right text-fog/70">{fmtSats(h.totalSats, locale)}</td>
-                    <td className="py-2 text-center">
-                      <span className={
-                        h.status === 'completed' ? 'text-emerald-400' :
-                        h.status === 'failed' || h.status === 'expired' ? 'text-ember' :
-                        'text-brass'
-                      }>
-                        {t(`boleto.status.${h.status}`, h.status)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-3">
+            {history.map(h => (
+              <div key={h.paymentHash} className="bg-ink/40 rounded-2xl p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-fog font-medium text-sm truncate">{h.bankName}</span>
+                    <StatusBadge status={h.status} label={t(`boleto.status.${h.status}`, h.status)} />
+                  </div>
+                  <span className="text-fog/40 text-xs">
+                    {new Date(h.createdAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' })}
+                  </span>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-fog font-medium text-sm block">{fmt(h.amountBrl, locale)}</span>
+                  <span className="text-fog/50 text-xs">{fmtSats(h.totalSats, locale)}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

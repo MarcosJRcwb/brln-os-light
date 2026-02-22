@@ -11,15 +11,18 @@ async function request(path: string, options?: RequestInit) {
   if (!res.ok) {
     const text = await res.text()
     if (text) {
+      let errorMsg = text
       try {
         const payload = JSON.parse(text)
-        if (payload && typeof payload.error === 'string') {
-          throw new Error(payload.error)
+        if (payload && typeof payload.message === 'string') {
+          errorMsg = payload.message
+        } else if (payload && typeof payload.error === 'string') {
+          errorMsg = payload.error
         }
       } catch {
-        // fall through to raw text
+        // not JSON, use raw text
       }
-      throw new Error(text)
+      throw new Error(errorMsg)
     }
     throw new Error('Request failed')
   }
