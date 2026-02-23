@@ -1,4 +1,4 @@
-package lndclient
+﻿package lndclient
 
 import (
   "context"
@@ -1156,6 +1156,7 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
       ChannelID: ch.ChanId,
       RemotePubkey: ch.RemotePubkey,
       PeerAlias: ch.PeerAlias,
+      Initiator: ch.Initiator,
       Active: ch.Active,
       ChanStatusFlags: ch.ChanStatusFlags,
       LocalDisabled: localDisabled,
@@ -1916,6 +1917,7 @@ type ChannelInfo struct {
   ChannelID uint64 `json:"channel_id"`
   RemotePubkey string `json:"remote_pubkey"`
   PeerAlias string `json:"peer_alias"`
+  Initiator bool `json:"initiator"`
   Active bool `json:"active"`
   ChanStatusFlags string `json:"chan_status_flags,omitempty"`
   LocalDisabled bool `json:"local_disabled,omitempty"`

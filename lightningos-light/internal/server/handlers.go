@@ -1487,6 +1487,7 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
         ), 0)
       from notifications
       where type='rebalance' and occurred_at >= now() - interval '7 day'
+        and status in ('SETTLED', 'SUCCEEDED')
         and coalesce(rebal_target_chan_id, rebal_source_chan_id, channel_id) is not null
       group by coalesce(rebal_target_chan_id, rebal_source_chan_id, channel_id)
     `)

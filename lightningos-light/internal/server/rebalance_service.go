@@ -4005,6 +4005,7 @@ select coalesce(rebal_target_chan_id, channel_id) as channel_id,
   coalesce(sum(amount_sat), 0) as amount_sat
 from notifications
 where type='rebalance'
+  and status in ('SETTLED', 'SUCCEEDED')
   and occurred_at >= now() - interval '7 days'
   and coalesce(rebal_target_chan_id, channel_id) is not null
 group by coalesce(rebal_target_chan_id, channel_id)
@@ -4073,6 +4074,7 @@ func (s *RebalanceService) Overview(ctx context.Context) (RebalanceOverview, err
 select coalesce(sum(case when fee_msat > 0 then fee_msat else fee_sat * 1000 end), 0)
 from notifications
 where type='rebalance' and occurred_at >= now() - interval '1 day'
+  and status in ('SETTLED', 'SUCCEEDED')
 `).Scan(&liveMsat)
 		liveCost = msatToSatCeil(liveMsat)
 	}

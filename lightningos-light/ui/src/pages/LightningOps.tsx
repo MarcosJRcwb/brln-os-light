@@ -7,6 +7,7 @@ type Channel = {
   channel_id: number
   remote_pubkey: string
   peer_alias: string
+  initiator?: boolean
   active: boolean
   chan_status_flags?: string
   local_disabled?: boolean
@@ -290,12 +291,18 @@ type AutofeeResultItem = {
   delta_pct?: number
   prediction_code?: string
   prediction_cooldown_hours?: number
+  new_inbound?: boolean
+  channel_age_hours?: number
   htlc_attempts?: number
   htlc_forward_fails?: number
   htlc_policy_fails?: number
   htlc_liquidity_fails?: number
   htlc_unclassified_fails?: number
   htlc_window_min_channel?: number
+  stalled_rounds?: number
+  hours_since_last_change?: number
+  target_gap_ppm?: number
+  target_gap_pct?: number
 }
 
 type AutofeeChannelRound = {
@@ -1083,6 +1090,16 @@ export default function LightningOps() {
         add('💎top-rev')
       } else if (tag === 'neg-margin') {
         add('⚠️neg-margin')
+      } else if (tag === 'rebal-recent') {
+        add('🔁rebal-recent')
+      } else if (tag === 'rebal-attempt') {
+        add('🔁rebal-attempt')
+      } else if (tag === 'rebal-recent-noup') {
+        add('🛑rebal-noup')
+      } else if (tag === 'new-inbound') {
+        add('🆕NEW-inbound')
+      } else if (tag === 'bootstrap') {
+        add('🌱bootstrap')
       } else if (tag === 'htlc-policy-hot') {
         add('🧾policy-hot')
       } else if (tag === 'htlc-liquidity-hot') {
@@ -1113,6 +1130,8 @@ export default function LightningOps() {
         add('🧯cb')
       } else if (tag === 'extreme-drain') {
         add('⚡extreme')
+      } else if (tag === 'extreme-drain-unlock') {
+        add('⚡extreme-unlock')
       } else if (tag === 'extreme-drain-turbo') {
         add('⚡turbo')
       } else if (tag === 'revfloor') {
@@ -1312,6 +1331,18 @@ export default function LightningOps() {
 
     const prediction = formatAutofeePrediction(item)
     let baseLine = `${prefix} ${alias}: ${action}${deltaStr} | ${t('lightningOps.autofeeResultsLabelTarget')} ${item.target ?? 0} | ${t('lightningOps.autofeeResultsLabelOutRatio')} ${outRatio.toFixed(2)} | ${t('lightningOps.autofeeResultsLabelOutPpm7d')}≈${outPpm7d} | ${t('lightningOps.autofeeResultsLabelRebalPpm7d')}≈${rebalPpm7d} | ${t('lightningOps.autofeeResultsLabelSeed')}≈${seed} | ${t('lightningOps.autofeeResultsLabelFloor')}≥${floor}${floorSrc} | ${t('lightningOps.autofeeResultsLabelMargin')}≈${margin} | ${t('lightningOps.autofeeResultsLabelRevShare')}≈${revShare.toFixed(2)} | ${tagLine}`
+    if (item.new_inbound) {
+      const age = typeof item.channel_age_hours === 'number' ? item.channel_age_hours : 0
+      baseLine += ` | NEW inbound ${age.toFixed(1)}h`
+    }
+    if ((item.stalled_rounds ?? 0) > 0 || (item.target_gap_ppm ?? 0) !== 0) {
+      const stalledRounds = item.stalled_rounds ?? 0
+      const hoursSinceLastChange = typeof item.hours_since_last_change === 'number' ? item.hours_since_last_change : 0
+      const targetGapPpm = item.target_gap_ppm ?? 0
+      const targetGapPct = typeof item.target_gap_pct === 'number' ? item.target_gap_pct : 0
+      const signedGapPpm = targetGapPpm >= 0 ? `+${targetGapPpm}` : `${targetGapPpm}`
+      baseLine += ` | stall r=${stalledRounds} h=${hoursSinceLastChange.toFixed(1)} gap=${signedGapPpm}(${targetGapPct.toFixed(1)}%)`
+    }
     if (htlcAttempts > 0) {
       baseLine += ` | htlc${Math.max(1, htlcWindow)}m a=${htlcAttempts} p=${htlcPolicyFails} l=${htlcLiquidityFails} f=${htlcForwardFails} u=${htlcUnclassifiedFails}`
     }
@@ -4639,4 +4670,3 @@ export default function LightningOps() {
     </section>
   )
 }
-

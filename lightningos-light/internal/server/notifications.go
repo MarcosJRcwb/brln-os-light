@@ -1,4 +1,4 @@
-package server
+﻿package server
 
 import (
   "context"
@@ -940,9 +940,8 @@ func (n *Notifier) runPayments() {
         isRebalance = true
       }
       cancel()
-      if status != "SUCCEEDED" && isRebalance {
-        return
-      }
+      // Keep failed rebalance attempts as notifications so Autofee can use
+      // them as weak pressure signals without treating them as economic cost.
     }
     peerPubkey := ""
     peerAlias := ""
@@ -1821,15 +1820,29 @@ func (n *Notifier) rebalanceRouteInfo(ctx context.Context, pay *lnrpc.Payment) *
 
 func (n *Notifier) rebalanceEvent(ctx context.Context, pay *lnrpc.Payment, occurredAt time.Time) Notification {
   paymentHash := ""
+  status := "SETTLED"
   if pay != nil {
     paymentHash = normalizeHash(pay.PaymentHash)
+    normalized := strings.ToUpper(strings.TrimSpace(pay.Status.String()))
+    switch normalized {
+    case "SUCCEEDED":
+      status = "SETTLED"
+    case "FAILED":
+      status = "FAILED"
+    case "IN_FLIGHT":
+      status = "IN_FLIGHT"
+    default:
+      if normalized != "" {
+        status = normalized
+      }
+    }
   }
   evt := Notification{
     OccurredAt: occurredAt,
     Type: "rebalance",
     Action: "rebalanced",
     Direction: "neutral",
-    Status: "SETTLED",
+    Status: status,
     AmountSat: 0,
     FeeSat: 0,
     FeeMsat: 0,

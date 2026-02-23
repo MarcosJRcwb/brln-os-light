@@ -88,6 +88,16 @@ const (
 	surgeConfirmMinRounds               = 2
 	surgeConfirmRebalCapFrac            = 0.015
 	floorRebalMinCapFrac                = 0.015
+	weakRebalanceAttemptCountWeight     = 0.35
+	weakRebalanceAttemptAmtWeight       = 0.25
+	defaultSurgeHoldMaxRounds           = 6
+	defaultSurgeHoldUnlockStepPpm       = 15
+	defaultBootstrapHours               = 48
+	defaultBootstrapOutRatioMax         = 0.40
+	defaultBootstrapCooldownUpSec       = 3600
+	defaultBootstrapCooldownDownSec     = 5400
+	defaultBootstrapMinStepUpPpm        = 15
+	defaultBootstrapSurgeHoldMaxRounds  = 2
 )
 
 func normalizeRebalCostMode(value string) string {
@@ -254,6 +264,8 @@ type autofeeLogItem struct {
 	DeltaPct                 float64  `json:"delta_pct,omitempty"`
 	PredictionCode           string   `json:"prediction_code,omitempty"`
 	PredictionCooldownHours  int      `json:"prediction_cooldown_hours,omitempty"`
+	NewInbound               bool     `json:"new_inbound,omitempty"`
+	ChannelAgeHours          float64  `json:"channel_age_hours,omitempty"`
 	HTLCAttempts             int      `json:"htlc_attempts,omitempty"`
 	HTLCPolicyFails          int      `json:"htlc_policy_fails,omitempty"`
 	HTLCLiquidityFails       int      `json:"htlc_liquidity_fails,omitempty"`
@@ -263,6 +275,10 @@ type autofeeLogItem struct {
 	StagnationPhase          int      `json:"stagnation_phase,omitempty"`
 	StagnationRounds         int      `json:"stagnation_rounds,omitempty"`
 	StagnationCap            int      `json:"stagnation_cap,omitempty"`
+	StalledRounds            int      `json:"stalled_rounds,omitempty"`
+	HoursSinceLastChange     float64  `json:"hours_since_last_change,omitempty"`
+	TargetGapPpm             int      `json:"target_gap_ppm,omitempty"`
+	TargetGapPct             float64  `json:"target_gap_pct,omitempty"`
 }
 
 type autofeeProfile struct {
@@ -334,6 +350,14 @@ type autofeeProfile struct {
 	HTLCPolicyHotBump              float64
 	HTLCPolicyHotNoDownMarginPpm   int
 	HTLCHotStepCapBoost            float64
+	SurgeHoldMaxRounds             int
+	SurgeHoldUnlockStepPpm         int
+	BootstrapHours                 int
+	BootstrapOutRatioMax           float64
+	BootstrapCooldownUpSec         int
+	BootstrapCooldownDownSec       int
+	BootstrapMinStepUpPpm          int
+	BootstrapSurgeHoldMaxRounds    int
 }
 
 type superSourceThresholds struct {
@@ -415,6 +439,14 @@ var autofeeProfiles = map[string]autofeeProfile{
 		HTLCPolicyHotBump:              0.015,
 		HTLCPolicyHotNoDownMarginPpm:   0,
 		HTLCHotStepCapBoost:            0.01,
+		SurgeHoldMaxRounds:             7,
+		SurgeHoldUnlockStepPpm:         15,
+		BootstrapHours:                 48,
+		BootstrapOutRatioMax:           0.35,
+		BootstrapCooldownUpSec:         3600,
+		BootstrapCooldownDownSec:       7200,
+		BootstrapMinStepUpPpm:          15,
+		BootstrapSurgeHoldMaxRounds:    2,
 	},
 	"moderate": {
 		Name:                           "moderate",
@@ -485,6 +517,14 @@ var autofeeProfiles = map[string]autofeeProfile{
 		HTLCPolicyHotBump:              0.025,
 		HTLCPolicyHotNoDownMarginPpm:   25,
 		HTLCHotStepCapBoost:            0.02,
+		SurgeHoldMaxRounds:             5,
+		SurgeHoldUnlockStepPpm:         15,
+		BootstrapHours:                 48,
+		BootstrapOutRatioMax:           0.40,
+		BootstrapCooldownUpSec:         3600,
+		BootstrapCooldownDownSec:       5400,
+		BootstrapMinStepUpPpm:          15,
+		BootstrapSurgeHoldMaxRounds:    2,
 	},
 	"aggressive": {
 		Name:                           "aggressive",
@@ -555,6 +595,14 @@ var autofeeProfiles = map[string]autofeeProfile{
 		HTLCPolicyHotBump:              0.035,
 		HTLCPolicyHotNoDownMarginPpm:   50,
 		HTLCHotStepCapBoost:            0.03,
+		SurgeHoldMaxRounds:             4,
+		SurgeHoldUnlockStepPpm:         20,
+		BootstrapHours:                 72,
+		BootstrapOutRatioMax:           0.45,
+		BootstrapCooldownUpSec:         1800,
+		BootstrapCooldownDownSec:       3600,
+		BootstrapMinStepUpPpm:          20,
+		BootstrapSurgeHoldMaxRounds:    1,
 	},
 }
 
@@ -740,6 +788,7 @@ create table if not exists autofee_state (
   last_ts timestamptz,
   last_dir text,
   low_streak integer not null default 0,
+  stalled_rounds integer not null default 0,
   baseline_fwd7d integer not null default 0,
   class_label text,
   class_conf real,
@@ -776,6 +825,7 @@ alter table autofee_state add column if not exists ss_active boolean;
 alter table autofee_state add column if not exists ss_ok_since timestamptz;
 alter table autofee_state add column if not exists ss_bad_since timestamptz;
 alter table autofee_state add column if not exists last_dir text;
+alter table autofee_state add column if not exists stalled_rounds integer not null default 0;
 alter table autofee_logs add column if not exists payload jsonb;
 `)
 	if err != nil {
@@ -1641,6 +1691,7 @@ type autofeeChannelState struct {
 	LastTs              time.Time
 	LastDir             string
 	LowStreak           int
+	StalledRounds       int
 	BaselineFwd7d       int
 	ClassLabel          string
 	ClassConf           float64
@@ -2061,8 +2112,16 @@ type rebalStats struct {
 }
 
 type recentRebalanceSignal struct {
-	Count  int
-	AmtSat int64
+	Count      int
+	AmtSat     int64
+	WeakCount  int
+	WeakAmtSat int64
+}
+
+func (s recentRebalanceSignal) surgeConfirmInputs() (int, int64) {
+	weightedCount := float64(s.Count) + float64(s.WeakCount)*weakRebalanceAttemptCountWeight
+	weightedAmt := float64(s.AmtSat) + float64(s.WeakAmtSat)*weakRebalanceAttemptAmtWeight
+	return int(math.Round(weightedCount)), int64(math.Round(weightedAmt))
 }
 
 type htlcFailureSignal struct {
@@ -2798,6 +2857,7 @@ select coalesce(rebal_target_chan_id, rebal_source_chan_id) as chan_id,
   coalesce(sum(amount_sat), 0)
 from notifications
 where type='rebalance' and occurred_at >= now() - ($1 * interval '1 day')
+  and status in ('SETTLED', 'SUCCEEDED')
   and (rebal_target_chan_id is not null or rebal_source_chan_id is not null)
 group by coalesce(rebal_target_chan_id, rebal_source_chan_id)
 `, lookback)
@@ -2823,6 +2883,7 @@ select coalesce(sum(case when fee_msat > 0 then fee_msat else fee_sat * 1000 end
   coalesce(sum(amount_sat), 0)
 from notifications
 where type='rebalance' and occurred_at >= now() - ($1 * interval '1 day')
+  and status in ('SETTLED', 'SUCCEEDED')
 `, lookback).Scan(&stats.Global.FeeMsat, &stats.Global.AmtMsat)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return stats, err
@@ -2843,19 +2904,19 @@ func (e *autofeeEngine) fetchRecentRebalanceTouches(ctx context.Context, window 
 
 	rows, err := e.svc.db.Query(ctx, `
 with recent_rebalances as (
-  select rebal_target_chan_id as chan_id, coalesce(amount_sat, 0)::bigint as amount_sat
+  select rebal_target_chan_id as chan_id, upper(coalesce(status, '')) as status, coalesce(amount_sat, 0)::bigint as amount_sat
   from notifications
   where type='rebalance'
     and occurred_at >= now() - ($1 * interval '1 second')
     and rebal_target_chan_id is not null
   union all
-  select rebal_source_chan_id as chan_id, coalesce(amount_sat, 0)::bigint as amount_sat
+  select rebal_source_chan_id as chan_id, upper(coalesce(status, '')) as status, coalesce(amount_sat, 0)::bigint as amount_sat
   from notifications
   where type='rebalance'
     and occurred_at >= now() - ($1 * interval '1 second')
     and rebal_source_chan_id is not null
   union all
-  select channel_id as chan_id, coalesce(amount_sat, 0)::bigint as amount_sat
+  select channel_id as chan_id, upper(coalesce(status, '')) as status, coalesce(amount_sat, 0)::bigint as amount_sat
   from notifications
   where type='rebalance'
     and occurred_at >= now() - ($1 * interval '1 second')
@@ -2863,9 +2924,9 @@ with recent_rebalances as (
     and rebal_source_chan_id is null
     and channel_id is not null
 )
-select chan_id, count(*), coalesce(sum(amount_sat), 0)::bigint
+select chan_id, status, count(*), coalesce(sum(amount_sat), 0)::bigint
 from recent_rebalances
-group by chan_id
+group by chan_id, status
 `, seconds)
 	if err != nil {
 		return touches, err
@@ -2874,18 +2935,24 @@ group by chan_id
 
 	for rows.Next() {
 		var chanID int64
+		var status string
 		var count int64
 		var amtSat int64
-		if err := rows.Scan(&chanID, &count, &amtSat); err != nil {
+		if err := rows.Scan(&chanID, &status, &count, &amtSat); err != nil {
 			return touches, err
 		}
 		if chanID <= 0 || count <= 0 || amtSat < 0 {
 			continue
 		}
-		touches[uint64(chanID)] = recentRebalanceSignal{
-			Count:  int(count),
-			AmtSat: amtSat,
+		sig := touches[uint64(chanID)]
+		if status == "SETTLED" || status == "SUCCEEDED" {
+			sig.Count += int(count)
+			sig.AmtSat += amtSat
+		} else {
+			sig.WeakCount += int(count)
+			sig.WeakAmtSat += amtSat
 		}
+		touches[uint64(chanID)] = sig
 	}
 	return touches, rows.Err()
 }
@@ -2894,7 +2961,7 @@ func (e *autofeeEngine) loadState(ctx context.Context) (map[uint64]*autofeeChann
 	items := map[uint64]*autofeeChannelState{}
 	rows, err := e.svc.db.Query(ctx, `
 select channel_id, last_ppm, last_inbound_discount_ppm, last_seed_ppm, last_outrate_ppm, last_outrate_ts,
-  last_rebal_cost_ppm, last_rebal_cost_ts, last_ts, last_dir, low_streak, baseline_fwd7d, class_label, class_conf, bias_ema,
+  last_rebal_cost_ppm, last_rebal_cost_ts, last_ts, last_dir, low_streak, stalled_rounds, baseline_fwd7d, class_label, class_conf, bias_ema,
   first_seen_ts, ss_active, ss_ok_since, ss_bad_since, explorer_state
 from autofee_state
 `)
@@ -2916,6 +2983,7 @@ from autofee_state
 		var lastTs pgtype.Timestamptz
 		var lastDir pgtype.Text
 		var lowStreak int
+		var stalledRounds int
 		var baseline int
 		var classLabel pgtype.Text
 		var classConf pgtype.Float8
@@ -2926,7 +2994,7 @@ from autofee_state
 		var ssBadSince pgtype.Timestamptz
 		var explorerRaw []byte
 		if err := rows.Scan(&channelID, &lastPpm, &lastInb, &lastSeed, &lastOut, &lastOutTs, &lastRebal, &lastRebalTs, &lastTs, &lastDir,
-			&lowStreak, &baseline, &classLabel, &classConf, &biasEma, &firstSeen, &ssActive, &ssOkSince, &ssBadSince, &explorerRaw); err != nil {
+			&lowStreak, &stalledRounds, &baseline, &classLabel, &classConf, &biasEma, &firstSeen, &ssActive, &ssOkSince, &ssBadSince, &explorerRaw); err != nil {
 			return items, err
 		}
 		st.ChannelID = uint64(channelID)
@@ -2958,6 +3026,7 @@ from autofee_state
 			st.LastDir = lastDir.String
 		}
 		st.LowStreak = lowStreak
+		st.StalledRounds = stalledRounds
 		st.BaselineFwd7d = baseline
 		if classLabel.Valid {
 			st.ClassLabel = classLabel.String
@@ -2996,9 +3065,9 @@ func (e *autofeeEngine) persistState(ctx context.Context, st *autofeeChannelStat
 	_, _ = e.svc.db.Exec(ctx, `
 insert into autofee_state (
   channel_id, last_ppm, last_inbound_discount_ppm, last_seed_ppm, last_outrate_ppm, last_outrate_ts,
-  last_rebal_cost_ppm, last_rebal_cost_ts, last_ts, last_dir, low_streak, baseline_fwd7d, class_label, class_conf, bias_ema,
+  last_rebal_cost_ppm, last_rebal_cost_ts, last_ts, last_dir, low_streak, stalled_rounds, baseline_fwd7d, class_label, class_conf, bias_ema,
   first_seen_ts, ss_active, ss_ok_since, ss_bad_since, explorer_state
-) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 `+
 		`on conflict (channel_id) do update set
   last_ppm=excluded.last_ppm,
@@ -3011,6 +3080,7 @@ insert into autofee_state (
   last_ts=excluded.last_ts,
   last_dir=excluded.last_dir,
   low_streak=excluded.low_streak,
+  stalled_rounds=excluded.stalled_rounds,
   baseline_fwd7d=excluded.baseline_fwd7d,
   class_label=excluded.class_label,
   class_conf=excluded.class_conf,
@@ -3023,7 +3093,7 @@ insert into autofee_state (
 `, int64(st.ChannelID), nullableInt(int64(st.LastPpm)), nullableInt(int64(st.LastInboundDiscount)),
 		nullableInt(int64(st.LastSeed)), nullableInt(int64(st.LastOutrate)), nullableTime(st.LastOutrateTs),
 		nullableInt(int64(st.LastRebalCost)), nullableTime(st.LastRebalCostTs), nullableTime(st.LastTs),
-		nullableString(st.LastDir), st.LowStreak, st.BaselineFwd7d, nullableString(st.ClassLabel), nullableFloat(st.ClassConf),
+		nullableString(st.LastDir), st.LowStreak, st.StalledRounds, st.BaselineFwd7d, nullableString(st.ClassLabel), nullableFloat(st.ClassConf),
 		nullableFloat(st.BiasEma), nullableTime(st.FirstSeen), st.SuperSourceActive,
 		nullableTime(st.SuperSourceOkSince), nullableTime(st.SuperSourceBadSince), rawExplorer,
 	)
@@ -3054,6 +3124,8 @@ type decision struct {
 	NegMarginGlobal         bool
 	PredictionCode          string
 	PredictionCooldownHours int
+	NewInbound              bool
+	ChannelAgeHours         float64
 	HTLCAttempts            int
 	HTLCForwardFails        int
 	HTLCPolicyFails         int
@@ -3063,6 +3135,10 @@ type decision struct {
 	StagnationPhase         int
 	StagnationRounds        int
 	StagnationCap           int
+	StalledRounds           int
+	HoursSinceLastChange    float64
+	TargetGapPpm            int
+	TargetGapPct            float64
 	Apply                   bool
 	Error                   error
 	State                   *autofeeChannelState
@@ -3154,6 +3230,9 @@ func formatAutofeeDecisionLine(d *decision, dryRun bool, isError bool) (string, 
 		d.RevShare,
 		tagLine,
 	)
+	if d.NewInbound {
+		line = line + fmt.Sprintf(" | NEW inbound %.1fh", d.ChannelAgeHours)
+	}
 	if d.HTLCAttempts > 0 {
 		line = line + fmt.Sprintf(" | htlc%dm a=%d p=%d l=%d f=%d u=%d",
 			maxInt(1, d.HTLCWindowMin), d.HTLCAttempts, d.HTLCPolicyFails, d.HTLCLiquidityFails, d.HTLCForwardFails, d.HTLCUnclassifiedFails)
@@ -3163,6 +3242,10 @@ func formatAutofeeDecisionLine(d *decision, dryRun bool, isError bool) (string, 
 		if d.StagnationCap > 0 {
 			line = line + fmt.Sprintf(" cap≤%d", d.StagnationCap)
 		}
+	}
+	if d.StalledRounds > 0 || d.TargetGapPpm != 0 {
+		line = line + fmt.Sprintf(" | stall r=%d h=%.1f gap=%+d(%.1f%%)",
+			d.StalledRounds, d.HoursSinceLastChange, d.TargetGapPpm, d.TargetGapPct)
 	}
 	return strings.TrimSpace(line), category
 }
@@ -3216,6 +3299,8 @@ func buildAutofeeChannelLogEntry(d *decision, category string, dryRun bool, err 
 		DeltaPct:                deltaPct,
 		PredictionCode:          d.PredictionCode,
 		PredictionCooldownHours: d.PredictionCooldownHours,
+		NewInbound:              d.NewInbound,
+		ChannelAgeHours:         d.ChannelAgeHours,
 		HTLCAttempts:            d.HTLCAttempts,
 		HTLCForwardFails:        d.HTLCForwardFails,
 		HTLCPolicyFails:         d.HTLCPolicyFails,
@@ -3225,6 +3310,10 @@ func buildAutofeeChannelLogEntry(d *decision, category string, dryRun bool, err 
 		StagnationPhase:         d.StagnationPhase,
 		StagnationRounds:        d.StagnationRounds,
 		StagnationCap:           d.StagnationCap,
+		StalledRounds:           d.StalledRounds,
+		HoursSinceLastChange:    d.HoursSinceLastChange,
+		TargetGapPpm:            d.TargetGapPpm,
+		TargetGapPct:            d.TargetGapPct,
 	}
 	if err != nil {
 		payload.Error = err.Error()
@@ -3288,8 +3377,45 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		st = &autofeeChannelState{ChannelID: ch.ChannelID}
 	}
 	if st.FirstSeen.IsZero() {
-		st.FirstSeen = e.now
+		freshState := st.LastPpm == 0 &&
+			st.LastInboundDiscount == 0 &&
+			st.LastSeed == 0 &&
+			st.LastOutrate == 0 &&
+			st.LastRebalCost == 0 &&
+			st.BaselineFwd7d == 0 &&
+			st.LastTs.IsZero() &&
+			st.LastOutrateTs.IsZero() &&
+			st.LastRebalCostTs.IsZero()
+		switch {
+		case !st.LastTs.IsZero():
+			st.FirstSeen = st.LastTs
+		case !st.LastOutrateTs.IsZero():
+			st.FirstSeen = st.LastOutrateTs
+		case !st.LastRebalCostTs.IsZero():
+			st.FirstSeen = st.LastRebalCostTs
+		case freshState:
+			st.FirstSeen = e.now
+		default:
+			// Backdate legacy state so existing channels are not bootstrap-classified as new.
+			st.FirstSeen = e.now.Add(-time.Duration(defaultBootstrapHours+1) * time.Hour)
+		}
 	}
+	channelAgeHours := 0.0
+	if !st.FirstSeen.IsZero() {
+		channelAgeHours = e.now.Sub(st.FirstSeen).Hours()
+		if channelAgeHours < 0 {
+			channelAgeHours = 0
+		}
+	}
+	bootstrapHours := e.profile.BootstrapHours
+	if bootstrapHours <= 0 {
+		bootstrapHours = defaultBootstrapHours
+	}
+	bootstrapOutRatioMax := e.profile.BootstrapOutRatioMax
+	if bootstrapOutRatioMax <= 0 {
+		bootstrapOutRatioMax = defaultBootstrapOutRatioMax
+	}
+	newInboundBootstrap := !ch.Initiator && channelAgeHours <= float64(bootstrapHours) && outRatio <= bootstrapOutRatioMax
 
 	biasEma := biasRaw
 	if st.BiasEma != 0 {
@@ -3422,6 +3548,20 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		globalNegLockSoften = defaultGlobalNegLockSoften
 		softenRequirePosChanMargin = defaultSoftenRequirePosChanMargin
 	}
+	cooldownUpSec := e.cfg.CooldownUpSec
+	cooldownDownSec := e.cfg.CooldownDownSec
+	if newInboundBootstrap {
+		if e.profile.BootstrapCooldownUpSec > 0 {
+			cooldownUpSec = e.profile.BootstrapCooldownUpSec
+		} else if cooldownUpSec <= 0 {
+			cooldownUpSec = defaultBootstrapCooldownUpSec
+		}
+		if e.profile.BootstrapCooldownDownSec > 0 {
+			cooldownDownSec = e.profile.BootstrapCooldownDownSec
+		} else if cooldownDownSec <= 0 {
+			cooldownDownSec = defaultBootstrapCooldownDownSec
+		}
+	}
 
 	target := int(seed) + 25
 	noFlow1d := recentForwards1d == 0 && outAmt1dSat <= 0
@@ -3460,6 +3600,9 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	}
 
 	tags := []string{}
+	if newInboundBootstrap {
+		tags = append(tags, "new-inbound", "bootstrap")
+	}
 	if outFrom21dFallback {
 		tags = append(tags, "out-fallback-21d")
 	}
@@ -3470,14 +3613,20 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		tags = append(tags, "stagnation-pressure")
 	}
 	recentRebalanceCount := 0
-	recentRebalanceAmtSat := int64(0)
+	recentRebalanceWeakCount := 0
+	surgeConfirmRebalanceCount := 0
+	surgeConfirmRebalanceAmtSat := int64(0)
 	if recentRebalanceTouches != nil {
-		recentRebalanceCount = recentRebalanceTouches[ch.ChannelID].Count
-		recentRebalanceAmtSat = recentRebalanceTouches[ch.ChannelID].AmtSat
+		sig := recentRebalanceTouches[ch.ChannelID]
+		recentRebalanceCount = sig.Count
+		recentRebalanceWeakCount = sig.WeakCount
+		surgeConfirmRebalanceCount, surgeConfirmRebalanceAmtSat = sig.surgeConfirmInputs()
 	}
 	holdUpOnRecentRebalance := shouldHoldUpOnRecentRebalance(classLabel, outRatio, lowOutProtectThresh, recentRebalanceCount)
 	if recentRebalanceCount > 0 {
 		tags = append(tags, "rebal-recent")
+	} else if recentRebalanceWeakCount > 0 {
+		tags = append(tags, "rebal-attempt")
 	}
 	htlcSampleLow := false
 	htlcPolicyHot := false
@@ -3533,7 +3682,7 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 			surgeApplied = true
 		}
 	}
-	surgeConfirmSignal := hasSurgeConfirmSignal(recentRebalanceCount, recentRebalanceAmtSat, ch.CapacitySat)
+	surgeConfirmSignal := hasSurgeConfirmSignal(surgeConfirmRebalanceCount, surgeConfirmRebalanceAmtSat, ch.CapacitySat)
 	surgeConfirmAttemptsMin := e.profile.HTLCMinAttempts60m
 	if surgeConfirmAttemptsMin <= 0 {
 		surgeConfirmAttemptsMin = 1
@@ -3546,6 +3695,34 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	surgeHoldActive := surgeGateTag == "surge-hold" || surgeGateTag == "surge-hold-flow"
 	if surgeGateTag != "" {
 		tags = append(tags, surgeGateTag)
+	}
+	surgeHoldMaxRounds := e.profile.SurgeHoldMaxRounds
+	if surgeHoldMaxRounds <= 0 {
+		surgeHoldMaxRounds = defaultSurgeHoldMaxRounds
+	}
+	if newInboundBootstrap {
+		bootstrapSurgeHoldMaxRounds := e.profile.BootstrapSurgeHoldMaxRounds
+		if bootstrapSurgeHoldMaxRounds <= 0 {
+			bootstrapSurgeHoldMaxRounds = defaultBootstrapSurgeHoldMaxRounds
+		}
+		if bootstrapSurgeHoldMaxRounds > 0 && bootstrapSurgeHoldMaxRounds < surgeHoldMaxRounds {
+			surgeHoldMaxRounds = bootstrapSurgeHoldMaxRounds
+		}
+	}
+	if surgeGateTag == "surge-hold-flow" && st.ExplorerState.SurgeGateRounds >= surgeHoldMaxRounds && outRatio < lowOutProtectThresh {
+		unlockStep := e.profile.SurgeHoldUnlockStepPpm
+		if unlockStep <= 0 {
+			unlockStep = defaultSurgeHoldUnlockStepPpm
+		}
+		if newInboundBootstrap && e.profile.BootstrapMinStepUpPpm > unlockStep {
+			unlockStep = e.profile.BootstrapMinStepUpPpm
+		}
+		if unlockStep < 5 {
+			unlockStep = 5
+		}
+		target = localPpm + unlockStep
+		surgeHoldActive = false
+		tags = append(tags, "surge-timeout-release")
 	}
 	if holdUpOnRecentRebalance && target > localPpm {
 		target = localPpm
@@ -3870,6 +4047,9 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	}
 	capFrac := e.profile.StepCap
 	minStep := 5
+	if newInboundBootstrap && e.profile.BootstrapMinStepUpPpm > minStep {
+		minStep = e.profile.BootstrapMinStepUpPpm
+	}
 	if htlcHotSignal && target > localPpm && e.profile.HTLCHotStepCapBoost > 0 {
 		capFrac = math.Max(capFrac, e.profile.StepCap+e.profile.HTLCHotStepCapBoost)
 		tags = append(tags, "htlc-step-boost")
@@ -3931,6 +4111,26 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		}
 	} else if negMarginGlobal && (stagnationActive || highOutStagnationPressure) {
 		tags = append(tags, "stagnation-neg-override")
+	}
+	if e.cfg.ExtremeDrainEnabled &&
+		target <= localPpm &&
+		surgeGateTag == "surge-hold-flow" &&
+		e.profile.ExtremeDrainStreak > 0 &&
+		st.LowStreak >= e.profile.ExtremeDrainStreak &&
+		outRatio <= e.profile.ExtremeDrainOutMax {
+		unlockStep := e.profile.ExtremeDrainMinStepPpm
+		if unlockStep <= 0 {
+			unlockStep = defaultSurgeHoldUnlockStepPpm
+		}
+		if newInboundBootstrap && e.profile.BootstrapMinStepUpPpm > unlockStep {
+			unlockStep = e.profile.BootstrapMinStepUpPpm
+		}
+		if unlockStep < 5 {
+			unlockStep = 5
+		}
+		target = localPpm + unlockStep
+		surgeHoldActive = false
+		tags = append(tags, "extreme-drain-unlock")
 	}
 
 	if target > localPpm {
@@ -4210,7 +4410,7 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	apply := true
 	delta := int(math.Abs(float64(finalPpm - localPpm)))
 	rel := float64(delta) / float64(maxInt(1, localPpm))
-	if delta < 15 && rel < 0.04 {
+	if delta > 0 && delta < 15 && rel < 0.04 {
 		apply = false
 		tags = append(tags, "hold-small")
 	}
@@ -4220,9 +4420,9 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	}
 	if finalPpm != localPpm && !e.ignoreCooldown && !skipCooldownDown {
 		fwdsSince := fwdCount - st.BaselineFwd7d
-		cooldownHours := float64(e.cfg.CooldownDownSec) / 3600.0
+		cooldownHours := float64(maxInt(1, cooldownDownSec)) / 3600.0
 		if finalPpm > localPpm {
-			cooldownHours = float64(e.cfg.CooldownUpSec) / 3600.0
+			cooldownHours = float64(maxInt(1, cooldownUpSec)) / 3600.0
 		}
 		if !st.LastTs.IsZero() {
 			hoursSince := e.now.Sub(st.LastTs).Hours()
@@ -4238,7 +4438,7 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	if finalPpm < localPpm && !e.ignoreCooldown && !skipCooldownDown && !st.LastTs.IsZero() &&
 		marginPpm7d >= e.profile.ProfitDownMarginMin && fwdCount >= e.profile.ProfitDownFwdsMin {
 		hoursSince := e.now.Sub(st.LastTs).Hours()
-		profitCooldown := float64(e.cfg.CooldownDownSec)/3600.0 + float64(e.profile.ProfitDownExtraHours)
+		profitCooldown := float64(maxInt(1, cooldownDownSec))/3600.0 + float64(e.profile.ProfitDownExtraHours)
 		if hoursSince < profitCooldown {
 			apply = false
 			if !containsTag(tags, "cooldown") {
@@ -4269,6 +4469,13 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	if finalPpm == localPpm {
 		tags = append(tags, "same-ppm")
 	}
+	if finalPpm == localPpm && target != localPpm {
+		st.StalledRounds++
+	} else if finalPpm != localPpm {
+		st.StalledRounds = 0
+	} else if target == localPpm {
+		st.StalledRounds = 0
+	}
 	if apply && finalPpm != localPpm {
 		st.LastTs = e.now
 		if finalPpm > localPpm {
@@ -4281,13 +4488,25 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	if explorerActive && finalPpm < localPpm {
 		st.ExplorerState.Rounds++
 	}
+	targetGapPpm := target - localPpm
+	targetGapPct := 0.0
+	if localPpm > 0 && target != localPpm {
+		targetGapPct = math.Abs(float64(targetGapPpm)) / float64(localPpm) * 100.0
+	}
+	hoursSinceLastChange := 0.0
+	if !st.LastTs.IsZero() {
+		hoursSinceLastChange = e.now.Sub(st.LastTs).Hours()
+		if hoursSinceLastChange < 0 {
+			hoursSinceLastChange = 0
+		}
+	}
 
 	cooldownRemaining := 0.0
 	if containsTag(tags, "cooldown") && !st.LastTs.IsZero() {
 		hoursSince := e.now.Sub(st.LastTs).Hours()
-		cooldownHours := float64(e.cfg.CooldownDownSec) / 3600.0
+		cooldownHours := float64(maxInt(1, cooldownDownSec)) / 3600.0
 		if finalPpm > localPpm {
-			cooldownHours = float64(e.cfg.CooldownUpSec) / 3600.0
+			cooldownHours = float64(maxInt(1, cooldownUpSec)) / 3600.0
 		}
 		remaining := cooldownHours - hoursSince
 		if remaining > 0 {
@@ -4328,6 +4547,8 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		NegMarginGlobal:         negMarginGlobal,
 		PredictionCode:          predictionCode,
 		PredictionCooldownHours: predictionCooldownHours,
+		NewInbound:              newInboundBootstrap,
+		ChannelAgeHours:         channelAgeHours,
 		HTLCAttempts:            htlcAttempts,
 		HTLCForwardFails:        htlcForwardFails,
 		HTLCPolicyFails:         htlcPolicyFails,
@@ -4337,6 +4558,10 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		StagnationPhase:         logStagnationPhase,
 		StagnationRounds:        logStagnationRounds,
 		StagnationCap:           logStagnationCap,
+		StalledRounds:           st.StalledRounds,
+		HoursSinceLastChange:    hoursSinceLastChange,
+		TargetGapPpm:            targetGapPpm,
+		TargetGapPct:            targetGapPct,
 		Apply:                   apply && finalPpm != localPpm,
 		State:                   st,
 	}
@@ -4845,8 +5070,14 @@ func formatAutofeeTags(d *decision) string {
 			add("⚠️neg-margin")
 		case t == "rebal-recent":
 			add("🔁rebal-recent")
+		case t == "rebal-attempt":
+			add("🔁rebal-attempt")
 		case t == "rebal-recent-noup":
 			add("🛑rebal-noup")
+		case t == "new-inbound":
+			add("🆕NEW-inbound")
+		case t == "bootstrap":
+			add("🌱bootstrap")
 		case t == "stagnation":
 			add("🧪stagnation")
 		case t == "stagnation-pressure":
@@ -4891,6 +5122,8 @@ func formatAutofeeTags(d *decision) string {
 			add("🧯cb")
 		case t == "extreme-drain":
 			add("⚡extreme")
+		case t == "extreme-drain-unlock":
+			add("⚡extreme-unlock")
 		case t == "extreme-drain-turbo":
 			add("🚀extreme-drain+")
 		case t == "revfloor":
