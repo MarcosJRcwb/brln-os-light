@@ -274,6 +274,8 @@ type AutofeeResultItem = {
   local_ppm?: number
   new_ppm?: number
   target?: number
+  target_raw?: number
+  target_final?: number
   out_ratio?: number
   out_ppm7d?: number
   rebal_ppm7d?: number
@@ -1330,12 +1332,15 @@ export default function LightningOps() {
     const htlcWindow = item.htlc_window_min_channel ?? item.htlc_window_min ?? 0
 
     const prediction = formatAutofeePrediction(item)
-    let baseLine = `${prefix} ${alias}: ${action}${deltaStr} | ${t('lightningOps.autofeeResultsLabelTarget')} ${item.target ?? 0} | ${t('lightningOps.autofeeResultsLabelOutRatio')} ${outRatio.toFixed(2)} | ${t('lightningOps.autofeeResultsLabelOutPpm7d')}≈${outPpm7d} | ${t('lightningOps.autofeeResultsLabelRebalPpm7d')}≈${rebalPpm7d} | ${t('lightningOps.autofeeResultsLabelSeed')}≈${seed} | ${t('lightningOps.autofeeResultsLabelFloor')}≥${floor}${floorSrc} | ${t('lightningOps.autofeeResultsLabelMargin')}≈${margin} | ${t('lightningOps.autofeeResultsLabelRevShare')}≈${revShare.toFixed(2)} | ${tagLine}`
+    const targetRaw = item.target_raw ?? item.target ?? 0
+    const targetFinal = item.target_final ?? item.new_ppm ?? targetRaw
+    const targetLabel = targetFinal !== targetRaw ? `${targetRaw}→${targetFinal}` : `${targetRaw}`
+    let baseLine = `${prefix} ${alias}: ${action}${deltaStr} | ${t('lightningOps.autofeeResultsLabelTarget')} ${targetLabel} | ${t('lightningOps.autofeeResultsLabelOutRatio')} ${outRatio.toFixed(2)} | ${t('lightningOps.autofeeResultsLabelOutPpm7d')}≈${outPpm7d} | ${t('lightningOps.autofeeResultsLabelRebalPpm7d')}≈${rebalPpm7d} | ${t('lightningOps.autofeeResultsLabelSeed')}≈${seed} | ${t('lightningOps.autofeeResultsLabelFloor')}≥${floor}${floorSrc} | ${t('lightningOps.autofeeResultsLabelMargin')}≈${margin} | ${t('lightningOps.autofeeResultsLabelRevShare')}≈${revShare.toFixed(2)} | ${tagLine}`
     if (item.new_inbound) {
       const age = typeof item.channel_age_hours === 'number' ? item.channel_age_hours : 0
       baseLine += ` | NEW inbound ${age.toFixed(1)}h`
     }
-    if ((item.stalled_rounds ?? 0) > 0 || (item.target_gap_ppm ?? 0) !== 0) {
+    if (newPpm === localPpm && ((item.stalled_rounds ?? 0) > 0 || (item.target_gap_ppm ?? 0) !== 0)) {
       const stalledRounds = item.stalled_rounds ?? 0
       const hoursSinceLastChange = typeof item.hours_since_last_change === 'number' ? item.hours_since_last_change : 0
       const targetGapPpm = item.target_gap_ppm ?? 0

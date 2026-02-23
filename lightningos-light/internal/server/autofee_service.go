@@ -247,6 +247,8 @@ type autofeeLogItem struct {
 	LocalPpm                 int      `json:"local_ppm,omitempty"`
 	NewPpm                   int      `json:"new_ppm,omitempty"`
 	Target                   int      `json:"target,omitempty"`
+	TargetRaw                int      `json:"target_raw,omitempty"`
+	TargetFinal              int      `json:"target_final,omitempty"`
 	OutRatio                 float64  `json:"out_ratio,omitempty"`
 	OutPpm7d                 int      `json:"out_ppm7d,omitempty"`
 	RebalPpm7d               int      `json:"rebal_ppm7d,omitempty"`
@@ -3108,6 +3110,8 @@ type decision struct {
 	LocalPpm                int
 	NewPpm                  int
 	Target                  int
+	TargetRaw               int
+	TargetFinal             int
 	Floor                   int
 	FloorSrc                string
 	Tags                    []string
@@ -3214,12 +3218,24 @@ func formatAutofeeDecisionLine(d *decision, dryRun bool, isError bool) (string, 
 		prefix = "🫤⏸️"
 	}
 
-	line := fmt.Sprintf("%s %s: %s%s | alvo %d | out_ratio %.2f | out_ppm7d≈%d | rebal_ppm7d≈%d | seed≈%d | floor≥%d%s | marg≈%d | rev_share≈%.2f | %s",
+	targetRaw := d.TargetRaw
+	if targetRaw <= 0 {
+		targetRaw = d.Target
+	}
+	targetFinal := d.TargetFinal
+	if targetFinal <= 0 {
+		targetFinal = d.NewPpm
+	}
+	targetDisplay := fmt.Sprintf("%d", targetRaw)
+	if targetFinal != targetRaw {
+		targetDisplay = fmt.Sprintf("%d→%d", targetRaw, targetFinal)
+	}
+	line := fmt.Sprintf("%s %s: %s%s | alvo %s | out_ratio %.2f | out_ppm7d≈%d | rebal_ppm7d≈%d | seed≈%d | floor≥%d%s | marg≈%d | rev_share≈%.2f | %s",
 		prefix,
 		alias,
 		action,
 		deltaStr,
-		d.Target,
+		targetDisplay,
 		d.OutRatio,
 		d.OutPpm7d,
 		d.RebalPpm,
@@ -3243,7 +3259,7 @@ func formatAutofeeDecisionLine(d *decision, dryRun bool, isError bool) (string, 
 			line = line + fmt.Sprintf(" cap≤%d", d.StagnationCap)
 		}
 	}
-	if d.StalledRounds > 0 || d.TargetGapPpm != 0 {
+	if d.NewPpm == d.LocalPpm && (d.StalledRounds > 0 || d.TargetGapPpm != 0) {
 		line = line + fmt.Sprintf(" | stall r=%d h=%.1f gap=%+d(%.1f%%)",
 			d.StalledRounds, d.HoursSinceLastChange, d.TargetGapPpm, d.TargetGapPct)
 	}
@@ -3283,6 +3299,8 @@ func buildAutofeeChannelLogEntry(d *decision, category string, dryRun bool, err 
 		LocalPpm:                d.LocalPpm,
 		NewPpm:                  d.NewPpm,
 		Target:                  d.Target,
+		TargetRaw:               d.TargetRaw,
+		TargetFinal:             d.TargetFinal,
 		OutRatio:                d.OutRatio,
 		OutPpm7d:                d.OutPpm7d,
 		RebalPpm7d:              d.RebalPpm,
@@ -3414,6 +3432,10 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	bootstrapOutRatioMax := e.profile.BootstrapOutRatioMax
 	if bootstrapOutRatioMax <= 0 {
 		bootstrapOutRatioMax = defaultBootstrapOutRatioMax
+	}
+	bootstrapMinStepUp := e.profile.BootstrapMinStepUpPpm
+	if bootstrapMinStepUp <= 0 {
+		bootstrapMinStepUp = defaultBootstrapMinStepUpPpm
 	}
 	newInboundBootstrap := !ch.Initiator && channelAgeHours <= float64(bootstrapHours) && outRatio <= bootstrapOutRatioMax
 
@@ -3714,8 +3736,8 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		if unlockStep <= 0 {
 			unlockStep = defaultSurgeHoldUnlockStepPpm
 		}
-		if newInboundBootstrap && e.profile.BootstrapMinStepUpPpm > unlockStep {
-			unlockStep = e.profile.BootstrapMinStepUpPpm
+		if newInboundBootstrap && bootstrapMinStepUp > unlockStep {
+			unlockStep = bootstrapMinStepUp
 		}
 		if unlockStep < 5 {
 			unlockStep = 5
@@ -3742,13 +3764,20 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		recentRebalanceCount == 0 &&
 		!htlcPressureSignal {
 		capUp := int(math.Ceil(float64(localPpm) * (1.0 + lowOutNoFlowUpCapFrac)))
-		if capUp < localPpm+5 {
-			capUp = localPpm + 5
+		minCapDelta := 5
+		if newInboundBootstrap && bootstrapMinStepUp > minCapDelta {
+			minCapDelta = bootstrapMinStepUp
+		}
+		if capUp < localPpm+minCapDelta {
+			capUp = localPpm + minCapDelta
 		}
 		if target > capUp {
 			target = capUp
 			tags = append(tags, "low-out-noflow-cap")
 		}
+	}
+	if newInboundBootstrap && target > localPpm && target < localPpm+bootstrapMinStepUp {
+		target = localPpm + bootstrapMinStepUp
 	}
 
 	rebal := rebalStats.ByChannel[ch.ChannelID]
@@ -4047,8 +4076,8 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	}
 	capFrac := e.profile.StepCap
 	minStep := 5
-	if newInboundBootstrap && e.profile.BootstrapMinStepUpPpm > minStep {
-		minStep = e.profile.BootstrapMinStepUpPpm
+	if newInboundBootstrap && bootstrapMinStepUp > minStep {
+		minStep = bootstrapMinStepUp
 	}
 	if htlcHotSignal && target > localPpm && e.profile.HTLCHotStepCapBoost > 0 {
 		capFrac = math.Max(capFrac, e.profile.StepCap+e.profile.HTLCHotStepCapBoost)
@@ -4122,8 +4151,8 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		if unlockStep <= 0 {
 			unlockStep = defaultSurgeHoldUnlockStepPpm
 		}
-		if newInboundBootstrap && e.profile.BootstrapMinStepUpPpm > unlockStep {
-			unlockStep = e.profile.BootstrapMinStepUpPpm
+		if newInboundBootstrap && bootstrapMinStepUp > unlockStep {
+			unlockStep = bootstrapMinStepUp
 		}
 		if unlockStep < 5 {
 			unlockStep = 5
@@ -4410,7 +4439,7 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	apply := true
 	delta := int(math.Abs(float64(finalPpm - localPpm)))
 	rel := float64(delta) / float64(maxInt(1, localPpm))
-	if delta > 0 && delta < 15 && rel < 0.04 {
+	if delta > 0 && delta < 15 && rel < 0.04 && !(newInboundBootstrap && finalPpm > localPpm) {
 		apply = false
 		tags = append(tags, "hold-small")
 	}
@@ -4531,6 +4560,8 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		LocalPpm:                localPpm,
 		NewPpm:                  finalPpm,
 		Target:                  target,
+		TargetRaw:               target,
+		TargetFinal:             finalPpm,
 		Floor:                   floor,
 		FloorSrc:                floorSrc,
 		Tags:                    tags,
