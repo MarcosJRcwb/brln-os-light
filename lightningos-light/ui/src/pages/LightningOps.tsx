@@ -423,6 +423,7 @@ const autofeeHistoryRelaxTagSet = new Set([
   'discovery-hard',
   'explorer',
   'cooldown-skip',
+  'floor-relax-stall',
   'extreme-drain',
   'extreme-drain-turbo',
   'htlc-step-boost',
@@ -452,6 +453,7 @@ const formatAutofeeHistoryTag = (tag: string) => {
   if (tag === 'discovery-hard') return '🧨 harddrop'
   if (tag === 'explorer') return '🧭 explorer'
   if (tag === 'cooldown-skip') return '🧭 skip-cooldown'
+  if (tag === 'floor-relax-stall') return '🧯 floor-relax'
   if (tag === 'extreme-drain') return '⚡ extreme'
   if (tag === 'extreme-drain-turbo') return '⚡ turbo'
   if (tag === 'htlc-step-boost') return '⚡ htlc-step'
@@ -1164,6 +1166,8 @@ export default function LightningOps() {
         add('🔥super-source-like')
       } else if (tag === 'sink-floor') {
         add('🧱sink-floor')
+      } else if (tag === 'floor-relax-stall') {
+        add('🧯floor-relax')
       } else if (tag === 'trend-up') {
         add('📈trend-up')
       } else if (tag === 'trend-down') {

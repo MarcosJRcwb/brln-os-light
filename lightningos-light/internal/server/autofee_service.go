@@ -98,6 +98,12 @@ const (
 	defaultBootstrapCooldownDownSec     = 5400
 	defaultBootstrapMinStepUpPpm        = 15
 	defaultBootstrapSurgeHoldMaxRounds  = 2
+	stallFloorRelaxMinRounds            = 2
+	stallFloorRelaxGapFrac              = 0.25
+	stallFloorRelaxStepFrac             = 0.03
+	stallFloorRelaxMinStepPpm           = 15
+	stallFloorRelaxMaxStepPpm           = 120
+	stallFloorRelaxMinOutRatio          = 0.25
 )
 
 func normalizeRebalCostMode(value string) string {
@@ -4326,6 +4332,26 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		floorSrc = "no-signal"
 		tags = append(tags, "no-signal-floor-relax")
 	}
+	if target < localPpm && floor >= localPpm {
+		bigGap := (localPpm - target) >= maxInt(100, int(math.Round(float64(localPpm)*stallFloorRelaxGapFrac)))
+		canRelaxFloor := st.StalledRounds >= stallFloorRelaxMinRounds &&
+			bigGap &&
+			outRatio >= stallFloorRelaxMinOutRatio &&
+			marginPpm7d >= e.profile.ProfitDownMarginMin
+		if canRelaxFloor {
+			relaxStep := int(math.Round(float64(localPpm) * stallFloorRelaxStepFrac))
+			relaxStep = clampInt(relaxStep, stallFloorRelaxMinStepPpm, stallFloorRelaxMaxStepPpm)
+			relaxedFloor := localPpm - relaxStep
+			if relaxedFloor < e.cfg.MinPpm {
+				relaxedFloor = e.cfg.MinPpm
+			}
+			if relaxedFloor < floor {
+				floor = relaxedFloor
+				floorSrc = "stall-relax"
+				tags = append(tags, "floor-relax-stall")
+			}
+		}
+	}
 
 	// Seed is a reference for target construction, not a hard fee ceiling.
 	finalCandidate := clampInt(maxInt(rawStep, floor), e.cfg.MinPpm, e.cfg.MaxPpm)
@@ -4439,7 +4465,8 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	apply := true
 	delta := int(math.Abs(float64(finalPpm - localPpm)))
 	rel := float64(delta) / float64(maxInt(1, localPpm))
-	if delta > 0 && delta < 15 && rel < 0.04 && !(newInboundBootstrap && finalPpm > localPpm) {
+	floorDrivenStepUp := finalPpm > localPpm && floor > localPpm
+	if delta > 0 && delta < 15 && rel < 0.04 && !(newInboundBootstrap && finalPpm > localPpm) && !floorDrivenStepUp {
 		apply = false
 		tags = append(tags, "hold-small")
 	}
@@ -4542,7 +4569,23 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 			cooldownRemaining = remaining
 		}
 	}
-	predictionCode, predictionCooldownHours := buildAutofeePrediction(outRatio, marginPpm7d, target, localPpm, finalPpm, fwdCount, negMarginGlobal, discoveryHit, cooldownRemaining)
+	predictionTarget := target
+	targetDir := 0
+	if target > localPpm {
+		targetDir = 1
+	} else if target < localPpm {
+		targetDir = -1
+	}
+	finalDir := 0
+	if finalPpm > localPpm {
+		finalDir = 1
+	} else if finalPpm < localPpm {
+		finalDir = -1
+	}
+	if (targetDir != 0 && finalDir != 0 && targetDir != finalDir) || (targetDir == 0 && finalDir != 0) {
+		predictionTarget = finalPpm
+	}
+	predictionCode, predictionCooldownHours := buildAutofeePrediction(outRatio, marginPpm7d, predictionTarget, localPpm, finalPpm, fwdCount, negMarginGlobal, discoveryHit, cooldownRemaining)
 	logStagnationPhase := 0
 	logStagnationRounds := 0
 	logStagnationCap := 0
@@ -5219,6 +5262,8 @@ func formatAutofeeTags(d *decision) string {
 			add("⛔stepcap-lock")
 		case t == "floor-lock":
 			add("🧱floor-lock")
+		case t == "floor-relax-stall":
+			add("🧯floor-relax")
 		case t == "global-neg-lock":
 			add("🛡️global-neg-lock")
 		case t == "lock-skip-no-chan-rebal":
@@ -5259,17 +5304,8 @@ func formatAutofeeTags(d *decision) string {
 
 func buildAutofeePrediction(outRatio float64, marginPpm7d int, target int, localPpm int, newPpm int, fwdCount int,
 	negMarginGlobal bool, discoveryHit bool, cooldownRemainingHours float64) (string, int) {
-	if outRatio < 0.05 && (marginPpm7d < 0 || negMarginGlobal) {
-		return "hold_or_up", 0
-	}
-	if outRatio > 0.10 && marginPpm7d > 0 {
-		return "reduce", 0
-	}
 	if discoveryHit && newPpm < localPpm {
 		return "discovery_fast", 0
-	}
-	if fwdCount == 0 && outRatio > 0.60 {
-		return "idle_reduce", 0
 	}
 	if target > localPpm && newPpm >= localPpm {
 		if cooldownRemainingHours > 0 {
@@ -5279,6 +5315,15 @@ func buildAutofeePrediction(outRatio float64, marginPpm7d int, target int, local
 	}
 	if target < localPpm && newPpm <= localPpm {
 		return "bias_down", 0
+	}
+	if outRatio < 0.05 && (marginPpm7d < 0 || negMarginGlobal) {
+		return "hold_or_up", 0
+	}
+	if outRatio > 0.10 && marginPpm7d > 0 {
+		return "reduce", 0
+	}
+	if fwdCount == 0 && outRatio > 0.60 {
+		return "idle_reduce", 0
 	}
 	return "stable", 0
 }
