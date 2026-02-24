@@ -893,7 +893,7 @@ func formatReportLine(label string, metrics reports.Metrics) string {
   return fmt.Sprintf("%s: Forwards %s sats | Cost %s sats | Profit %s sats",
     label,
     formatSats(metrics.ForwardFeeRevenueSat),
-    formatSats(metrics.RebalanceFeeCostSat),
+    formatSats(metrics.TotalFeeCostSat()),
     formatSats(metrics.NetRoutingProfitSat),
   )
 }

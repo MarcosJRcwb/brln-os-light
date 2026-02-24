@@ -656,6 +656,8 @@
     "noData": "No data yet for this range.",
     "onchain": "On-chain",
     "outboundTarget": "Outbound target",
+    "paymentCount": "Payment count",
+    "payments": "Payments",
     "progressPct": "Progress {{value}}%",
     "range": {
       "d-1": "D-1",

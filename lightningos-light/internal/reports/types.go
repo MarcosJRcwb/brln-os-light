@@ -7,15 +7,26 @@ type Metrics struct {
   ForwardFeeRevenueMsat int64
   RebalanceFeeCostSat int64
   RebalanceFeeCostMsat int64
+  PaymentFeeCostSat int64
+  PaymentFeeCostMsat int64
   NetRoutingProfitSat int64
   NetRoutingProfitMsat int64
   ForwardCount int64
   RebalanceCount int64
+  PaymentCount int64
   RoutedVolumeSat int64
   RoutedVolumeMsat int64
   OnchainBalanceSat *int64
   LightningBalanceSat *int64
   TotalBalanceSat *int64
+}
+
+func (m Metrics) TotalFeeCostSat() int64 {
+  return m.RebalanceFeeCostSat + m.PaymentFeeCostSat
+}
+
+func (m Metrics) TotalFeeCostMsat() int64 {
+  return m.RebalanceFeeCostMsat + m.PaymentFeeCostMsat
 }
 
 type Row struct {

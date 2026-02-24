@@ -656,6 +656,8 @@
     "noData": "Sem dados para este intervalo.",
     "onchain": "On-chain",
     "outboundTarget": "Meta outbound",
+    "paymentCount": "Contagem de Pagamentos",
+    "payments": "Pagamentos",
     "progressPct": "Progresso {{value}}%",
     "range": {
       "d-1": "D-1",

@@ -18,7 +18,12 @@ type RebalanceOverride struct {
   Count int64
 }
 
-func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, memoMatch bool, override *RebalanceOverride) (Metrics, error) {
+type PaymentOverride struct {
+  FeeMsat int64
+  Count int64
+}
+
+func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, memoMatch bool, rebalanceOverride *RebalanceOverride, paymentOverride *PaymentOverride) (Metrics, error) {
   if lnd == nil {
     return Metrics{}, fmt.Errorf("lnd client unavailable")
   }
@@ -29,9 +34,9 @@ func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, me
 
   rebalanceCostMsat := int64(0)
   rebalanceCount := int64(0)
-  if override != nil {
-    rebalanceCostMsat = override.FeeMsat
-    rebalanceCount = override.Count
+  if rebalanceOverride != nil {
+    rebalanceCostMsat = rebalanceOverride.FeeMsat
+    rebalanceCount = rebalanceOverride.Count
   } else {
     rebalance, err := FetchRebalanceMetrics(ctx, lnd, tr.StartUnix(), tr.EndUnixInclusive(), memoMatch)
     if err != nil {
@@ -41,16 +46,33 @@ func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, me
     rebalanceCount = rebalance.Count
   }
 
-  netMsat := forwardRevenueMsat - rebalanceCostMsat
+  paymentCostMsat := int64(0)
+  paymentCount := int64(0)
+  if paymentOverride != nil {
+    paymentCostMsat = paymentOverride.FeeMsat
+    paymentCount = paymentOverride.Count
+  } else {
+    payments, err := FetchPaymentMetrics(ctx, lnd, tr.StartUnix(), tr.EndUnixInclusive(), memoMatch)
+    if err != nil {
+      return Metrics{}, err
+    }
+    paymentCostMsat = payments.FeeMsat
+    paymentCount = payments.Count
+  }
+
+  netMsat := forwardRevenueMsat - rebalanceCostMsat - paymentCostMsat
   metrics := Metrics{
     ForwardFeeRevenueSat: forwardRevenueMsat / 1000,
     ForwardFeeRevenueMsat: forwardRevenueMsat,
     RebalanceFeeCostSat: rebalanceCostMsat / 1000,
     RebalanceFeeCostMsat: rebalanceCostMsat,
+    PaymentFeeCostSat: paymentCostMsat / 1000,
+    PaymentFeeCostMsat: paymentCostMsat,
     NetRoutingProfitSat: netMsat / 1000,
     NetRoutingProfitMsat: netMsat,
     ForwardCount: forwardCount,
     RebalanceCount: rebalanceCount,
+    PaymentCount: paymentCount,
     RoutedVolumeSat: routedVolumeMsat / 1000,
     RoutedVolumeMsat: routedVolumeMsat,
   }

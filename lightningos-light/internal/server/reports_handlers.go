@@ -271,9 +271,12 @@ type reportSeriesItem struct {
   Date string `json:"date"`
   ForwardFeeRevenueSat float64 `json:"forward_fee_revenue_sats"`
   RebalanceFeeCostSat float64 `json:"rebalance_fee_cost_sats"`
+  PaymentFeeCostSat float64 `json:"payment_fee_cost_sats"`
+  TotalFeeCostSat float64 `json:"total_fee_cost_sats"`
   NetRoutingProfitSat float64 `json:"net_routing_profit_sats"`
   ForwardCount int64 `json:"forward_count"`
   RebalanceCount int64 `json:"rebalance_count"`
+  PaymentCount int64 `json:"payment_count"`
   RoutedVolumeSat float64 `json:"routed_volume_sats"`
   OnchainBalanceSat *int64 `json:"onchain_balance_sats"`
   LightningBalanceSat *int64 `json:"lightning_balance_sats"`
@@ -306,9 +309,12 @@ type reportMetricsPayload struct {
   Timezone string `json:"timezone,omitempty"`
   ForwardFeeRevenueSat float64 `json:"forward_fee_revenue_sats"`
   RebalanceFeeCostSat float64 `json:"rebalance_fee_cost_sats"`
+  PaymentFeeCostSat float64 `json:"payment_fee_cost_sats"`
+  TotalFeeCostSat float64 `json:"total_fee_cost_sats"`
   NetRoutingProfitSat float64 `json:"net_routing_profit_sats"`
   ForwardCount int64 `json:"forward_count"`
   RebalanceCount int64 `json:"rebalance_count"`
+  PaymentCount int64 `json:"payment_count"`
   RoutedVolumeSat float64 `json:"routed_volume_sats"`
   OnchainBalanceSat *int64 `json:"onchain_balance_sats,omitempty"`
   LightningBalanceSat *int64 `json:"lightning_balance_sats,omitempty"`
@@ -325,9 +331,12 @@ func mapSeries(items []reports.Row) []reportSeriesItem {
       Date: item.ReportDate.Format("2006-01-02"),
       ForwardFeeRevenueSat: metricSats(item.Metrics.ForwardFeeRevenueMsat, item.Metrics.ForwardFeeRevenueSat),
       RebalanceFeeCostSat: metricSats(item.Metrics.RebalanceFeeCostMsat, item.Metrics.RebalanceFeeCostSat),
+      PaymentFeeCostSat: metricSats(item.Metrics.PaymentFeeCostMsat, item.Metrics.PaymentFeeCostSat),
+      TotalFeeCostSat: totalFeeCostSats(item.Metrics),
       NetRoutingProfitSat: metricSats(item.Metrics.NetRoutingProfitMsat, item.Metrics.NetRoutingProfitSat),
       ForwardCount: item.Metrics.ForwardCount,
       RebalanceCount: item.Metrics.RebalanceCount,
+      PaymentCount: item.Metrics.PaymentCount,
       RoutedVolumeSat: metricSats(item.Metrics.RoutedVolumeMsat, item.Metrics.RoutedVolumeSat),
       OnchainBalanceSat: item.Metrics.OnchainBalanceSat,
       LightningBalanceSat: item.Metrics.LightningBalanceSat,
@@ -341,14 +350,25 @@ func metricsPayload(metrics reports.Metrics) reportMetricsPayload {
   return reportMetricsPayload{
     ForwardFeeRevenueSat: metricSats(metrics.ForwardFeeRevenueMsat, metrics.ForwardFeeRevenueSat),
     RebalanceFeeCostSat: metricSats(metrics.RebalanceFeeCostMsat, metrics.RebalanceFeeCostSat),
+    PaymentFeeCostSat: metricSats(metrics.PaymentFeeCostMsat, metrics.PaymentFeeCostSat),
+    TotalFeeCostSat: totalFeeCostSats(metrics),
     NetRoutingProfitSat: metricSats(metrics.NetRoutingProfitMsat, metrics.NetRoutingProfitSat),
     ForwardCount: metrics.ForwardCount,
     RebalanceCount: metrics.RebalanceCount,
+    PaymentCount: metrics.PaymentCount,
     RoutedVolumeSat: metricSats(metrics.RoutedVolumeMsat, metrics.RoutedVolumeSat),
     OnchainBalanceSat: metrics.OnchainBalanceSat,
     LightningBalanceSat: metrics.LightningBalanceSat,
     TotalBalanceSat: metrics.TotalBalanceSat,
   }
+}
+
+func totalFeeCostSats(metrics reports.Metrics) float64 {
+  totalMsat := metrics.RebalanceFeeCostMsat + metrics.PaymentFeeCostMsat
+  if totalMsat != 0 {
+    return float64(totalMsat) / 1000
+  }
+  return float64(metrics.RebalanceFeeCostSat + metrics.PaymentFeeCostSat)
 }
 
 func metricSats(msat int64, sat int64) float64 {

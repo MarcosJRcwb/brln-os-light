@@ -91,7 +91,7 @@ func runReports(args []string) {
     reportDate = parsed
   }
 
-  row, err := svc.RunDaily(ctx, reportDate, loc, nil)
+  row, err := svc.RunDaily(ctx, reportDate, loc, nil, nil)
   if err != nil {
     logger.Fatalf("reports-run failed: %v", err)
   }
@@ -103,7 +103,7 @@ func runReports(args []string) {
     "reports: stored %s (revenue %d sats, cost %d sats, net %d sats)",
     row.ReportDate.Format("2006-01-02"),
     row.Metrics.ForwardFeeRevenueSat,
-    row.Metrics.RebalanceFeeCostSat,
+    row.Metrics.TotalFeeCostSat(),
     row.Metrics.NetRoutingProfitSat,
   )
 }
@@ -175,11 +175,16 @@ func runReportsBackfill(args []string) {
   if err != nil {
     logger.Fatalf("reports-backfill failed: %v", err)
   }
+  paymentByDay, err := reports.FetchPaymentFeesByDay(context.Background(), lnd, uint64(startLocal.UTC().Unix()), uint64(endLocal.UTC().Unix()), loc)
+  if err != nil {
+    logger.Fatalf("reports-backfill failed: %v", err)
+  }
   for day := startDate; !day.After(endDate); day = day.AddDate(0, 0, 1) {
     dayCtx, dayCancel := context.WithTimeout(context.Background(), reportsRunTimeout())
     dayKey := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
-    override := rebalanceByDay[dayKey]
-    row, err := svc.RunDaily(dayCtx, day, loc, &override)
+    rebalanceOverride := rebalanceByDay[dayKey]
+    paymentOverride := paymentByDay[dayKey]
+    row, err := svc.RunDaily(dayCtx, day, loc, &rebalanceOverride, &paymentOverride)
     dayCancel()
     if err != nil {
       logger.Fatalf("reports-backfill failed on %s: %v", day.Format("2006-01-02"), err)
@@ -188,7 +193,7 @@ func runReportsBackfill(args []string) {
       "reports: stored %s (revenue %d sats, cost %d sats, net %d sats)",
       row.ReportDate.Format("2006-01-02"),
       row.Metrics.ForwardFeeRevenueSat,
-      row.Metrics.RebalanceFeeCostSat,
+      row.Metrics.TotalFeeCostSat(),
       row.Metrics.NetRoutingProfitSat,
     )
   }

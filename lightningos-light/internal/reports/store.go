@@ -21,10 +21,13 @@ create table if not exists reports_daily (
   forward_fee_revenue_msat bigint not null default 0,
   rebalance_fee_cost_sats bigint not null default 0,
   rebalance_fee_cost_msat bigint not null default 0,
+  payment_fee_cost_sats bigint not null default 0,
+  payment_fee_cost_msat bigint not null default 0,
   net_routing_profit_sats bigint not null default 0,
   net_routing_profit_msat bigint not null default 0,
   forward_count integer not null default 0,
   rebalance_count integer not null default 0,
+  payment_count integer not null default 0,
   routed_volume_sats bigint not null default 0,
   routed_volume_msat bigint not null default 0,
   onchain_balance_sats bigint null,
@@ -43,7 +46,10 @@ create table if not exists reports_movement_daily (
 
 alter table reports_daily add column if not exists forward_fee_revenue_msat bigint not null default 0;
 alter table reports_daily add column if not exists rebalance_fee_cost_msat bigint not null default 0;
+alter table reports_daily add column if not exists payment_fee_cost_sats bigint not null default 0;
+alter table reports_daily add column if not exists payment_fee_cost_msat bigint not null default 0;
 alter table reports_daily add column if not exists net_routing_profit_msat bigint not null default 0;
+alter table reports_daily add column if not exists payment_count integer not null default 0;
 alter table reports_daily add column if not exists routed_volume_msat bigint not null default 0;
 `)
   return err
@@ -68,10 +74,13 @@ func buildUpsertDaily(row Row) (string, []any) {
     metrics.ForwardFeeRevenueMsat,
     metrics.RebalanceFeeCostSat,
     metrics.RebalanceFeeCostMsat,
+    metrics.PaymentFeeCostSat,
+    metrics.PaymentFeeCostMsat,
     metrics.NetRoutingProfitSat,
     metrics.NetRoutingProfitMsat,
     metrics.ForwardCount,
     metrics.RebalanceCount,
+    metrics.PaymentCount,
     metrics.RoutedVolumeSat,
     metrics.RoutedVolumeMsat,
     nullableInt64(metrics.OnchainBalanceSat),
@@ -86,25 +95,31 @@ insert into reports_daily (
   forward_fee_revenue_msat,
   rebalance_fee_cost_sats,
   rebalance_fee_cost_msat,
+  payment_fee_cost_sats,
+  payment_fee_cost_msat,
   net_routing_profit_sats,
   net_routing_profit_msat,
   forward_count,
   rebalance_count,
+  payment_count,
   routed_volume_sats,
   routed_volume_msat,
   onchain_balance_sats,
   lightning_balance_sats,
   total_balance_sats
-) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 on conflict (report_date) do update set
   forward_fee_revenue_sats = excluded.forward_fee_revenue_sats,
   forward_fee_revenue_msat = excluded.forward_fee_revenue_msat,
   rebalance_fee_cost_sats = excluded.rebalance_fee_cost_sats,
   rebalance_fee_cost_msat = excluded.rebalance_fee_cost_msat,
+  payment_fee_cost_sats = excluded.payment_fee_cost_sats,
+  payment_fee_cost_msat = excluded.payment_fee_cost_msat,
   net_routing_profit_sats = excluded.net_routing_profit_sats,
   net_routing_profit_msat = excluded.net_routing_profit_msat,
   forward_count = excluded.forward_count,
   rebalance_count = excluded.rebalance_count,
+  payment_count = excluded.payment_count,
   routed_volume_sats = excluded.routed_volume_sats,
   routed_volume_msat = excluded.routed_volume_msat,
   onchain_balance_sats = excluded.onchain_balance_sats,
@@ -190,10 +205,13 @@ select report_date,
   forward_fee_revenue_msat,
   rebalance_fee_cost_sats,
   rebalance_fee_cost_msat,
+  payment_fee_cost_sats,
+  payment_fee_cost_msat,
   net_routing_profit_sats,
   net_routing_profit_msat,
   forward_count,
   rebalance_count,
+  payment_count,
   routed_volume_sats,
   routed_volume_msat,
   onchain_balance_sats,
@@ -229,10 +247,13 @@ select report_date,
   forward_fee_revenue_msat,
   rebalance_fee_cost_sats,
   rebalance_fee_cost_msat,
+  payment_fee_cost_sats,
+  payment_fee_cost_msat,
   net_routing_profit_sats,
   net_routing_profit_msat,
   forward_count,
   rebalance_count,
+  payment_count,
   routed_volume_sats,
   routed_volume_msat,
   onchain_balance_sats,
@@ -270,10 +291,13 @@ select
   coalesce(sum(forward_fee_revenue_msat), 0),
   coalesce(sum(rebalance_fee_cost_sats), 0),
   coalesce(sum(rebalance_fee_cost_msat), 0),
+  coalesce(sum(payment_fee_cost_sats), 0),
+  coalesce(sum(payment_fee_cost_msat), 0),
   coalesce(sum(net_routing_profit_sats), 0),
   coalesce(sum(net_routing_profit_msat), 0),
   coalesce(sum(forward_count), 0),
   coalesce(sum(rebalance_count), 0),
+  coalesce(sum(payment_count), 0),
   coalesce(sum(routed_volume_sats), 0),
   coalesce(sum(routed_volume_msat), 0)
 from reports_daily
@@ -284,10 +308,13 @@ where report_date >= $1 and report_date <= $2
     &totals.ForwardFeeRevenueMsat,
     &totals.RebalanceFeeCostSat,
     &totals.RebalanceFeeCostMsat,
+    &totals.PaymentFeeCostSat,
+    &totals.PaymentFeeCostMsat,
     &totals.NetRoutingProfitSat,
     &totals.NetRoutingProfitMsat,
     &totals.ForwardCount,
     &totals.RebalanceCount,
+    &totals.PaymentCount,
     &totals.RoutedVolumeSat,
     &totals.RoutedVolumeMsat,
   )
@@ -312,10 +339,13 @@ select
   coalesce(sum(forward_fee_revenue_msat), 0),
   coalesce(sum(rebalance_fee_cost_sats), 0),
   coalesce(sum(rebalance_fee_cost_msat), 0),
+  coalesce(sum(payment_fee_cost_sats), 0),
+  coalesce(sum(payment_fee_cost_msat), 0),
   coalesce(sum(net_routing_profit_sats), 0),
   coalesce(sum(net_routing_profit_msat), 0),
   coalesce(sum(forward_count), 0),
   coalesce(sum(rebalance_count), 0),
+  coalesce(sum(payment_count), 0),
   coalesce(sum(routed_volume_sats), 0),
   coalesce(sum(routed_volume_msat), 0)
 from reports_daily
@@ -325,10 +355,13 @@ from reports_daily
     &totals.ForwardFeeRevenueMsat,
     &totals.RebalanceFeeCostSat,
     &totals.RebalanceFeeCostMsat,
+    &totals.PaymentFeeCostSat,
+    &totals.PaymentFeeCostMsat,
     &totals.NetRoutingProfitSat,
     &totals.NetRoutingProfitMsat,
     &totals.ForwardCount,
     &totals.RebalanceCount,
+    &totals.PaymentCount,
     &totals.RoutedVolumeSat,
     &totals.RoutedVolumeMsat,
   )
@@ -349,10 +382,13 @@ func averageMetrics(totals Metrics, days int64) Metrics {
     ForwardFeeRevenueMsat: totals.ForwardFeeRevenueMsat / days,
     RebalanceFeeCostSat: totals.RebalanceFeeCostSat / days,
     RebalanceFeeCostMsat: totals.RebalanceFeeCostMsat / days,
+    PaymentFeeCostSat: totals.PaymentFeeCostSat / days,
+    PaymentFeeCostMsat: totals.PaymentFeeCostMsat / days,
     NetRoutingProfitSat: totals.NetRoutingProfitSat / days,
     NetRoutingProfitMsat: totals.NetRoutingProfitMsat / days,
     ForwardCount: totals.ForwardCount / days,
     RebalanceCount: totals.RebalanceCount / days,
+    PaymentCount: totals.PaymentCount / days,
     RoutedVolumeSat: totals.RoutedVolumeSat / days,
     RoutedVolumeMsat: totals.RoutedVolumeMsat / days,
   }
@@ -374,10 +410,13 @@ func scanRow(scanner rowScanner) (Row, error) {
     &metrics.ForwardFeeRevenueMsat,
     &metrics.RebalanceFeeCostSat,
     &metrics.RebalanceFeeCostMsat,
+    &metrics.PaymentFeeCostSat,
+    &metrics.PaymentFeeCostMsat,
     &metrics.NetRoutingProfitSat,
     &metrics.NetRoutingProfitMsat,
     &metrics.ForwardCount,
     &metrics.RebalanceCount,
+    &metrics.PaymentCount,
     &metrics.RoutedVolumeSat,
     &metrics.RoutedVolumeMsat,
     &onchain,
@@ -423,6 +462,9 @@ func fillMsatFromSat(metrics *Metrics) {
   }
   if metrics.RebalanceFeeCostMsat == 0 && metrics.RebalanceFeeCostSat != 0 {
     metrics.RebalanceFeeCostMsat = metrics.RebalanceFeeCostSat * 1000
+  }
+  if metrics.PaymentFeeCostMsat == 0 && metrics.PaymentFeeCostSat != 0 {
+    metrics.PaymentFeeCostMsat = metrics.PaymentFeeCostSat * 1000
   }
   if metrics.NetRoutingProfitMsat == 0 && metrics.NetRoutingProfitSat != 0 {
     metrics.NetRoutingProfitMsat = metrics.NetRoutingProfitSat * 1000
