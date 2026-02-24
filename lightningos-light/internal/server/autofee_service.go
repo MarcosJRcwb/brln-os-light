@@ -100,9 +100,11 @@ const (
 	defaultBootstrapSurgeHoldMaxRounds  = 2
 	stallFloorRelaxMinRounds            = 2
 	stallFloorRelaxGapFrac              = 0.25
-	stallFloorRelaxStepFrac             = 0.03
+	stallFloorRelaxStepFracBase         = 0.04
+	stallFloorRelaxStepFracMax          = 0.06
+	stallFloorRelaxStepFracRoundWindow  = 4
 	stallFloorRelaxMinStepPpm           = 15
-	stallFloorRelaxMaxStepPpm           = 120
+	stallFloorRelaxMaxStepPpm           = 180
 	stallFloorRelaxMinOutRatio          = 0.25
 	floorDrivenSmallUpMinStepPpm        = 10
 )
@@ -4340,7 +4342,15 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 			outRatio >= stallFloorRelaxMinOutRatio &&
 			marginPpm7d >= e.profile.ProfitDownMarginMin
 		if canRelaxFloor {
-			relaxStep := int(math.Round(float64(localPpm) * stallFloorRelaxStepFrac))
+			relaxFrac := stallFloorRelaxStepFracBase
+			if st.StalledRounds > stallFloorRelaxMinRounds {
+				extraBuckets := (st.StalledRounds - stallFloorRelaxMinRounds) / stallFloorRelaxStepFracRoundWindow
+				relaxFrac += float64(extraBuckets) * 0.01
+				if relaxFrac > stallFloorRelaxStepFracMax {
+					relaxFrac = stallFloorRelaxStepFracMax
+				}
+			}
+			relaxStep := int(math.Round(float64(localPpm) * relaxFrac))
 			relaxStep = clampInt(relaxStep, stallFloorRelaxMinStepPpm, stallFloorRelaxMaxStepPpm)
 			relaxedFloor := localPpm - relaxStep
 			if relaxedFloor < e.cfg.MinPpm {
