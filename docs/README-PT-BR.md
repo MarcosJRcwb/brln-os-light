@@ -284,6 +284,12 @@ Pipeline de decisao (por canal):
 5. Monta pilha de floor (`rebal`, `rebal-sink`, `outrate`, `peg`, `revfloor`, `stagnation`, `no-signal`).
 6. Aplica step cap e cooldown, e decide `apply` ou `keep`.
 
+Melhorias recentes de comportamento:
+- Bootstrap para canais inbound novos com subida gradual e controlada (`new-inbound`, `bootstrap`).
+- Relaxamento adaptativo de floor em canais travados (`floor-relax-stall`) para evitar lock prolongado em fee alta.
+- Bloqueio de micro-subidas por floor quando o sinal e fraco (exceto cenarios fortes como surge/new-inbound), reduzindo churn.
+- Forecast baseado na fee efetivamente aplicada (nao apenas candidata), deixando linhas `keep` mais coerentes.
+
 Janelas de dados e regras de fallback:
 - Janela principal: `lookback` configuravel (5-21d).
 - Janelas extras sempre calculadas:
@@ -316,26 +322,27 @@ Linhas de Autofee Results:
 - Linha por canal: `set/keep`, `target`, `out_ratio`, `out_ppm7d`, `rebal_ppm7d`, `seed`, `floor`, `margin`, `rev_share`, tags, contadores HTLC e forecast.
 
 Glossario de tags (Autofee Results):
+- Referencia completa: `docs/AUTOFEE_TAG_GLOSSARIO_PT_BR.md` (PT-BR) e `docs/AUTOFEE_TAG_GLOSSARY_EN.md` (EN).
 - Papel do canal e tendencia:
 - `sink`, `source`, `router`, `unknown`, `trend-up`, `trend-down`, `trend-flat`.
 - Controles de movimento:
-- `stepcap`, `stepcap-lock`, `floor-lock`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-recent-noup`.
+- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
 - Controles de lucro e margem:
 - `neg-margin`, `negm+X%`, `no-down-low`, `no-down-neg-margin`, `global-neg-lock`, `lock-skip-no-chan-rebal`, `lock-skip-sink-profit`, `profit-protect-lock`, `profit-protect-relax`.
 - Floors/anchors de mercado:
 - `outrate-floor`, `peg`, `peg-grace`, `peg-demand`, `revfloor`, `sink-floor`.
 - Controles adaptativos:
-- `circuit-breaker`, `extreme-drain`, `extreme-drain-turbo`.
+- `circuit-breaker`, `extreme-drain`, `extreme-drain-unlock`, `extreme-drain-turbo`.
 - Estagnacao e anti-lock:
 - `stagnation`, `stagnation-rN`, `stagnation-cap-<ppm>`, `normalize-out`, `normalize-rebal`, `stagnation-floor`, `stagnation-floor-relax`, `stagnation-neg-override`, `stagnation-pressure`, `peg-paused-stagnation`.
 - Low-out e falta de sinal:
 - `low-out-slow-up`, `low-out-noflow-cap`, `no-signal-noup`, `no-signal-floor-relax`.
 - Discovery/explorer:
-- `discovery`, `discovery-hard`, `explorer`.
+- `discovery`, `discovery-hard`, `explorer`, `surge*`.
 - Sinais HTLC:
 - `htlc-policy-hot`, `htlc-liquidity-hot`, `htlc-forward-hot`, `htlc-sample-low`, `htlc-neutral-lock`, `htlc-liq+X%`, `htlc-policy+X%`, `htlc-liq-nodown`, `htlc-policy-nodown`, `htlc-neutral-nodown`, `htlc-step-boost`.
 - Super-source e inbound:
-- `super-source`, `super-source-like`, `inb-<n>`.
+- `super-source`, `super-source-like`, `new-inbound`, `bootstrap`, `inb-<n>`.
 - Seed e origem de fallback:
 - `seed:amboss`, `seed:amboss-missing`, `seed:amboss-empty`, `seed:amboss-error`, `seed:med`, `seed:vol-<n>%`, `seed:ratio<factor>`, `seed:outrate`, `seed:mem`, `seed:default`, `seed:guard`, `seed:p95cap`, `seed:absmax`, `out-fallback-21d`, `rebal-fallback-21d`.
 

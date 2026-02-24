@@ -284,6 +284,12 @@ Decision pipeline (per channel):
 5. Build floor stack (`rebal`, `rebal-sink`, `outrate`, `peg`, `revfloor`, `stagnation`, `no-signal`).
 6. Apply step caps and cooldown, then decide `apply` vs `keep`.
 
+Recent behavior improvements:
+- New inbound bootstrap ramps fees in controlled steps for fresh inbound channels (`new-inbound`, `bootstrap`).
+- Stalled floor unlock now supports adaptive relaxation (`floor-relax-stall`) to avoid long lock-in at high floors.
+- Very small floor-driven increases are held unless signal quality is strong (for example surge/new-inbound), reducing churn.
+- Forecast uses effective applied fee (not only raw candidate), improving coherence in `keep` lines.
+
 Data windows and fallback rules:
 - Main run window: configurable `lookback` (5-21d).
 - Extra windows always computed:
@@ -316,26 +322,27 @@ Autofee Results lines:
 - Per-channel line: `set/keep`, `target`, `out_ratio`, `out_ppm7d`, `rebal_ppm7d`, `seed`, `floor`, `margin`, `rev_share`, tags, HTLC counters, forecast.
 
 Tag glossary (Autofee Results):
+- Full reference: `docs/AUTOFEE_TAG_GLOSSARY_EN.md` (EN) and `docs/AUTOFEE_TAG_GLOSSARIO_PT_BR.md` (PT-BR).
 - Channel role and trend:
 - `sink`, `source`, `router`, `unknown`, `trend-up`, `trend-down`, `trend-flat`.
 - Movement controls:
-- `stepcap`, `stepcap-lock`, `floor-lock`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-recent-noup`.
+- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
 - Profit and margin controls:
 - `neg-margin`, `negm+X%`, `no-down-low`, `no-down-neg-margin`, `global-neg-lock`, `lock-skip-no-chan-rebal`, `lock-skip-sink-profit`, `profit-protect-lock`, `profit-protect-relax`.
 - Outrate/floor controls:
 - `outrate-floor`, `peg`, `peg-grace`, `peg-demand`, `revfloor`, `sink-floor`.
 - Adaptive controls:
-- `circuit-breaker`, `extreme-drain`, `extreme-drain-turbo`.
+- `circuit-breaker`, `extreme-drain`, `extreme-drain-unlock`, `extreme-drain-turbo`.
 - Stagnation and anti-lock controls:
 - `stagnation`, `stagnation-rN`, `stagnation-cap-<ppm>`, `normalize-out`, `normalize-rebal`, `stagnation-floor`, `stagnation-floor-relax`, `stagnation-neg-override`, `stagnation-pressure`, `peg-paused-stagnation`.
 - Low-out/no-signal controls:
 - `low-out-slow-up`, `low-out-noflow-cap`, `no-signal-noup`, `no-signal-floor-relax`.
 - Discovery/explorer:
-- `discovery`, `discovery-hard`, `explorer`.
+- `discovery`, `discovery-hard`, `explorer`, `surge*`.
 - HTLC signals:
 - `htlc-policy-hot`, `htlc-liquidity-hot`, `htlc-forward-hot`, `htlc-sample-low`, `htlc-neutral-lock`, `htlc-liq+X%`, `htlc-policy+X%`, `htlc-liq-nodown`, `htlc-policy-nodown`, `htlc-neutral-nodown`, `htlc-step-boost`.
 - Super-source and inbound:
-- `super-source`, `super-source-like`, `inb-<n>`.
+- `super-source`, `super-source-like`, `new-inbound`, `bootstrap`, `inb-<n>`.
 - Seed and fallback provenance:
 - `seed:amboss`, `seed:amboss-missing`, `seed:amboss-empty`, `seed:amboss-error`, `seed:med`, `seed:vol-<n>%`, `seed:ratio<factor>`, `seed:outrate`, `seed:mem`, `seed:default`, `seed:guard`, `seed:p95cap`, `seed:absmax`, `out-fallback-21d`, `rebal-fallback-21d`.
 
