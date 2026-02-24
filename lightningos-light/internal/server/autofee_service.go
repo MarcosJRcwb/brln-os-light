@@ -4580,6 +4580,11 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 			cooldownRemaining = remaining
 		}
 	}
+	effectiveApply := apply && finalPpm != localPpm
+	effectiveNewPpm := finalPpm
+	if !effectiveApply {
+		effectiveNewPpm = localPpm
+	}
 	predictionTarget := target
 	targetDir := 0
 	if target > localPpm {
@@ -4588,15 +4593,15 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		targetDir = -1
 	}
 	finalDir := 0
-	if finalPpm > localPpm {
+	if effectiveNewPpm > localPpm {
 		finalDir = 1
-	} else if finalPpm < localPpm {
+	} else if effectiveNewPpm < localPpm {
 		finalDir = -1
 	}
 	if (targetDir != 0 && finalDir != 0 && targetDir != finalDir) || (targetDir == 0 && finalDir != 0) {
-		predictionTarget = finalPpm
+		predictionTarget = effectiveNewPpm
 	}
-	predictionCode, predictionCooldownHours := buildAutofeePrediction(outRatio, marginPpm7d, predictionTarget, localPpm, finalPpm, fwdCount, negMarginGlobal, discoveryHit, cooldownRemaining)
+	predictionCode, predictionCooldownHours := buildAutofeePrediction(outRatio, marginPpm7d, predictionTarget, localPpm, effectiveNewPpm, fwdCount, negMarginGlobal, discoveryHit, cooldownRemaining)
 	logStagnationPhase := 0
 	logStagnationRounds := 0
 	logStagnationCap := 0
@@ -4647,7 +4652,7 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		HoursSinceLastChange:    hoursSinceLastChange,
 		TargetGapPpm:            targetGapPpm,
 		TargetGapPct:            targetGapPct,
-		Apply:                   apply && finalPpm != localPpm,
+		Apply:                   effectiveApply,
 		State:                   st,
 	}
 }
@@ -5321,13 +5326,13 @@ func buildAutofeePrediction(outRatio float64, marginPpm7d int, target int, local
 	if discoveryHit && newPpm < localPpm {
 		return "discovery_fast", 0
 	}
-	if target > localPpm && newPpm >= localPpm {
+	if target > localPpm && newPpm > localPpm {
 		if cooldownRemainingHours > 0 {
 			return "bias_up", int(math.Round(cooldownRemainingHours))
 		}
 		return "bias_up", 0
 	}
-	if target < localPpm && newPpm <= localPpm {
+	if target < localPpm && newPpm < localPpm {
 		return "bias_down", 0
 	}
 	if outRatio < 0.05 && (marginPpm7d < 0 || negMarginGlobal) {
