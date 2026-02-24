@@ -282,3 +282,67 @@ func TestApplySurgeConfirmationGate(t *testing.T) {
 		t.Fatalf("unexpected surge gate state after local ppm change: rounds=%d ppm=%d", st.ExplorerState.SurgeGateRounds, st.ExplorerState.SurgeGatePpm)
 	}
 }
+
+func TestApplyDirectionReversalGuard(t *testing.T) {
+	st := &autofeeChannelState{LastDir: "up"}
+	localPpm := 1000
+
+	next, tags := applyDirectionReversalGuard(st, localPpm, 900)
+	if next != localPpm {
+		t.Fatalf("expected first reversal attempt to be blocked: got %d want %d", next, localPpm)
+	}
+	if st.ExplorerState.ReversalPendingRounds != 1 || st.ExplorerState.ReversalPendingDir != "down" {
+		t.Fatalf("unexpected pending reversal state: rounds=%d dir=%q", st.ExplorerState.ReversalPendingRounds, st.ExplorerState.ReversalPendingDir)
+	}
+	if len(tags) == 0 || tags[0] != "reversal-guard" {
+		t.Fatalf("expected reversal guard tag on first blocked reversal, got %+v", tags)
+	}
+
+	next, tags = applyDirectionReversalGuard(st, localPpm, 900)
+	if next != 900 {
+		t.Fatalf("expected second reversal attempt to pass guard: got %d want 900", next)
+	}
+	if st.ExplorerState.ReversalPendingRounds != 2 || st.ExplorerState.ReversalPendingDir != "down" {
+		t.Fatalf("expected pending reversal state to be retained after confirmation: rounds=%d dir=%q", st.ExplorerState.ReversalPendingRounds, st.ExplorerState.ReversalPendingDir)
+	}
+	if len(tags) == 0 || tags[0] != "reversal-confirmed" {
+		t.Fatalf("expected reversal confirmation tag, got %+v", tags)
+	}
+
+	st.LastDir = "down"
+	next, _ = applyDirectionReversalGuard(st, localPpm, 930)
+	if next != 930 {
+		t.Fatalf("expected same-direction move to pass without guard: got %d want 930", next)
+	}
+	if st.ExplorerState.ReversalPendingRounds != 0 || st.ExplorerState.ReversalPendingDir != "" {
+		t.Fatalf("expected pending reversal state reset when direction aligns: rounds=%d dir=%q", st.ExplorerState.ReversalPendingRounds, st.ExplorerState.ReversalPendingDir)
+	}
+}
+
+func TestCapDownMoveForLowHTLCSample(t *testing.T) {
+	localPpm := 1000
+
+	capped, clipped := capDownMoveForLowHTLCSample(localPpm, 850, true)
+	if !clipped {
+		t.Fatalf("expected clipping for large drop with low sample")
+	}
+	if capped != 950 {
+		t.Fatalf("unexpected clipped value: got %d want 950", capped)
+	}
+
+	unchanged, clipped := capDownMoveForLowHTLCSample(localPpm, 980, true)
+	if clipped {
+		t.Fatalf("did not expect clipping for small drop")
+	}
+	if unchanged != 980 {
+		t.Fatalf("expected unchanged value for small drop: got %d want 980", unchanged)
+	}
+
+	unchanged, clipped = capDownMoveForLowHTLCSample(localPpm, 850, false)
+	if clipped {
+		t.Fatalf("did not expect clipping when sample is not low")
+	}
+	if unchanged != 850 {
+		t.Fatalf("expected unchanged value when sample is not low: got %d want 850", unchanged)
+	}
+}

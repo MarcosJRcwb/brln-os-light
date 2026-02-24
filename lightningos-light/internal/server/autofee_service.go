@@ -98,15 +98,17 @@ const (
 	defaultBootstrapCooldownDownSec     = 5400
 	defaultBootstrapMinStepUpPpm        = 15
 	defaultBootstrapSurgeHoldMaxRounds  = 2
-	stallFloorRelaxMinRounds            = 2
-	stallFloorRelaxGapFrac              = 0.25
+	stallFloorRelaxMinRounds            = 1
+	stallFloorRelaxGapFrac              = 0.20
 	stallFloorRelaxStepFracBase         = 0.04
 	stallFloorRelaxStepFracMax          = 0.06
 	stallFloorRelaxStepFracRoundWindow  = 4
 	stallFloorRelaxMinStepPpm           = 15
 	stallFloorRelaxMaxStepPpm           = 180
-	stallFloorRelaxMinOutRatio          = 0.25
+	stallFloorRelaxMinOutRatio          = 0.20
 	floorDrivenSmallUpMinStepPpm        = 10
+	reversalConfirmMinRounds            = 2
+	htlcLowSampleMaxDownFrac            = 0.05
 )
 
 func normalizeRebalCostMode(value string) string {
@@ -1715,16 +1717,18 @@ type autofeeChannelState struct {
 }
 
 type explorerState struct {
-	Active                bool  `json:"active"`
-	StartedTs             int64 `json:"started_ts"`
-	Rounds                int   `json:"rounds"`
-	FwdsAtStart           int   `json:"fwds_at_start"`
-	LastExitTs            int64 `json:"last_exit_ts"`
-	Seen                  bool  `json:"seen"`
-	StagnationNoFwdRounds int   `json:"stagnation_no_fwd_rounds,omitempty"`
-	StagnationPhase       int   `json:"stagnation_phase,omitempty"`
-	SurgeGateRounds       int   `json:"surge_gate_rounds,omitempty"`
-	SurgeGatePpm          int   `json:"surge_gate_ppm,omitempty"`
+	Active                bool   `json:"active"`
+	StartedTs             int64  `json:"started_ts"`
+	Rounds                int    `json:"rounds"`
+	FwdsAtStart           int    `json:"fwds_at_start"`
+	LastExitTs            int64  `json:"last_exit_ts"`
+	Seen                  bool   `json:"seen"`
+	StagnationNoFwdRounds int    `json:"stagnation_no_fwd_rounds,omitempty"`
+	StagnationPhase       int    `json:"stagnation_phase,omitempty"`
+	SurgeGateRounds       int    `json:"surge_gate_rounds,omitempty"`
+	SurgeGatePpm          int    `json:"surge_gate_ppm,omitempty"`
+	ReversalPendingDir    string `json:"reversal_pending_dir,omitempty"`
+	ReversalPendingRounds int    `json:"reversal_pending_rounds,omitempty"`
 }
 
 func (s *AutofeeService) LoadChannelSettingsDetailed(ctx context.Context) ([]AutofeeChannelSettingEntry, error) {
@@ -2576,6 +2580,62 @@ func applySurgeConfirmationGate(st *autofeeChannelState, localPpm int, target in
 
 	st.ExplorerState.SurgeGateRounds = 0
 	return target, "surge-confirmed-rounds"
+}
+
+func directionFromMove(localPpm int, nextPpm int) string {
+	switch {
+	case nextPpm > localPpm:
+		return "up"
+	case nextPpm < localPpm:
+		return "down"
+	default:
+		return ""
+	}
+}
+
+func applyDirectionReversalGuard(st *autofeeChannelState, localPpm int, nextPpm int) (int, []string) {
+	if st == nil {
+		return nextPpm, nil
+	}
+	proposedDir := directionFromMove(localPpm, nextPpm)
+	if proposedDir == "" {
+		st.ExplorerState.ReversalPendingDir = ""
+		st.ExplorerState.ReversalPendingRounds = 0
+		return nextPpm, nil
+	}
+	if st.LastDir == "" || st.LastDir == proposedDir {
+		st.ExplorerState.ReversalPendingDir = ""
+		st.ExplorerState.ReversalPendingRounds = 0
+		return nextPpm, nil
+	}
+
+	if st.ExplorerState.ReversalPendingDir != proposedDir {
+		st.ExplorerState.ReversalPendingDir = proposedDir
+		st.ExplorerState.ReversalPendingRounds = 1
+	} else {
+		st.ExplorerState.ReversalPendingRounds++
+	}
+
+	if st.ExplorerState.ReversalPendingRounds < reversalConfirmMinRounds {
+		return localPpm, []string{"reversal-guard", fmt.Sprintf("reversal-pending-r%d", st.ExplorerState.ReversalPendingRounds)}
+	}
+
+	return nextPpm, []string{"reversal-confirmed"}
+}
+
+func capDownMoveForLowHTLCSample(localPpm int, nextPpm int, htlcSampleLow bool) (int, bool) {
+	if !htlcSampleLow || localPpm <= 0 || nextPpm >= localPpm {
+		return nextPpm, false
+	}
+	maxDownPpm := int(math.Round(float64(localPpm) * htlcLowSampleMaxDownFrac))
+	if maxDownPpm < 1 {
+		maxDownPpm = 1
+	}
+	minAllowed := localPpm - maxDownPpm
+	if nextPpm < minAllowed {
+		return minAllowed, true
+	}
+	return nextPpm, false
 }
 
 func scaleHTLCThresholdByWindow(base int, windowMin int, fallback int) int {
@@ -4460,6 +4520,16 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		finalPpm = localPpm
 		if !containsTag(tags, "surge-hold-lock") {
 			tags = append(tags, "surge-hold-lock")
+		}
+	}
+	if adjusted, clipped := capDownMoveForLowHTLCSample(localPpm, finalPpm, htlcSampleLow); clipped {
+		finalPpm = adjusted
+		tags = append(tags, "htlc-low-sample-downcap")
+	}
+	if guardedPpm, reversalTags := applyDirectionReversalGuard(st, localPpm, finalPpm); true {
+		finalPpm = guardedPpm
+		if len(reversalTags) > 0 {
+			tags = append(tags, reversalTags...)
 		}
 	}
 
