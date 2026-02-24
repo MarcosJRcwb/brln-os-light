@@ -3496,6 +3496,40 @@ func dockerContainerGateways(ctx context.Context, containerID string) []string {
 	return gateways
 }
 
+func dockerContainerCIDRs(ctx context.Context, containerID string) []string {
+	if containerID == "" {
+		return []string{}
+	}
+	out, err := system.RunCommandWithSudo(
+		ctx,
+		"docker",
+		"inspect",
+		"-f",
+		"{{range $k,$v := .NetworkSettings.Networks}}{{printf \"%s/%d\\n\" $v.IPAddress $v.IPPrefixLen}}{{end}}",
+		containerID,
+	)
+	if err != nil {
+		return []string{}
+	}
+	cidrs := []string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "/") {
+			continue
+		}
+		if _, cidr, parseErr := net.ParseCIDR(trimmed); parseErr == nil && cidr != nil {
+			normalized := cidr.String()
+			if normalized == "" || seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			cidrs = append(cidrs, normalized)
+		}
+	}
+	return cidrs
+}
+
 func updateLNDConfRPC(ctx context.Context, user, pass, host, zmqBlock, zmqTx string) error {
 	remoteCfg := bitcoinRPCConfig{
 		Host:     host,
