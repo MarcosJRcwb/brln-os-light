@@ -534,6 +534,7 @@ export default function Reports() {
                     <XAxis dataKey="name" tick={{ fill: '#cbd5f5', fontSize: 12 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={formatCompact} />
                     <Tooltip
+                      shared={false}
                       cursor={{ fill: 'rgba(255,255,255,0.06)' }}
                       contentStyle={tooltipContentStyle}
                       labelStyle={tooltipLabelStyle}
@@ -544,7 +545,7 @@ export default function Reports() {
                     <Bar dataKey="revenue" stackId="live" name={t('reports.revenue')} fill={COLORS.revenue} radius={[8, 8, 8, 8]} />
                     <Bar dataKey="rebalanceCost" stackId="live" name={t('reports.rebalances')} fill={COLORS.costRebalance} radius={[8, 8, 8, 8]} />
                     <Bar dataKey="paymentCost" stackId="live" name={t('reports.payments')} fill={COLORS.costPayment} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="net" stackId="live" name={t('reports.net')} radius={[8, 8, 8, 8]}>
+                    <Bar dataKey="net" stackId="live" name={t('reports.net')} fill={COLORS.net} radius={[8, 8, 8, 8]}>
                       {liveChartData.map((entry) => (
                         <Cell key={entry.name} fill={entry.netColor ?? COLORS.net} />
                       ))}
