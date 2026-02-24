@@ -3288,32 +3288,65 @@ func storeBitcoinSecrets(user, pass string) error {
 }
 
 func readBitcoinSource() string {
-	if value := strings.TrimSpace(os.Getenv("BITCOIN_SOURCE")); value != "" {
-		value = strings.ToLower(value)
-		if value == "local" || value == "remote" {
-			return value
-		}
+	envValue := strings.TrimSpace(os.Getenv("BITCOIN_SOURCE"))
+	secretsRaw := ""
+	if content, err := os.ReadFile(secretsPath); err == nil {
+		secretsRaw = string(content)
 	}
-	content, err := os.ReadFile(secretsPath)
-	if err == nil {
-		for _, line := range strings.Split(string(content), "\n") {
-			if strings.HasPrefix(line, "BITCOIN_SOURCE=") {
-				value := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "BITCOIN_SOURCE=")))
-				if value == "local" || value == "remote" {
-					return value
-				}
-			}
-		}
+	lndConfRaw := ""
+	if raw, err := os.ReadFile(lndConfPath); err == nil {
+		lndConfRaw = string(raw)
 	}
-	if detected := detectBitcoinSourceFromLNDConf(); detected != "" {
-		return detected
-	}
-	return "remote"
+	return resolveBitcoinSource(envValue, secretsRaw, lndConfRaw)
 }
 
 func detectBitcoinSourceFromLNDConf() string {
 	raw, err := os.ReadFile(lndConfPath)
 	if err != nil {
+		return ""
+	}
+	return parseBitcoinSourceFromLNDConf(string(raw))
+}
+
+func resolveBitcoinSource(envValue, secretsRaw, lndConfRaw string) string {
+	if detected := parseBitcoinSourceFromLNDConf(lndConfRaw); detected != "" {
+		return detected
+	}
+	if normalized := normalizeBitcoinSource(envValue); normalized != "" {
+		return normalized
+	}
+	if normalized := parseBitcoinSourceFromSecrets(secretsRaw); normalized != "" {
+		return normalized
+	}
+	return "remote"
+}
+
+func parseBitcoinSourceFromSecrets(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.HasPrefix(line, "BITCOIN_SOURCE=") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, "BITCOIN_SOURCE="))
+		if normalized := normalizeBitcoinSource(value); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
+}
+
+func normalizeBitcoinSource(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "local" || trimmed == "remote" {
+		return trimmed
+	}
+	return ""
+}
+
+func parseBitcoinSourceFromLNDConf(raw string) string {
+	if raw == "" {
 		return ""
 	}
 	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
