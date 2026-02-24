@@ -104,6 +104,7 @@ const (
 	stallFloorRelaxMinStepPpm           = 15
 	stallFloorRelaxMaxStepPpm           = 120
 	stallFloorRelaxMinOutRatio          = 0.25
+	floorDrivenSmallUpMinStepPpm        = 10
 )
 
 func normalizeRebalCostMode(value string) string {
@@ -4466,7 +4467,17 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	delta := int(math.Abs(float64(finalPpm - localPpm)))
 	rel := float64(delta) / float64(maxInt(1, localPpm))
 	floorDrivenStepUp := finalPpm > localPpm && floor > localPpm
-	if delta > 0 && delta < 15 && rel < 0.04 && !(newInboundBootstrap && finalPpm > localPpm) && !floorDrivenStepUp {
+	surgeDrivenStepUp := containsTag(tags, "surge+20%") ||
+		containsTag(tags, "surge-hold-flow") ||
+		containsTag(tags, "surge-timeout-release") ||
+		containsTag(tags, "surge-confirmed-rounds")
+	allowSmallStep := newInboundBootstrap && finalPpm > localPpm
+	if floorDrivenStepUp && finalPpm > localPpm {
+		if delta >= floorDrivenSmallUpMinStepPpm || newInboundBootstrap || surgeDrivenStepUp {
+			allowSmallStep = true
+		}
+	}
+	if delta > 0 && delta < 15 && rel < 0.04 && !allowSmallStep {
 		apply = false
 		tags = append(tags, "hold-small")
 	}
@@ -5304,6 +5315,9 @@ func formatAutofeeTags(d *decision) string {
 
 func buildAutofeePrediction(outRatio float64, marginPpm7d int, target int, localPpm int, newPpm int, fwdCount int,
 	negMarginGlobal bool, discoveryHit bool, cooldownRemainingHours float64) (string, int) {
+	if target == localPpm && newPpm == localPpm {
+		return "stable", 0
+	}
 	if discoveryHit && newPpm < localPpm {
 		return "discovery_fast", 0
 	}
