@@ -228,6 +228,11 @@ type AutofeeResultItem = {
   htlc_policy_hot?: number
   htlc_forward_hot?: number
   htlc_sample_low?: number
+  reversal_blocked?: number
+  reversal_confirmed?: number
+  downcap_general?: number
+  downcap_low_sample?: number
+  floor_relax_applied?: number
   htlc_attempts_total?: number
   htlc_link_fails_total?: number
   htlc_forward_fails_total?: number
@@ -954,6 +959,11 @@ export default function LightningOps() {
       `htlc_policy_hot ${item.htlc_policy_hot ?? 0}`,
       `htlc_forward_hot ${item.htlc_forward_hot ?? 0}`,
       `htlc_low_sample ${item.htlc_sample_low ?? 0}`,
+      `reversal_blocked ${item.reversal_blocked ?? 0}`,
+      `reversal_confirmed ${item.reversal_confirmed ?? 0}`,
+      `downcap_general ${item.downcap_general ?? 0}`,
+      `downcap_low_sample ${item.downcap_low_sample ?? 0}`,
+      `floor_relax ${item.floor_relax_applied ?? 0}`,
       `htlc_window ${(item.htlc_window_min ?? 0)}m`
     ]
     if (

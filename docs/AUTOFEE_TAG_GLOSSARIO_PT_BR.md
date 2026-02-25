@@ -23,6 +23,10 @@ Notas:
 - `stepcap-lock`: alvo pedia mudanca, mas o limite de passo segurou em `same-ppm`.
 - `floor-lock`: fee final ficou travada no floor.
 - `floor-relax-stall`: floor foi relaxado por estagnacao para destravar convergencia.
+- `reversal-guard`: primeira tentativa de inverter direcao foi bloqueada (histerese).
+- `reversal-confirmed`: inversao de direcao liberada apos rounds de confirmacao.
+- `downcap-general`: limitador geral de queda por rodada foi aplicado (queda mais conservadora).
+- `htlc-low-sample-downcap`: limitador mais restrito de queda aplicado por amostra HTLC baixa.
 - `hold-small`: mudanca muito pequena foi ignorada para evitar churn.
 - `same-ppm`: rodada terminou sem mudanca de fee.
 - `cooldown`: mudanca bloqueada por janela de cooldown.

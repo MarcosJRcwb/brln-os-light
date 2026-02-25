@@ -305,7 +305,7 @@ Data windows and fallback rules:
 HTLC signal behavior:
 - Signal window follows cadence: `max(run_interval, 60m)`.
 - Sample/failure thresholds are auto-scaled by node size + node liquidity class.
-- Summary line shows: `htlc_liq_hot`, `htlc_policy_hot`, `htlc_forward_hot`, `htlc_low_sample`, `htlc_window`.
+- Summary line shows: `htlc_liq_hot`, `htlc_policy_hot`, `htlc_forward_hot`, `htlc_low_sample`, `reversal_blocked`, `reversal_confirmed`, `downcap_general`, `downcap_low_sample`, `floor_relax`, `htlc_window`.
 - Per-channel line may show: `htlc<window>m a=<attempts> p=<policy_fails> l=<liquidity_fails> f=<forward_fails> u=<unclassified>`.
 
 Automatic calibration:
@@ -326,7 +326,7 @@ Tag glossary (Autofee Results):
 - Channel role and trend:
 - `sink`, `source`, `router`, `unknown`, `trend-up`, `trend-down`, `trend-flat`.
 - Movement controls:
-- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
+- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `reversal-guard`, `reversal-confirmed`, `downcap-general`, `htlc-low-sample-downcap`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
 - Profit and margin controls:
 - `neg-margin`, `negm+X%`, `no-down-low`, `no-down-neg-margin`, `global-neg-lock`, `lock-skip-no-chan-rebal`, `lock-skip-sink-profit`, `profit-protect-lock`, `profit-protect-relax`.
 - Outrate/floor controls:

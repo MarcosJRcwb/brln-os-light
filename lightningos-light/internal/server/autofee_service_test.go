@@ -346,3 +346,31 @@ func TestCapDownMoveForLowHTLCSample(t *testing.T) {
 		t.Fatalf("expected unchanged value when sample is not low: got %d want 850", unchanged)
 	}
 }
+
+func TestCapDownMoveGeneral(t *testing.T) {
+	localPpm := 1000
+
+	capped, clipped := capDownMoveGeneral(localPpm, 850, false)
+	if !clipped {
+		t.Fatalf("expected clipping for large general drop")
+	}
+	if capped != 920 {
+		t.Fatalf("unexpected clipped value: got %d want 920", capped)
+	}
+
+	unchanged, clipped := capDownMoveGeneral(localPpm, 950, false)
+	if clipped {
+		t.Fatalf("did not expect clipping for small drop")
+	}
+	if unchanged != 950 {
+		t.Fatalf("expected unchanged value for small drop: got %d want 950", unchanged)
+	}
+
+	unchanged, clipped = capDownMoveGeneral(localPpm, 850, true)
+	if clipped {
+		t.Fatalf("did not expect general clipping when htlc sample low cap is active")
+	}
+	if unchanged != 850 {
+		t.Fatalf("expected unchanged value when htlc sample low cap is active: got %d want 850", unchanged)
+	}
+}

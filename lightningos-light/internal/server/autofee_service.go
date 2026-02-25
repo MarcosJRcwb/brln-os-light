@@ -109,6 +109,7 @@ const (
 	floorDrivenSmallUpMinStepPpm        = 10
 	reversalConfirmMinRounds            = 2
 	htlcLowSampleMaxDownFrac            = 0.05
+	generalMaxDownFrac                  = 0.08
 )
 
 func normalizeRebalCostMode(value string) string {
@@ -221,6 +222,11 @@ type autofeeLogItem struct {
 	HTLCPolicyHot            int      `json:"htlc_policy_hot,omitempty"`
 	HTLCForwardHot           int      `json:"htlc_forward_hot,omitempty"`
 	HTLCSampleLow            int      `json:"htlc_sample_low,omitempty"`
+	ReversalBlocked          int      `json:"reversal_blocked,omitempty"`
+	ReversalConfirmed        int      `json:"reversal_confirmed,omitempty"`
+	DowncapGeneral           int      `json:"downcap_general,omitempty"`
+	DowncapLowSample         int      `json:"downcap_low_sample,omitempty"`
+	FloorRelaxApplied        int      `json:"floor_relax_applied,omitempty"`
 	HTLCAttemptsTotal        int      `json:"htlc_attempts_total,omitempty"`
 	HTLCLinkFailsTotal       int      `json:"htlc_link_fails_total,omitempty"`
 	HTLCForwardFailsTotal    int      `json:"htlc_forward_fails_total,omitempty"`
@@ -1510,6 +1516,11 @@ type autofeeRunSummary struct {
 	htlcPolicyHot         int
 	htlcForwardHot        int
 	htlcSampleLow         int
+	reversalBlocked       int
+	reversalConfirmed     int
+	downcapGeneral        int
+	downcapLowSample      int
+	floorRelaxApplied     int
 	htlcAttemptsTotal     int
 	htlcLinkFailsTotal    int
 	htlcForwardFailsTotal int
@@ -1563,6 +1574,16 @@ func (s *autofeeRunSummary) addTags(tags []string) {
 			s.htlcForwardHot++
 		case "htlc-sample-low":
 			s.htlcSampleLow++
+		case "reversal-guard":
+			s.reversalBlocked++
+		case "reversal-confirmed":
+			s.reversalConfirmed++
+		case "downcap-general":
+			s.downcapGeneral++
+		case "htlc-low-sample-downcap":
+			s.downcapLowSample++
+		case "floor-relax-stall", "stagnation-floor-relax", "no-signal-floor-relax":
+			s.floorRelaxApplied++
 		}
 	}
 }
@@ -1938,11 +1959,13 @@ func (e *autofeeEngine) Execute(ctx context.Context, dryRun bool, reason string)
 	}
 
 	summaryText := fmt.Sprintf(
-		"📊 up %d | down %d | flat %d | cooldown %d | small %d | same %d | disabled %d | inactive %d | inb_disc %d | super_source %d | htlc_liq_hot %d | htlc_policy_hot %d | htlc_forward_hot %d | htlc_low_sample %d | htlc_window %dm | htlc_min a>=%d p>=%d l>=%d f>=%d | htlc_rate p>=%.1f%% l>=%.1f%% f>=%.1f%% | htlc_global c×%.2f r×%.2f | htlc_events link=%d forward=%d other=%d | htlc_classified %d/%d | htlc_unclassified %d",
+		"📊 up %d | down %d | flat %d | cooldown %d | small %d | same %d | disabled %d | inactive %d | inb_disc %d | super_source %d | htlc_liq_hot %d | htlc_policy_hot %d | htlc_forward_hot %d | htlc_low_sample %d | reversal_blocked %d | reversal_confirmed %d | downcap_general %d | downcap_low_sample %d | floor_relax %d | htlc_window %dm | htlc_min a>=%d p>=%d l>=%d f>=%d | htlc_rate p>=%.1f%% l>=%.1f%% f>=%.1f%% | htlc_global c×%.2f r×%.2f | htlc_events link=%d forward=%d other=%d | htlc_classified %d/%d | htlc_unclassified %d",
 		summary.changedUp, summary.changedDown, summary.kept,
 		summary.skippedCooldown, summary.skippedSmall, summary.skippedSame,
 		summary.disabled, summary.inactive, summary.inboundDiscount, summary.superSource,
-		summary.htlcLiqHot, summary.htlcPolicyHot, summary.htlcForwardHot, summary.htlcSampleLow, summary.htlcWindowMin,
+		summary.htlcLiqHot, summary.htlcPolicyHot, summary.htlcForwardHot, summary.htlcSampleLow,
+		summary.reversalBlocked, summary.reversalConfirmed, summary.downcapGeneral, summary.downcapLowSample, summary.floorRelaxApplied,
+		summary.htlcWindowMin,
 		summary.htlcMinAttempts, summary.htlcMinPolicyFails, summary.htlcMinLiquidityFails, summary.htlcMinForwardFails,
 		summary.htlcPolicyRateMin*100, summary.htlcLiquidityRateMin*100,
 		summary.htlcForwardRateMin*100,
@@ -1977,6 +2000,11 @@ func (e *autofeeEngine) Execute(ctx context.Context, dryRun bool, reason string)
 			HTLCPolicyHot:            summary.htlcPolicyHot,
 			HTLCForwardHot:           summary.htlcForwardHot,
 			HTLCSampleLow:            summary.htlcSampleLow,
+			ReversalBlocked:          summary.reversalBlocked,
+			ReversalConfirmed:        summary.reversalConfirmed,
+			DowncapGeneral:           summary.downcapGeneral,
+			DowncapLowSample:         summary.downcapLowSample,
+			FloorRelaxApplied:        summary.floorRelaxApplied,
 			HTLCAttemptsTotal:        summary.htlcAttemptsTotal,
 			HTLCLinkFailsTotal:       summary.htlcLinkFailsTotal,
 			HTLCForwardFailsTotal:    summary.htlcForwardFailsTotal,
@@ -2628,6 +2656,21 @@ func capDownMoveForLowHTLCSample(localPpm int, nextPpm int, htlcSampleLow bool) 
 		return nextPpm, false
 	}
 	maxDownPpm := int(math.Round(float64(localPpm) * htlcLowSampleMaxDownFrac))
+	if maxDownPpm < 1 {
+		maxDownPpm = 1
+	}
+	minAllowed := localPpm - maxDownPpm
+	if nextPpm < minAllowed {
+		return minAllowed, true
+	}
+	return nextPpm, false
+}
+
+func capDownMoveGeneral(localPpm int, nextPpm int, htlcSampleLow bool) (int, bool) {
+	if htlcSampleLow || localPpm <= 0 || nextPpm >= localPpm {
+		return nextPpm, false
+	}
+	maxDownPpm := int(math.Round(float64(localPpm) * generalMaxDownFrac))
 	if maxDownPpm < 1 {
 		maxDownPpm = 1
 	}
@@ -4522,6 +4565,10 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 			tags = append(tags, "surge-hold-lock")
 		}
 	}
+	if adjusted, clipped := capDownMoveGeneral(localPpm, finalPpm, htlcSampleLow); clipped {
+		finalPpm = adjusted
+		tags = append(tags, "downcap-general")
+	}
 	if adjusted, clipped := capDownMoveForLowHTLCSample(localPpm, finalPpm, htlcSampleLow); clipped {
 		finalPpm = adjusted
 		tags = append(tags, "htlc-low-sample-downcap")
@@ -5360,6 +5407,14 @@ func formatAutofeeTags(d *decision) string {
 			add("🧱floor-lock")
 		case t == "floor-relax-stall":
 			add("🧯floor-relax")
+		case t == "reversal-guard":
+			add("↩️reversal-guard")
+		case t == "reversal-confirmed":
+			add("↩️reversal-confirmed")
+		case t == "downcap-general":
+			add("📉downcap-general")
+		case t == "htlc-low-sample-downcap":
+			add("📉htlc-low-sample-downcap")
 		case t == "global-neg-lock":
 			add("🛡️global-neg-lock")
 		case t == "lock-skip-no-chan-rebal":

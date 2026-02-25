@@ -305,7 +305,7 @@ Janelas de dados e regras de fallback:
 Comportamento de sinais HTLC:
 - Janela de sinal segue a cadencia: `max(run_interval, 60m)`.
 - Limites minimos de amostra/falha sao autoescalados por tamanho do node e classe de liquidez.
-- Linha de resumo mostra: `htlc_liq_hot`, `htlc_policy_hot`, `htlc_forward_hot`, `htlc_low_sample`, `htlc_window`.
+- Linha de resumo mostra: `htlc_liq_hot`, `htlc_policy_hot`, `htlc_forward_hot`, `htlc_low_sample`, `reversal_blocked`, `reversal_confirmed`, `downcap_general`, `downcap_low_sample`, `floor_relax`, `htlc_window`.
 - Linha por canal pode mostrar: `htlc<window>m a=<attempts> p=<policy_fails> l=<liquidity_fails> f=<forward_fails> u=<unclassified>`.
 
 Calibracao automatica:
@@ -326,7 +326,7 @@ Glossario de tags (Autofee Results):
 - Papel do canal e tendencia:
 - `sink`, `source`, `router`, `unknown`, `trend-up`, `trend-down`, `trend-flat`.
 - Controles de movimento:
-- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
+- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `reversal-guard`, `reversal-confirmed`, `downcap-general`, `htlc-low-sample-downcap`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
 - Controles de lucro e margem:
 - `neg-margin`, `negm+X%`, `no-down-low`, `no-down-neg-margin`, `global-neg-lock`, `lock-skip-no-chan-rebal`, `lock-skip-sink-profit`, `profit-protect-lock`, `profit-protect-relax`.
 - Floors/anchors de mercado:

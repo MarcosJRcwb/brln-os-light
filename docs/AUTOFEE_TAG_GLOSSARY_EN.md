@@ -23,6 +23,10 @@ Notes:
 - `stepcap-lock`: target wanted a move, but step cap kept `same-ppm`.
 - `floor-lock`: final fee is pinned at floor.
 - `floor-relax-stall`: floor was relaxed under stall logic to unlock convergence.
+- `reversal-guard`: first opposite-direction move was blocked (hysteresis guard).
+- `reversal-confirmed`: opposite-direction move was allowed after confirmation rounds.
+- `downcap-general`: general per-round downward cap was applied (conservative drop limiter).
+- `htlc-low-sample-downcap`: stricter downward cap applied because HTLC sample was low.
 - `hold-small`: tiny change skipped to avoid fee churn.
 - `same-ppm`: run ended with no fee change.
 - `cooldown`: change blocked by cooldown window.
