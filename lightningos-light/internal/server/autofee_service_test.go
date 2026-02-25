@@ -287,7 +287,7 @@ func TestApplyDirectionReversalGuard(t *testing.T) {
 	st := &autofeeChannelState{LastDir: "up"}
 	localPpm := 1000
 
-	next, tags := applyDirectionReversalGuard(st, localPpm, 900)
+	next, tags := applyDirectionReversalGuard(st, localPpm, 900, reversalConfirmMinRounds)
 	if next != localPpm {
 		t.Fatalf("expected first reversal attempt to be blocked: got %d want %d", next, localPpm)
 	}
@@ -298,7 +298,7 @@ func TestApplyDirectionReversalGuard(t *testing.T) {
 		t.Fatalf("expected reversal guard tag on first blocked reversal, got %+v", tags)
 	}
 
-	next, tags = applyDirectionReversalGuard(st, localPpm, 900)
+	next, tags = applyDirectionReversalGuard(st, localPpm, 900, reversalConfirmMinRounds)
 	if next != 900 {
 		t.Fatalf("expected second reversal attempt to pass guard: got %d want 900", next)
 	}
@@ -310,12 +310,56 @@ func TestApplyDirectionReversalGuard(t *testing.T) {
 	}
 
 	st.LastDir = "down"
-	next, _ = applyDirectionReversalGuard(st, localPpm, 930)
+	next, _ = applyDirectionReversalGuard(st, localPpm, 930, reversalConfirmMinRounds)
 	if next != 930 {
 		t.Fatalf("expected same-direction move to pass without guard: got %d want 930", next)
 	}
 	if st.ExplorerState.ReversalPendingRounds != 0 || st.ExplorerState.ReversalPendingDir != "" {
 		t.Fatalf("expected pending reversal state reset when direction aligns: rounds=%d dir=%q", st.ExplorerState.ReversalPendingRounds, st.ExplorerState.ReversalPendingDir)
+	}
+}
+
+func TestApplyDirectionReversalGuardFastTrack(t *testing.T) {
+	st := &autofeeChannelState{LastDir: "up"}
+	localPpm := 1000
+
+	next, tags := applyDirectionReversalGuard(st, localPpm, 900, 1)
+	if next != 900 {
+		t.Fatalf("expected first reversal attempt to pass with fast-track: got %d want 900", next)
+	}
+	if len(tags) < 2 || tags[0] != "reversal-confirmed" || tags[1] != "reversal-fasttrack" {
+		t.Fatalf("expected fast-track confirmation tags, got %+v", tags)
+	}
+}
+
+func TestReversalConfirmRoundsForChannel(t *testing.T) {
+	if got := reversalConfirmRoundsForChannel(nil, 80.0); got != reversalConfirmMinRounds {
+		t.Fatalf("unexpected rounds for nil state: got %d want %d", got, reversalConfirmMinRounds)
+	}
+
+	st := &autofeeChannelState{StalledRounds: reversalFastTrackStallMinRounds - 1}
+	if got := reversalConfirmRoundsForChannel(st, 80.0); got != reversalConfirmMinRounds {
+		t.Fatalf("unexpected rounds below stall threshold: got %d want %d", got, reversalConfirmMinRounds)
+	}
+
+	st.StalledRounds = reversalFastTrackStallMinRounds
+	if got := reversalConfirmRoundsForChannel(st, stallAlertGapFrac*100.0-0.1); got != reversalConfirmMinRounds {
+		t.Fatalf("unexpected rounds below gap threshold: got %d want %d", got, reversalConfirmMinRounds)
+	}
+	if got := reversalConfirmRoundsForChannel(st, stallAlertGapFrac*100.0); got != reversalConfirmMinRounds-1 {
+		t.Fatalf("unexpected rounds at fast-track threshold: got %d want %d", got, reversalConfirmMinRounds-1)
+	}
+}
+
+func TestShouldEmitStallAlert(t *testing.T) {
+	if shouldEmitStallAlert(stallAlertMinRounds-1, stallAlertGapFrac*100.0+5.0) {
+		t.Fatalf("did not expect stall alert below rounds threshold")
+	}
+	if shouldEmitStallAlert(stallAlertMinRounds, stallAlertGapFrac*100.0-0.1) {
+		t.Fatalf("did not expect stall alert below gap threshold")
+	}
+	if !shouldEmitStallAlert(stallAlertMinRounds, stallAlertGapFrac*100.0) {
+		t.Fatalf("expected stall alert at thresholds")
 	}
 }
 

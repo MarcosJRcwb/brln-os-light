@@ -106,8 +106,11 @@ const (
 	stallFloorRelaxMinStepPpm           = 15
 	stallFloorRelaxMaxStepPpm           = 180
 	stallFloorRelaxMinOutRatio          = 0.20
+	stallAlertMinRounds                 = 2
+	stallAlertGapFrac                   = 0.50
 	floorDrivenSmallUpMinStepPpm        = 10
 	reversalConfirmMinRounds            = 2
+	reversalFastTrackStallMinRounds     = 2
 	htlcLowSampleMaxDownFrac            = 0.05
 	generalMaxDownFrac                  = 0.08
 )
@@ -227,6 +230,7 @@ type autofeeLogItem struct {
 	DowncapGeneral           int      `json:"downcap_general,omitempty"`
 	DowncapLowSample         int      `json:"downcap_low_sample,omitempty"`
 	FloorRelaxApplied        int      `json:"floor_relax_applied,omitempty"`
+	StallAlert               int      `json:"stall_alert,omitempty"`
 	HTLCAttemptsTotal        int      `json:"htlc_attempts_total,omitempty"`
 	HTLCLinkFailsTotal       int      `json:"htlc_link_fails_total,omitempty"`
 	HTLCForwardFailsTotal    int      `json:"htlc_forward_fails_total,omitempty"`
@@ -1521,6 +1525,7 @@ type autofeeRunSummary struct {
 	downcapGeneral        int
 	downcapLowSample      int
 	floorRelaxApplied     int
+	stallAlert            int
 	htlcAttemptsTotal     int
 	htlcLinkFailsTotal    int
 	htlcForwardFailsTotal int
@@ -1584,6 +1589,8 @@ func (s *autofeeRunSummary) addTags(tags []string) {
 			s.downcapLowSample++
 		case "floor-relax-stall", "stagnation-floor-relax", "no-signal-floor-relax":
 			s.floorRelaxApplied++
+		case "stall-alert":
+			s.stallAlert++
 		}
 	}
 }
@@ -1959,12 +1966,12 @@ func (e *autofeeEngine) Execute(ctx context.Context, dryRun bool, reason string)
 	}
 
 	summaryText := fmt.Sprintf(
-		"📊 up %d | down %d | flat %d | cooldown %d | small %d | same %d | disabled %d | inactive %d | inb_disc %d | super_source %d | htlc_liq_hot %d | htlc_policy_hot %d | htlc_forward_hot %d | htlc_low_sample %d | reversal_blocked %d | reversal_confirmed %d | downcap_general %d | downcap_low_sample %d | floor_relax %d | htlc_window %dm | htlc_min a>=%d p>=%d l>=%d f>=%d | htlc_rate p>=%.1f%% l>=%.1f%% f>=%.1f%% | htlc_global c×%.2f r×%.2f | htlc_events link=%d forward=%d other=%d | htlc_classified %d/%d | htlc_unclassified %d",
+		"📊 up %d | down %d | flat %d | cooldown %d | small %d | same %d | disabled %d | inactive %d | inb_disc %d | super_source %d | htlc_liq_hot %d | htlc_policy_hot %d | htlc_forward_hot %d | htlc_low_sample %d | reversal_blocked %d | reversal_confirmed %d | downcap_general %d | downcap_low_sample %d | floor_relax %d | stall_alert %d | htlc_window %dm | htlc_min a>=%d p>=%d l>=%d f>=%d | htlc_rate p>=%.1f%% l>=%.1f%% f>=%.1f%% | htlc_global c×%.2f r×%.2f | htlc_events link=%d forward=%d other=%d | htlc_classified %d/%d | htlc_unclassified %d",
 		summary.changedUp, summary.changedDown, summary.kept,
 		summary.skippedCooldown, summary.skippedSmall, summary.skippedSame,
 		summary.disabled, summary.inactive, summary.inboundDiscount, summary.superSource,
 		summary.htlcLiqHot, summary.htlcPolicyHot, summary.htlcForwardHot, summary.htlcSampleLow,
-		summary.reversalBlocked, summary.reversalConfirmed, summary.downcapGeneral, summary.downcapLowSample, summary.floorRelaxApplied,
+		summary.reversalBlocked, summary.reversalConfirmed, summary.downcapGeneral, summary.downcapLowSample, summary.floorRelaxApplied, summary.stallAlert,
 		summary.htlcWindowMin,
 		summary.htlcMinAttempts, summary.htlcMinPolicyFails, summary.htlcMinLiquidityFails, summary.htlcMinForwardFails,
 		summary.htlcPolicyRateMin*100, summary.htlcLiquidityRateMin*100,
@@ -2005,6 +2012,7 @@ func (e *autofeeEngine) Execute(ctx context.Context, dryRun bool, reason string)
 			DowncapGeneral:           summary.downcapGeneral,
 			DowncapLowSample:         summary.downcapLowSample,
 			FloorRelaxApplied:        summary.floorRelaxApplied,
+			StallAlert:               summary.stallAlert,
 			HTLCAttemptsTotal:        summary.htlcAttemptsTotal,
 			HTLCLinkFailsTotal:       summary.htlcLinkFailsTotal,
 			HTLCForwardFailsTotal:    summary.htlcForwardFailsTotal,
@@ -2621,9 +2629,36 @@ func directionFromMove(localPpm int, nextPpm int) string {
 	}
 }
 
-func applyDirectionReversalGuard(st *autofeeChannelState, localPpm int, nextPpm int) (int, []string) {
+func calcTargetGapPct(localPpm int, targetPpm int) float64 {
+	if localPpm <= 0 || targetPpm == localPpm {
+		return 0
+	}
+	return math.Abs(float64(targetPpm-localPpm)) / float64(localPpm) * 100.0
+}
+
+func shouldEmitStallAlert(stalledRounds int, targetGapPct float64) bool {
+	return stalledRounds >= stallAlertMinRounds && targetGapPct >= (stallAlertGapFrac*100.0)
+}
+
+func reversalConfirmRoundsForChannel(st *autofeeChannelState, targetGapPct float64) int {
+	confirmRounds := reversalConfirmMinRounds
+	if st != nil &&
+		st.StalledRounds >= reversalFastTrackStallMinRounds &&
+		targetGapPct >= (stallAlertGapFrac*100.0) {
+		confirmRounds--
+	}
+	if confirmRounds < 1 {
+		confirmRounds = 1
+	}
+	return confirmRounds
+}
+
+func applyDirectionReversalGuard(st *autofeeChannelState, localPpm int, nextPpm int, confirmMinRounds int) (int, []string) {
 	if st == nil {
 		return nextPpm, nil
+	}
+	if confirmMinRounds < 1 {
+		confirmMinRounds = 1
 	}
 	proposedDir := directionFromMove(localPpm, nextPpm)
 	if proposedDir == "" {
@@ -2644,10 +2679,13 @@ func applyDirectionReversalGuard(st *autofeeChannelState, localPpm int, nextPpm 
 		st.ExplorerState.ReversalPendingRounds++
 	}
 
-	if st.ExplorerState.ReversalPendingRounds < reversalConfirmMinRounds {
+	if st.ExplorerState.ReversalPendingRounds < confirmMinRounds {
 		return localPpm, []string{"reversal-guard", fmt.Sprintf("reversal-pending-r%d", st.ExplorerState.ReversalPendingRounds)}
 	}
 
+	if confirmMinRounds < reversalConfirmMinRounds {
+		return nextPpm, []string{"reversal-confirmed", "reversal-fasttrack"}
+	}
 	return nextPpm, []string{"reversal-confirmed"}
 }
 
@@ -4573,7 +4611,10 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 		finalPpm = adjusted
 		tags = append(tags, "htlc-low-sample-downcap")
 	}
-	if guardedPpm, reversalTags := applyDirectionReversalGuard(st, localPpm, finalPpm); true {
+	targetGapPpm := target - localPpm
+	targetGapPct := calcTargetGapPct(localPpm, target)
+	reversalConfirmRounds := reversalConfirmRoundsForChannel(st, targetGapPct)
+	if guardedPpm, reversalTags := applyDirectionReversalGuard(st, localPpm, finalPpm, reversalConfirmRounds); true {
 		finalPpm = guardedPpm
 		if len(reversalTags) > 0 {
 			tags = append(tags, reversalTags...)
@@ -4670,6 +4711,9 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	} else if target == localPpm {
 		st.StalledRounds = 0
 	}
+	if finalPpm == localPpm && target != localPpm && shouldEmitStallAlert(st.StalledRounds, targetGapPct) {
+		tags = append(tags, "stall-alert")
+	}
 	if apply && finalPpm != localPpm {
 		st.LastTs = e.now
 		if finalPpm > localPpm {
@@ -4681,11 +4725,6 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 
 	if explorerActive && finalPpm < localPpm {
 		st.ExplorerState.Rounds++
-	}
-	targetGapPpm := target - localPpm
-	targetGapPct := 0.0
-	if localPpm > 0 && target != localPpm {
-		targetGapPct = math.Abs(float64(targetGapPpm)) / float64(localPpm) * 100.0
 	}
 	hoursSinceLastChange := 0.0
 	if !st.LastTs.IsZero() {
@@ -5411,10 +5450,14 @@ func formatAutofeeTags(d *decision) string {
 			add("↩️reversal-guard")
 		case t == "reversal-confirmed":
 			add("↩️reversal-confirmed")
+		case t == "reversal-fasttrack":
+			add("↩️reversal-fasttrack")
 		case t == "downcap-general":
 			add("📉downcap-general")
 		case t == "htlc-low-sample-downcap":
 			add("📉htlc-low-sample-downcap")
+		case t == "stall-alert":
+			add("🚨stall-alert")
 		case t == "global-neg-lock":
 			add("🛡️global-neg-lock")
 		case t == "lock-skip-no-chan-rebal":

@@ -233,6 +233,7 @@ type AutofeeResultItem = {
   downcap_general?: number
   downcap_low_sample?: number
   floor_relax_applied?: number
+  stall_alert?: number
   htlc_attempts_total?: number
   htlc_link_fails_total?: number
   htlc_forward_fails_total?: number
@@ -429,6 +430,7 @@ const autofeeHistoryRelaxTagSet = new Set([
   'explorer',
   'cooldown-skip',
   'floor-relax-stall',
+  'stall-alert',
   'extreme-drain',
   'extreme-drain-turbo',
   'htlc-step-boost',
@@ -459,6 +461,8 @@ const formatAutofeeHistoryTag = (tag: string) => {
   if (tag === 'explorer') return '🧭 explorer'
   if (tag === 'cooldown-skip') return '🧭 skip-cooldown'
   if (tag === 'floor-relax-stall') return '🧯 floor-relax'
+  if (tag === 'reversal-fasttrack') return '↩️ reversal-fasttrack'
+  if (tag === 'stall-alert') return '🚨 stall-alert'
   if (tag === 'extreme-drain') return '⚡ extreme'
   if (tag === 'extreme-drain-turbo') return '⚡ turbo'
   if (tag === 'htlc-step-boost') return '⚡ htlc-step'
@@ -964,6 +968,7 @@ export default function LightningOps() {
       `downcap_general ${item.downcap_general ?? 0}`,
       `downcap_low_sample ${item.downcap_low_sample ?? 0}`,
       `floor_relax ${item.floor_relax_applied ?? 0}`,
+      `stall_alert ${item.stall_alert ?? 0}`,
       `htlc_window ${(item.htlc_window_min ?? 0)}m`
     ]
     if (
@@ -1178,6 +1183,10 @@ export default function LightningOps() {
         add('🧱sink-floor')
       } else if (tag === 'floor-relax-stall') {
         add('🧯floor-relax')
+      } else if (tag === 'reversal-fasttrack') {
+        add('↩️reversal-fasttrack')
+      } else if (tag === 'stall-alert') {
+        add('🚨stall-alert')
       } else if (tag === 'trend-up') {
         add('📈trend-up')
       } else if (tag === 'trend-down') {
