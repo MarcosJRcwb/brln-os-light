@@ -1465,6 +1465,8 @@
         },
         "effectiveness": "Effectiveness (7d)",
         "roi": "ROI 7d: {{value}}",
+        "paybackGroupRebalanced": "Rebalanced channels (7d)",
+        "paybackGroupAll": "All channels (7d)",
         "paybackRevenue": "Payback routed: {{value}}",
         "paybackRevenueAll": "Payback routed (all): {{value}}",
         "paybackRevenueRebalanced": "Payback routed (rebalanced channels): {{value}}",
