@@ -118,12 +118,18 @@
     "copyLndgPassword": "Copy LNDg admin password",
     "defaultAccess": "Default access: {{access}}",
     "defaultPort": "Default port: {{port}}",
+    "filters": {
+      "all": "All",
+      "installed": "Installed",
+      "notInstalled": "Not installed"
+    },
     "install": "Install",
     "installing": "Installing...",
     "internal": "Internal",
     "loadFailed": "Failed to load apps.",
     "loadingApps": "Loading apps...",
     "noApps": "No apps available yet.",
+    "noAppsForFilter": "No apps match the selected filter.",
     "resetAdminPassword": "Reset admin password",
     "resetFailed": "Reset failed.",
     "resetStoredPassword": "Reset to stored admin password",
