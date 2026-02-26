@@ -122,9 +122,9 @@ on conflict (report_date) do update set
   payment_count = excluded.payment_count,
   routed_volume_sats = excluded.routed_volume_sats,
   routed_volume_msat = excluded.routed_volume_msat,
-  onchain_balance_sats = excluded.onchain_balance_sats,
-  lightning_balance_sats = excluded.lightning_balance_sats,
-  total_balance_sats = excluded.total_balance_sats,
+  onchain_balance_sats = coalesce(excluded.onchain_balance_sats, reports_daily.onchain_balance_sats),
+  lightning_balance_sats = coalesce(excluded.lightning_balance_sats, reports_daily.lightning_balance_sats),
+  total_balance_sats = coalesce(excluded.total_balance_sats, reports_daily.total_balance_sats),
   updated_at = now()
 `
 

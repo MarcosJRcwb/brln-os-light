@@ -34,6 +34,15 @@ func TestBuildUpsertDaily(t *testing.T) {
   if !strings.Contains(query, "updated_at = now()") {
     t.Fatalf("expected updated_at update")
   }
+  if !strings.Contains(query, "onchain_balance_sats = coalesce(excluded.onchain_balance_sats, reports_daily.onchain_balance_sats)") {
+    t.Fatalf("expected onchain balance coalesce on upsert")
+  }
+  if !strings.Contains(query, "lightning_balance_sats = coalesce(excluded.lightning_balance_sats, reports_daily.lightning_balance_sats)") {
+    t.Fatalf("expected lightning balance coalesce on upsert")
+  }
+  if !strings.Contains(query, "total_balance_sats = coalesce(excluded.total_balance_sats, reports_daily.total_balance_sats)") {
+    t.Fatalf("expected total balance coalesce on upsert")
+  }
   if len(args) != 17 {
     t.Fatalf("expected 17 args, got %d", len(args))
   }
