@@ -691,6 +691,7 @@ func (n *Notifier) reconcileRebalance(ctx context.Context, paymentHash string) {
   var payID int64
   var payFee int64
   var payFeeMsat int64
+  var pay *lnrpc.Payment
   err = tx.QueryRow(ctx, `
 select id, fee_sat, fee_msat from notifications
 where payment_hash=$1 and type='lightning' and action='sent' and status='SUCCEEDED'
@@ -703,12 +704,18 @@ order by occurred_at desc limit 1`, normalized).Scan(&payID, &payFee, &payFeeMsa
   }
   if payFeeMsat == 0 {
     feeCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-    if pay, err := n.lookupPaymentByHash(feeCtx, normalized); err == nil && pay != nil {
+    if lookup, lookupErr := n.lookupPaymentByHash(feeCtx, normalized); lookupErr == nil && lookup != nil {
+      pay = lookup
       if feeMsat := paymentFeeMsat(pay); feeMsat != 0 {
         payFeeMsat = feeMsat
         payFee = feeMsat / 1000
       }
     }
+    cancel()
+  }
+  if pay == nil {
+    lookupCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+    pay, _ = n.lookupPaymentByHash(lookupCtx, normalized)
     cancel()
   }
 
@@ -728,6 +735,13 @@ order by occurred_at desc limit 1`, normalized).Scan(&invID, &invAmount, &invMem
   if !invMemo.Valid {
     memoValue = nil
   }
+  rebalanceMeta := Notification{}
+  if pay != nil {
+    rebalanceMeta = n.rebalanceEvent(ctx, pay, invAt)
+    if memoValue == nil {
+      memoValue = nullableString(rebalanceMeta.Memo)
+    }
+  }
 
   row := tx.QueryRow(ctx, `
 update notifications
@@ -739,11 +753,20 @@ set type='rebalance',
   fee_sat=$3,
   fee_msat=$4,
   memo=$5,
-  occurred_at=$6
+  occurred_at=$6,
+  rebal_source_chan_id=$7,
+  rebal_target_chan_id=$8,
+  rebal_source_point=$9,
+  rebal_target_point=$10,
+  rebal_source_pubkey=$11,
+  rebal_target_pubkey=$12
 where id=$1
 returning id, occurred_at, type, action, direction, status, amount_sat, fee_sat,
   fee_msat, peer_pubkey, peer_alias, channel_id, channel_point, txid, payment_hash, memo
-`, payID, invAmount, payFee, payFeeMsat, memoValue, invAt)
+`, payID, invAmount, payFee, payFeeMsat, memoValue, invAt,
+    nullableInt(rebalanceMeta.RebalSourceChanID), nullableInt(rebalanceMeta.RebalTargetChanID),
+    nullableString(rebalanceMeta.RebalSourcePoint), nullableString(rebalanceMeta.RebalTargetPoint),
+    nullableString(rebalanceMeta.RebalSourcePubkey), nullableString(rebalanceMeta.RebalTargetPubkey))
   updated, err := scanNotification(row)
   if err != nil {
     return

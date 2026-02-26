@@ -3633,97 +3633,91 @@ func (s *RebalanceService) loadLedger(ctx context.Context) (map[uint64]*channelL
 		return ledger, nil
 	}
 	rows, err := s.db.Query(ctx, `
-select channel_id, paid_liquidity_sats, paid_cost_sats, paid_revenue_sats,
-  last_rebalance_at, last_forward_at, last_unlock_at
-from rebalance_channel_ledger
+select occurred_at, type,
+  coalesce(rebal_target_chan_id, channel_id) as rebalance_channel_id,
+  channel_id as forward_channel_id,
+  amount_sat, fee_sat, fee_msat
+from notifications
+where (
+    type='rebalance'
+    and status in ('SETTLED', 'SUCCEEDED')
+    and coalesce(rebal_target_chan_id, channel_id) is not null
+  ) or (
+    type='forward'
+    and channel_id is not null
+  )
+order by occurred_at asc, id asc
 `)
 	if err != nil {
 		return ledger, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var channelID int64
-		var entry channelLedger
-		var lastRebalance pgtype.Timestamptz
-		var lastForward pgtype.Timestamptz
-		var lastUnlock pgtype.Timestamptz
-		if err := rows.Scan(&channelID, &entry.PaidLiquiditySat, &entry.PaidCostSat, &entry.PaidRevenueSat, &lastRebalance, &lastForward, &lastUnlock); err != nil {
+		var occurredAt time.Time
+		var typ string
+		var rebalanceChannelID pgtype.Int8
+		var forwardChannelID pgtype.Int8
+		var amountSat int64
+		var feeSat int64
+		var feeMsat int64
+		if err := rows.Scan(&occurredAt, &typ, &rebalanceChannelID, &forwardChannelID, &amountSat, &feeSat, &feeMsat); err != nil {
 			return ledger, err
 		}
-		entry.ChannelID = uint64(channelID)
-		if lastRebalance.Valid {
-			entry.LastRebalanceAt = lastRebalance.Time
+		if feeMsat == 0 && feeSat != 0 {
+			feeMsat = feeSat * 1000
 		}
-		if lastForward.Valid {
-			entry.LastForwardAt = lastForward.Time
+		if typ == "rebalance" {
+			if !rebalanceChannelID.Valid || rebalanceChannelID.Int64 == 0 {
+				continue
+			}
+			channelID := uint64(rebalanceChannelID.Int64)
+			// channel_id is stored as bigint (signed). When the original chan_id
+			// is a uint64 with the high bit set, scanning into int64 yields a
+			// negative value, but uint64(channelID) still maps back to the original
+			// chan_id.
+			entry, ok := ledger[channelID]
+			if !ok {
+				entry = &channelLedger{ChannelID: channelID}
+				ledger[channelID] = entry
+			}
+			if amountSat > 0 {
+				entry.PaidLiquiditySat += amountSat
+			}
+			if feeMsat > 0 {
+				entry.PaidCostSat += msatToSatCeil(feeMsat)
+			}
+			entry.LastRebalanceAt = occurredAt
+			if entry.LastForwardAt.IsZero() {
+				entry.LastForwardAt = occurredAt
+			}
+			continue
 		}
-		if lastUnlock.Valid {
-			entry.LastUnlockAt = lastUnlock.Time
+
+		if typ != "forward" || !forwardChannelID.Valid || forwardChannelID.Int64 == 0 {
+			continue
 		}
-		ledger[entry.ChannelID] = &entry
+		channelID := uint64(forwardChannelID.Int64)
+		entry, ok := ledger[channelID]
+		if !ok {
+			continue
+		}
+		if amountSat > 0 {
+			entry.PaidLiquiditySat -= amountSat
+			if entry.PaidLiquiditySat < 0 {
+				entry.PaidLiquiditySat = 0
+			}
+		}
+		if feeMsat > 0 {
+			entry.PaidRevenueSat += feeMsat / 1000
+		}
+		entry.LastForwardAt = occurredAt
 	}
 	return ledger, rows.Err()
 }
 
 func (s *RebalanceService) applyForwardDeltas(ctx context.Context, ledger map[uint64]*channelLedger) error {
-	if s.db == nil {
-		return nil
-	}
-	for _, entry := range ledger {
-		since := entry.LastForwardAt
-		if since.IsZero() {
-			since = entry.LastRebalanceAt
-		}
-		if since.IsZero() {
-			continue
-		}
-		rows, err := s.db.Query(ctx, `
-select occurred_at, amount_sat, fee_sat, fee_msat
-from notifications
-where type='forward' and channel_id=$1 and occurred_at > $2
-order by occurred_at asc`, int64(entry.ChannelID), since)
-		if err != nil {
-			return err
-		}
-		var updated bool
-		for rows.Next() {
-			var occurredAt time.Time
-			var amountSat int64
-			var feeSat int64
-			var feeMsat int64
-			if err := rows.Scan(&occurredAt, &amountSat, &feeSat, &feeMsat); err != nil {
-				rows.Close()
-				return err
-			}
-			if amountSat > 0 {
-				entry.PaidLiquiditySat -= amountSat
-				if entry.PaidLiquiditySat < 0 {
-					entry.PaidLiquiditySat = 0
-				}
-			}
-			if feeMsat == 0 && feeSat != 0 {
-				feeMsat = feeSat * 1000
-			}
-			if feeMsat > 0 {
-				entry.PaidRevenueSat += feeMsat / 1000
-			}
-			entry.LastForwardAt = occurredAt
-			updated = true
-		}
-		rows.Close()
-		if updated {
-			_, err := s.db.Exec(ctx, `
-update rebalance_channel_ledger
-set paid_liquidity_sats=$2,
-  paid_revenue_sats=$3,
-  last_forward_at=$4
-where channel_id=$1
-`, int64(entry.ChannelID), entry.PaidLiquiditySat, entry.PaidRevenueSat, entry.LastForwardAt)
-			if err != nil {
-				return err
-			}
-		}
-	}
+	// Ledger is now derived directly from notifications in loadLedger.
+	// Keep this as a no-op so existing call sites remain unchanged.
 	return nil
 }
 
@@ -3733,9 +3727,11 @@ func (s *RebalanceService) fetchChannelRevenue7d(ctx context.Context) (map[uint6
 		return revenue, nil
 	}
 	rows, err := s.db.Query(ctx, `
-select channel_id, coalesce(sum(fee_msat), 0)
+select channel_id, coalesce(sum(case when fee_msat > 0 then fee_msat else fee_sat * 1000 end), 0)
 from notifications
-where type='forward' and occurred_at >= now() - interval '7 days'
+where type='forward'
+  and occurred_at >= now() - interval '7 days'
+  and channel_id is not null
 group by channel_id`)
 	if err != nil {
 		return revenue, err
@@ -4038,6 +4034,37 @@ group by coalesce(rebal_target_chan_id, channel_id)
 	return costs, rows.Err()
 }
 
+func (s *RebalanceService) fetchPaybackTotals7d(ctx context.Context) (int64, int64, error) {
+	if s.db == nil {
+		return 0, 0, nil
+	}
+	var revenueMsat int64
+	var costMsat int64
+	err := s.db.QueryRow(ctx, `
+select
+  coalesce(sum(
+    case
+      when type='forward' then case when fee_msat > 0 then fee_msat else fee_sat * 1000 end
+      else 0
+    end
+  ), 0) as revenue_msat,
+  coalesce(sum(
+    case
+      when type='rebalance' and status in ('SETTLED', 'SUCCEEDED')
+        then case when fee_msat > 0 then fee_msat else fee_sat * 1000 end
+      else 0
+    end
+  ), 0) as cost_msat
+from notifications
+where occurred_at >= now() - interval '7 days'
+  and type in ('forward', 'rebalance')
+`).Scan(&revenueMsat, &costMsat)
+	if err != nil {
+		return 0, 0, err
+	}
+	return revenueMsat / 1000, msatToSatCeil(costMsat), nil
+}
+
 func (s *RebalanceService) markJobRunning(jobID int64) {
 	if s.db == nil || jobID <= 0 {
 		return
@@ -4108,12 +4135,7 @@ where report_date >= current_date - interval '6 days'
 	if cost > 0 {
 		roi = float64(revenue) / float64(cost)
 	}
-	_ = s.db.QueryRow(ctx, `
-select
-  coalesce(sum(paid_revenue_sats), 0),
-  coalesce(sum(paid_cost_sats), 0)
-from rebalance_channel_ledger
-`).Scan(&paybackRevenue, &paybackCost)
+	paybackRevenue, paybackCost, _ = s.fetchPaybackTotals7d(ctx)
 	if paybackCost > 0 {
 		paybackProgress = float64(paybackRevenue) / float64(paybackCost)
 	}
