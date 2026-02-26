@@ -84,29 +84,31 @@ type RebalanceConfig struct {
 }
 
 type RebalanceOverview struct {
-	AutoEnabled                bool                  `json:"auto_enabled"`
-	LastScanAt                 string                `json:"last_scan_at,omitempty"`
-	LastScanStatus             string                `json:"last_scan_status,omitempty"`
-	LastScanDetail             string                `json:"last_scan_detail,omitempty"`
-	LastScanCandidates         int                   `json:"last_scan_candidates"`
-	LastScanRemainingBudgetSat int64                 `json:"last_scan_remaining_budget_sat"`
-	LastScanReasons            map[string]int        `json:"last_scan_reasons,omitempty"`
-	LastScanTopScoreSat        int64                 `json:"last_scan_top_score_sat"`
-	LastScanProfitSkipped      int                   `json:"last_scan_profit_skipped"`
-	LastScanQueued             int                   `json:"last_scan_queued"`
-	LastScanSkipped            []RebalanceSkipDetail `json:"last_scan_skipped,omitempty"`
-	DailyBudgetSat             int64                 `json:"daily_budget_sat"`
-	DailySpentSat              int64                 `json:"daily_spent_sat"`
-	DailySpentAutoSat          int64                 `json:"daily_spent_auto_sat"`
-	DailySpentManualSat        int64                 `json:"daily_spent_manual_sat"`
-	LiveCostSat                int64                 `json:"live_cost_sat"`
-	Effectiveness7d            float64               `json:"effectiveness_7d"`
-	ROI7d                      float64               `json:"roi_7d"`
-	PaybackRevenueSat          int64                 `json:"payback_revenue_sat"`
-	PaybackCostSat             int64                 `json:"payback_cost_sat"`
-	PaybackProgress            float64               `json:"payback_progress"`
-	EligibleSources            int                   `json:"eligible_sources"`
-	TargetsNeeding             int                   `json:"targets_needing"`
+	AutoEnabled                 bool                  `json:"auto_enabled"`
+	LastScanAt                  string                `json:"last_scan_at,omitempty"`
+	LastScanStatus              string                `json:"last_scan_status,omitempty"`
+	LastScanDetail              string                `json:"last_scan_detail,omitempty"`
+	LastScanCandidates          int                   `json:"last_scan_candidates"`
+	LastScanRemainingBudgetSat  int64                 `json:"last_scan_remaining_budget_sat"`
+	LastScanReasons             map[string]int        `json:"last_scan_reasons,omitempty"`
+	LastScanTopScoreSat         int64                 `json:"last_scan_top_score_sat"`
+	LastScanProfitSkipped       int                   `json:"last_scan_profit_skipped"`
+	LastScanQueued              int                   `json:"last_scan_queued"`
+	LastScanSkipped             []RebalanceSkipDetail `json:"last_scan_skipped,omitempty"`
+	DailyBudgetSat              int64                 `json:"daily_budget_sat"`
+	DailySpentSat               int64                 `json:"daily_spent_sat"`
+	DailySpentAutoSat           int64                 `json:"daily_spent_auto_sat"`
+	DailySpentManualSat         int64                 `json:"daily_spent_manual_sat"`
+	LiveCostSat                 int64                 `json:"live_cost_sat"`
+	Effectiveness7d             float64               `json:"effectiveness_7d"`
+	ROI7d                       float64               `json:"roi_7d"`
+	PaybackRevenueSat           int64                 `json:"payback_revenue_sat"`
+	PaybackRevenueRebalancedSat int64                 `json:"payback_revenue_rebalanced_sat"`
+	PaybackCostSat              int64                 `json:"payback_cost_sat"`
+	PaybackProgress             float64               `json:"payback_progress"`
+	PaybackProgressRebalanced   float64               `json:"payback_progress_rebalanced"`
+	EligibleSources             int                   `json:"eligible_sources"`
+	TargetsNeeding              int                   `json:"targets_needing"`
 }
 
 type RebalanceSkipDetail struct {
@@ -230,6 +232,12 @@ type rebalanceCost7dStat struct {
 	FeeSat    int64
 	AmountSat int64
 	FeePpm    int64
+}
+
+type paybackTotals7d struct {
+	RevenueAllSat        int64
+	RevenueRebalancedSat int64
+	CostSat              int64
 }
 
 type manualRestartInfo struct {
@@ -4034,35 +4042,52 @@ group by coalesce(rebal_target_chan_id, channel_id)
 	return costs, rows.Err()
 }
 
-func (s *RebalanceService) fetchPaybackTotals7d(ctx context.Context) (int64, int64, error) {
+func (s *RebalanceService) fetchPaybackTotals7d(ctx context.Context) (paybackTotals7d, error) {
 	if s.db == nil {
-		return 0, 0, nil
+		return paybackTotals7d{}, nil
 	}
-	var revenueMsat int64
+	var revenueAllMsat int64
+	var revenueRebalancedMsat int64
 	var costMsat int64
 	err := s.db.QueryRow(ctx, `
+with rebalance_channels as (
+  select distinct coalesce(rebal_target_chan_id, channel_id) as channel_id
+  from notifications
+  where type='rebalance'
+    and status in ('SETTLED', 'SUCCEEDED')
+    and occurred_at >= now() - interval '7 days'
+    and coalesce(rebal_target_chan_id, channel_id) is not null
+),
+forward_fees as (
+  select channel_id, case when fee_msat > 0 then fee_msat else fee_sat * 1000 end as fee_msat
+  from notifications
+  where type='forward'
+    and occurred_at >= now() - interval '7 days'
+    and channel_id is not null
+)
 select
-  coalesce(sum(
-    case
-      when type='forward' then case when fee_msat > 0 then fee_msat else fee_sat * 1000 end
-      else 0
-    end
-  ), 0) as revenue_msat,
-  coalesce(sum(
-    case
-      when type='rebalance' and status in ('SETTLED', 'SUCCEEDED')
-        then case when fee_msat > 0 then fee_msat else fee_sat * 1000 end
-      else 0
-    end
+  coalesce((select sum(fee_msat) from forward_fees), 0) as revenue_all_msat,
+  coalesce((
+    select sum(f.fee_msat)
+    from forward_fees f
+    join rebalance_channels r on r.channel_id = f.channel_id
+  ), 0) as revenue_rebalanced_msat,
+  coalesce((
+    select sum(case when fee_msat > 0 then fee_msat else fee_sat * 1000 end)
+    from notifications
+    where type='rebalance'
+      and status in ('SETTLED', 'SUCCEEDED')
+      and occurred_at >= now() - interval '7 days'
   ), 0) as cost_msat
-from notifications
-where occurred_at >= now() - interval '7 days'
-  and type in ('forward', 'rebalance')
-`).Scan(&revenueMsat, &costMsat)
+`).Scan(&revenueAllMsat, &revenueRebalancedMsat, &costMsat)
 	if err != nil {
-		return 0, 0, err
+		return paybackTotals7d{}, err
 	}
-	return revenueMsat / 1000, msatToSatCeil(costMsat), nil
+	return paybackTotals7d{
+		RevenueAllSat:        revenueAllMsat / 1000,
+		RevenueRebalancedSat: revenueRebalancedMsat / 1000,
+		CostSat:              msatToSatCeil(costMsat),
+	}, nil
 }
 
 func (s *RebalanceService) markJobRunning(jobID int64) {
@@ -4109,8 +4134,10 @@ where type='rebalance' and occurred_at >= now() - interval '1 day'
 	effectiveness := 0.0
 	roi := 0.0
 	paybackRevenue := int64(0)
+	paybackRevenueRebalanced := int64(0)
 	paybackCost := int64(0)
 	paybackProgress := 0.0
+	paybackProgressRebalanced := 0.0
 	var successCount int64
 	var totalCount int64
 	_ = s.db.QueryRow(ctx, `
@@ -4135,9 +4162,14 @@ where report_date >= current_date - interval '6 days'
 	if cost > 0 {
 		roi = float64(revenue) / float64(cost)
 	}
-	paybackRevenue, paybackCost, _ = s.fetchPaybackTotals7d(ctx)
+	if totals, err := s.fetchPaybackTotals7d(ctx); err == nil {
+		paybackRevenue = totals.RevenueAllSat
+		paybackRevenueRebalanced = totals.RevenueRebalancedSat
+		paybackCost = totals.CostSat
+	}
 	if paybackCost > 0 {
 		paybackProgress = float64(paybackRevenue) / float64(paybackCost)
+		paybackProgressRebalanced = float64(paybackRevenueRebalanced) / float64(paybackCost)
 	}
 
 	eligibleSources := 0
@@ -4163,28 +4195,30 @@ where report_date >= current_date - interval '6 days'
 	s.mu.Unlock()
 
 	overview := RebalanceOverview{
-		AutoEnabled:                cfg.AutoEnabled,
-		DailyBudgetSat:             budget,
-		DailySpentSat:              spent,
-		DailySpentAutoSat:          spentAuto,
-		DailySpentManualSat:        spentManual,
-		LiveCostSat:                liveCost,
-		Effectiveness7d:            effectiveness,
-		ROI7d:                      roi,
-		PaybackRevenueSat:          paybackRevenue,
-		PaybackCostSat:             paybackCost,
-		PaybackProgress:            paybackProgress,
-		LastScanStatus:             lastScanStatus,
-		LastScanDetail:             lastScanDetail,
-		LastScanCandidates:         lastScanCandidates,
-		LastScanRemainingBudgetSat: lastScanRemainingBudgetSat,
-		LastScanReasons:            lastScanReasons,
-		LastScanTopScoreSat:        lastScanTopScore,
-		LastScanProfitSkipped:      lastScanProfitSkipped,
-		LastScanQueued:             lastScanQueued,
-		LastScanSkipped:            lastScanSkipped,
-		EligibleSources:            eligibleSources,
-		TargetsNeeding:             targetsNeeding,
+		AutoEnabled:                 cfg.AutoEnabled,
+		DailyBudgetSat:              budget,
+		DailySpentSat:               spent,
+		DailySpentAutoSat:           spentAuto,
+		DailySpentManualSat:         spentManual,
+		LiveCostSat:                 liveCost,
+		Effectiveness7d:             effectiveness,
+		ROI7d:                       roi,
+		PaybackRevenueSat:           paybackRevenue,
+		PaybackRevenueRebalancedSat: paybackRevenueRebalanced,
+		PaybackCostSat:              paybackCost,
+		PaybackProgress:             paybackProgress,
+		PaybackProgressRebalanced:   paybackProgressRebalanced,
+		LastScanStatus:              lastScanStatus,
+		LastScanDetail:              lastScanDetail,
+		LastScanCandidates:          lastScanCandidates,
+		LastScanRemainingBudgetSat:  lastScanRemainingBudgetSat,
+		LastScanReasons:             lastScanReasons,
+		LastScanTopScoreSat:         lastScanTopScore,
+		LastScanProfitSkipped:       lastScanProfitSkipped,
+		LastScanQueued:              lastScanQueued,
+		LastScanSkipped:             lastScanSkipped,
+		EligibleSources:             eligibleSources,
+		TargetsNeeding:              targetsNeeding,
 	}
 	if !lastScan.IsZero() {
 		overview.LastScanAt = lastScan.UTC().Format(time.RFC3339)

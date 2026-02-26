@@ -68,8 +68,10 @@ type RebalanceOverview = {
   effectiveness_7d: number
   roi_7d: number
   payback_revenue_sat: number
+  payback_revenue_rebalanced_sat: number
   payback_cost_sat: number
   payback_progress: number
+  payback_progress_rebalanced: number
 }
 
 type RebalanceScanSkip = {
@@ -940,13 +942,19 @@ export default function RebalanceCenter() {
             <p className="text-lg font-semibold text-fog">{formatPct(overview.effectiveness_7d * 100)}</p>
             <p className="text-xs text-fog/50">{t('rebalanceCenter.overview.roi', { value: overview.roi_7d.toFixed(2) })}</p>
             <p className="text-xs text-fog/50">
-              {t('rebalanceCenter.overview.paybackRevenue', { value: formatSats(overview.payback_revenue_sat || 0) })}
+              {t('rebalanceCenter.overview.paybackRevenueAll', { value: formatSats(overview.payback_revenue_sat || 0) })}
+            </p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.paybackRevenueRebalanced', { value: formatSats(overview.payback_revenue_rebalanced_sat || 0) })}
             </p>
             <p className="text-xs text-fog/50">
               {t('rebalanceCenter.overview.paybackCost', { value: formatSats(overview.payback_cost_sat || 0) })}
             </p>
             <p className="text-xs text-fog/50">
               {t('rebalanceCenter.overview.paybackProgress', { value: formatPct((overview.payback_progress || 0) * 100) })}
+            </p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.paybackProgressRebalanced', { value: formatPct((overview.payback_progress_rebalanced || 0) * 100) })}
             </p>
           </div>
             <div className="section-card space-y-2">
