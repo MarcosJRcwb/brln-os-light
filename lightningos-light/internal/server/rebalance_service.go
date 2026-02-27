@@ -556,6 +556,75 @@ func effectiveConfigForTarget(cfg RebalanceConfig, setting channelSetting) Rebal
 	return effective
 }
 
+func (s *RebalanceService) reconcileNewChannelDefaults(ctx context.Context, channels []lndclient.ChannelInfo, settings map[uint64]channelSetting, exclusions map[uint64]bool) {
+	if s.db == nil || len(channels) == 0 {
+		return
+	}
+
+	seeded, err := s.loadNewChannelExclusionSeeded(ctx)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Printf("rebalance channel defaults: seed state unavailable: %v", err)
+		}
+		return
+	}
+
+	seedReady := true
+	for _, ch := range channels {
+		if ch.ChannelID == 0 {
+			continue
+		}
+		if _, exists := settings[ch.ChannelID]; exists {
+			continue
+		}
+
+		_, err := s.db.Exec(ctx, `
+insert into rebalance_channel_settings (
+  channel_id, channel_point, target_outbound_pct, auto_enabled, manual_restart_enabled, use_default_econ_ratio, updated_at
+)
+values ($1,$2,$3,false,false,true,now())
+ on conflict (channel_id) do update set channel_point=excluded.channel_point, updated_at=now()
+`, int64(ch.ChannelID), ch.ChannelPoint, rebalanceDefaultTargetOutboundPct)
+		if err != nil {
+			seedReady = false
+			if s.logger != nil {
+				s.logger.Printf("rebalance channel defaults: failed to upsert settings for %d: %v", ch.ChannelID, err)
+			}
+			continue
+		}
+
+		settings[ch.ChannelID] = normalizeChannelSetting(channelSetting{
+			ChannelID:           ch.ChannelID,
+			ChannelPoint:        ch.ChannelPoint,
+			TargetOutboundPct:   rebalanceDefaultTargetOutboundPct,
+			UseDefaultEconRatio: true,
+		})
+
+		if !seeded || exclusions[ch.ChannelID] {
+			continue
+		}
+
+		_, err = s.db.Exec(ctx, `
+insert into rebalance_source_exclusions (channel_id, channel_point, reason)
+values ($1,$2,$3)
+ on conflict (channel_id) do update set channel_point=excluded.channel_point, reason=excluded.reason
+`, int64(ch.ChannelID), ch.ChannelPoint, "new_channel_default")
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Printf("rebalance channel defaults: failed to exclude channel %d: %v", ch.ChannelID, err)
+			}
+			continue
+		}
+		exclusions[ch.ChannelID] = true
+	}
+
+	if !seeded && seedReady {
+		if err := s.markNewChannelExclusionSeeded(ctx); err != nil && s.logger != nil {
+			s.logger.Printf("rebalance channel defaults: failed to mark seed state: %v", err)
+		}
+	}
+}
+
 func (s *RebalanceService) runManualRestartWatchLoop() {
 	interval := time.Duration(manualRestartCooldownSec) * time.Second
 	if interval <= 0 {
@@ -599,6 +668,7 @@ func (s *RebalanceService) runManualRestartWatch() {
 	if err != nil {
 		return
 	}
+	s.reconcileNewChannelDefaults(ctx, channels, settings, exclusions)
 
 	for _, ch := range channels {
 		setting := settings[ch.ChannelID]
@@ -652,6 +722,7 @@ func (s *RebalanceService) runAutoScan() {
 	if err != nil {
 		return
 	}
+	s.reconcileNewChannelDefaults(ctx, channels, settings, exclusions)
 	scanAt := time.Now()
 	scanStatus := "scanned"
 	scanDetail := ""
@@ -1093,6 +1164,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		s.finishJob(jobID, "failed", "lnd unavailable")
 		return
 	}
+	s.reconcileNewChannelDefaults(ctx, channels, settings, exclusions)
 
 	revenueByChannel, _ := s.fetchChannelRevenue7d(ctx)
 	costByChannel, _ := s.fetchChannelRebalanceCost7d(ctx)
@@ -2700,6 +2772,7 @@ func (s *RebalanceService) scheduleManualRestart(info manualRestartInfo) {
 	if err != nil {
 		return
 	}
+	s.reconcileNewChannelDefaults(restartCtx, channels, settings, exclusions)
 	var target lndclient.ChannelInfo
 	found := false
 	for _, ch := range channels {
@@ -3369,10 +3442,12 @@ end $$;
     add column if not exists attempt_timeout_sec integer not null default 20;
   alter table rebalance_config
     add column if not exists rebalance_timeout_sec integer not null default 600;
-  alter table rebalance_config
+ alter table rebalance_config
     add column if not exists manual_restart_watch boolean not null default false;
   alter table rebalance_config
     add column if not exists mc_half_life_sec bigint not null default 0;
+  alter table rebalance_config
+    add column if not exists new_channel_exclusion_seeded boolean not null default false;
 
   alter table if exists rebalance_channel_settings
     add column if not exists manual_restart_enabled boolean not null default false;
@@ -3613,6 +3688,33 @@ select channel_id, channel_point, target_outbound_pct, auto_enabled, manual_rest
 		settings[setting.ChannelID] = normalizeChannelSetting(setting)
 	}
 	return settings, rows.Err()
+}
+
+func (s *RebalanceService) loadNewChannelExclusionSeeded(ctx context.Context) (bool, error) {
+	if s.db == nil {
+		return false, errors.New("db unavailable")
+	}
+	var seeded bool
+	if err := s.db.QueryRow(ctx, `
+select new_channel_exclusion_seeded
+from rebalance_config
+where id=$1
+`, rebalanceConfigID).Scan(&seeded); err != nil {
+		return false, err
+	}
+	return seeded, nil
+}
+
+func (s *RebalanceService) markNewChannelExclusionSeeded(ctx context.Context) error {
+	if s.db == nil {
+		return errors.New("db unavailable")
+	}
+	_, err := s.db.Exec(ctx, `
+update rebalance_config
+set new_channel_exclusion_seeded=true, updated_at=now()
+where id=$1
+`, rebalanceConfigID)
+	return err
 }
 
 func (s *RebalanceService) loadExclusions(ctx context.Context) (map[uint64]bool, error) {
@@ -4242,6 +4344,7 @@ func (s *RebalanceService) Channels(ctx context.Context) ([]RebalanceChannel, er
 	if err != nil {
 		return nil, err
 	}
+	s.reconcileNewChannelDefaults(ctx, channels, settings, exclusions)
 	result := []RebalanceChannel{}
 	seenIDs := map[uint64]bool{}
 	seenPoints := map[string]bool{}
@@ -4278,6 +4381,7 @@ func (s *RebalanceService) computeEligibilityCounts(ctx context.Context, cfg Reb
 	if err != nil {
 		return 0, 0
 	}
+	s.reconcileNewChannelDefaults(ctx, channels, settings, exclusions)
 	revenueByChannel, _ := s.fetchChannelRevenue7d(ctx)
 	costByChannel, _ := s.fetchChannelRebalanceCost7d(ctx)
 
