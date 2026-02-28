@@ -1254,7 +1254,7 @@ func splitTelegramRoute(value string) (string, string, bool) {
 }
 
 func telegramRouteArrowEmoji() string {
-	return "➡️"
+	return "→"
 }
 
 func telegramTrimMemo(value string, max int) string {
