@@ -1152,11 +1152,29 @@ func telegramNotificationActionLabel(value string) string {
 }
 
 func telegramNotificationRoute(evt Notification) string {
-	peer := strings.TrimSpace(evt.PeerAlias)
-	if peer == "" {
-		peer = shortPubKey(evt.PeerPubkey)
+	route := strings.TrimSpace(evt.PeerAlias)
+	if route == "" {
+		route = shortPubKey(evt.PeerPubkey)
 	}
-	return strings.TrimSpace(peer)
+	if route == "" {
+		return ""
+	}
+	if evt.Type == "forward" {
+		left, right, ok := splitTelegramRoute(route)
+		if ok {
+			if left == "" {
+				left = "?"
+			}
+			if right == "" {
+				right = "?"
+			}
+			return fmt.Sprintf("Out %s %s In %s", left, telegramRouteArrowEmoji(), right)
+		}
+		return fmt.Sprintf("Out %s", route)
+	}
+	route = strings.ReplaceAll(route, "->", " "+telegramRouteArrowEmoji()+" ")
+	route = strings.Join(strings.Fields(route), " ")
+	return strings.TrimSpace(route)
 }
 
 func telegramNotificationMemoDetail(evt Notification) string {
@@ -1211,20 +1229,32 @@ func telegramNotificationFeeDetail(evt Notification) string {
 	rate := telegramNotificationFeeRate(evt.AmountSat, evt.FeeSat, evt.FeeMsat)
 	if evt.Type == "forward" {
 		if rate != "" {
-			return fmt.Sprintf("earned %s (%s)", fee, rate)
+			return fmt.Sprintf("Earned %s (%s)", fee, rate)
 		}
-		return fmt.Sprintf("earned %s", fee)
+		return fmt.Sprintf("Earned %s", fee)
 	}
 	if evt.Type == "rebalance" {
 		if rate != "" {
-			return fmt.Sprintf("paid %s (%s)", fee, rate)
+			return fmt.Sprintf("Paid %s (%s)", fee, rate)
 		}
-		return fmt.Sprintf("paid %s", fee)
+		return fmt.Sprintf("Paid %s", fee)
 	}
 	if rate != "" {
 		return fmt.Sprintf("fee %s (%s)", fee, rate)
 	}
 	return fmt.Sprintf("fee %s", fee)
+}
+
+func splitTelegramRoute(value string) (string, string, bool) {
+	parts := strings.SplitN(value, "->", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
+}
+
+func telegramRouteArrowEmoji() string {
+	return "➡️"
 }
 
 func telegramTrimMemo(value string, max int) string {
