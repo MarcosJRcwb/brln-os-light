@@ -489,6 +489,21 @@ func (n *Notifier) upsertNotification(ctx context.Context, eventKey string, evt 
 		return Notification{}, errors.New("event key required")
 	}
 
+	prevStatus := ""
+	prevType := ""
+	prevAction := ""
+	hadPrev := false
+	prevErr := n.db.QueryRow(ctx, `
+select status, type, action
+from notifications
+where event_key=$1
+`, eventKey).Scan(&prevStatus, &prevType, &prevAction)
+	if prevErr == nil {
+		hadPrev = true
+	} else if prevErr != pgx.ErrNoRows {
+		return Notification{}, prevErr
+	}
+
 	row := n.db.QueryRow(ctx, `
 with ins as (
 insert into notifications (
@@ -580,7 +595,14 @@ limit 1
 
 	n.cleanupIfNeeded()
 	n.broadcast(stored)
-	if inserted {
+	shouldMirror := inserted
+	if !shouldMirror && hadPrev {
+		changedStatus := !strings.EqualFold(strings.TrimSpace(prevStatus), strings.TrimSpace(stored.Status))
+		changedType := !strings.EqualFold(strings.TrimSpace(prevType), strings.TrimSpace(stored.Type))
+		changedAction := !strings.EqualFold(strings.TrimSpace(prevAction), strings.TrimSpace(stored.Action))
+		shouldMirror = changedStatus || changedType || changedAction
+	}
+	if shouldMirror {
 		n.enqueueTelegramActivityMirror(stored)
 	}
 	return stored, nil
@@ -609,6 +631,9 @@ func (n *Notifier) setTelegramActivityMirrorEnabled(enabled bool) {
 
 func (n *Notifier) enqueueTelegramActivityMirror(evt Notification) {
 	if n == nil || n.telegramMirrorQueue == nil || !n.telegramActivityMirrorEnabled.Load() {
+		return
+	}
+	if evt.Type == "rebalance" && strings.EqualFold(strings.TrimSpace(evt.Status), "IN_FLIGHT") {
 		return
 	}
 	select {

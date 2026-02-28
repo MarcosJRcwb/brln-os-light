@@ -1057,8 +1057,13 @@ func uniqueStrings(values []string) []string {
 
 func telegramActivityMirrorMessage(evt Notification) string {
 	typeLabel := telegramNotificationTypeLabel(evt.Type)
-	actionLabel := telegramNotificationActionLabel(evt.Action)
-	header := strings.TrimSpace(strings.TrimSpace(typeLabel + " " + actionLabel))
+	header := typeLabel
+	if evt.Type != "forward" && evt.Type != "rebalance" {
+		actionLabel := telegramNotificationActionLabel(evt.Action)
+		if actionLabel != "" {
+			header = strings.TrimSpace(typeLabel + " " + actionLabel)
+		}
+	}
 	if header == "" {
 		header = "Notification"
 	}
@@ -1094,18 +1099,13 @@ func telegramActivityMirrorMessage(evt Notification) string {
 		statusLine = status + " - " + strings.Join(details, " - ")
 	}
 
-	lines := []string{
-		header,
-		statusLine,
-		fmt.Sprintf("%s %s sats", telegramDirectionArrow(evt.Direction), formatIntWithSign(evt.AmountSat)),
-	}
+	amountPart := telegramNotificationAmountPart(evt.Direction, evt.AmountSat)
+	statusLine = statusLine + " | " + amountPart
 	if feeDisplay := telegramNotificationFeeDisplay(evt.FeeSat, evt.FeeMsat); feeDisplay != "" {
-		lines = append(lines, fmt.Sprintf("Fee %s", feeDisplay))
-	}
-	if !evt.OccurredAt.IsZero() {
-		lines = append(lines, evt.OccurredAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+		statusLine = statusLine + " | Fee " + feeDisplay
 	}
 
+	lines := []string{header, statusLine}
 	msg := strings.Join(lines, "\n")
 	if len(msg) > 3900 {
 		return strings.TrimSpace(msg[:3897]) + "..."
@@ -1124,7 +1124,7 @@ func telegramNotificationTypeEmoji(value string) string {
 	case "channel":
 		return "🔗"
 	case "forward":
-		return "🔀"
+		return "💰"
 	case "rebalance":
 		return "♻️"
 	default:
@@ -1141,7 +1141,7 @@ func telegramNotificationTypeLabel(value string) string {
 	case "channel":
 		return "Channel"
 	case "forward":
-		return "Forward"
+		return "Forwards"
 	case "rebalance":
 		return "Rebalance"
 	case "keysend":
@@ -1185,8 +1185,17 @@ func telegramDirectionArrow(value string) string {
 	case "out":
 		return "->"
 	default:
-		return "."
+		return ""
 	}
+}
+
+func telegramNotificationAmountPart(direction string, amountSat int64) string {
+	amount := fmt.Sprintf("%s sats", formatIntWithSign(amountSat))
+	arrow := telegramDirectionArrow(direction)
+	if arrow == "" {
+		return amount
+	}
+	return arrow + " " + amount
 }
 
 func telegramNotificationStatusLabel(value string) string {
