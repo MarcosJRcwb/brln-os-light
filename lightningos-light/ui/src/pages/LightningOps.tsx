@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { addLnWatchtower, boostPeers, closeChannel, connectPeer, disconnectPeer, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, removeLnWatchtower, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
+import { addLnWatchtower, boostPeers, closeChannel, connectPeer, disconnectPeer, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
 
 type Channel = {
   channel_point: string
@@ -478,6 +478,7 @@ const formatAutofeeHistoryTag = (tag: string) => {
 const LIGHTNING_OPS_ROUTE_KEY = 'lightning-ops'
 const REBALANCE_ROUTE_KEY = 'rebalance-center'
 const CHANNEL_HASH_PARAM = 'channel_point'
+const SCB_RECOVERY_CONFIRM_PHRASE = 'I UNDERSTAND FORCE CLOSE'
 
 const readHashChannelPoint = (routeKey: string) => {
   if (typeof window === 'undefined') return ''
@@ -497,6 +498,18 @@ const buildHashWithChannelPoint = (routeKey: string, channelPoint: string) =>
 
 const channelCardID = (channelPoint: string) =>
   `lightning-channel-${channelPoint.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+
+const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+  const bytes = new Uint8Array(buffer)
+  if (!bytes.length) return ''
+  const chunkSize = 0x8000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return btoa(binary)
+}
 
 export default function LightningOps() {
   const { t } = useTranslation()
@@ -557,6 +570,13 @@ export default function LightningOps() {
   const [signStatus, setSignStatus] = useState('')
   const [signBusy, setSignBusy] = useState(false)
   const [signCopied, setSignCopied] = useState(false)
+  const [scbRestoreData, setScbRestoreData] = useState('')
+  const [scbRestoreFileName, setScbRestoreFileName] = useState('')
+  const [scbRestoreConfirm, setScbRestoreConfirm] = useState(false)
+  const [scbRestorePhrase, setScbRestorePhrase] = useState('')
+  const [scbRestoreBusy, setScbRestoreBusy] = useState(false)
+  const [scbRestoreStatus, setScbRestoreStatus] = useState('')
+  const [scbRestoreResult, setScbRestoreResult] = useState<number | null>(null)
   const [bitcoinLocal, setBitcoinLocal] = useState<BitcoinLocalStatus | null>(null)
 
   const [autofeeConfig, setAutofeeConfig] = useState<AutofeeConfig | null>(null)
@@ -2129,6 +2149,13 @@ export default function LightningOps() {
 
   const pendingOpen = useMemo(() => pendingChannels.filter((ch) => ch.status === 'opening'), [pendingChannels])
   const pendingClose = useMemo(() => pendingChannels.filter((ch) => ch.status !== 'opening'), [pendingChannels])
+  const scbRecoveryAvailable = channels.length === 0 && pendingChannels.length === 0
+  const scbRestorePhraseValid = scbRestorePhrase.trim().toUpperCase() === SCB_RECOVERY_CONFIRM_PHRASE
+  const scbRestoreCanSubmit = scbRecoveryAvailable
+    && !scbRestoreBusy
+    && scbRestoreConfirm
+    && scbRestorePhraseValid
+    && scbRestoreData.trim().length > 0
 
   const pendingStatusLabel = (status: string) => {
     switch (status) {
@@ -2624,6 +2651,69 @@ export default function LightningOps() {
       setSignCopied(true)
     } catch {
       setSignStatus(t('common.copyFailedManual'))
+    }
+  }
+
+  const handleScbFileSelected = async (event: any) => {
+    const file = event?.target?.files?.[0]
+    if (!file) return
+    setScbRestoreStatus(t('lightningOps.scbRecoveryReading'))
+    setScbRestoreResult(null)
+    try {
+      const buffer = await file.arrayBuffer()
+      const encoded = arrayBufferToBase64(buffer)
+      if (!encoded) {
+        setScbRestoreStatus(t('lightningOps.scbRecoveryFileReadFailed'))
+        return
+      }
+      setScbRestoreData(encoded)
+      setScbRestoreFileName(file.name || '')
+      setScbRestoreStatus(t('lightningOps.scbRecoveryFileLoaded', { name: file.name || 'SCB' }))
+    } catch {
+      setScbRestoreStatus(t('lightningOps.scbRecoveryFileReadFailed'))
+    } finally {
+      if (event?.target) {
+        event.target.value = ''
+      }
+    }
+  }
+
+  const handleScbRestore = async () => {
+    if (scbRestoreBusy) return
+    const backup = scbRestoreData.trim()
+    if (!backup) {
+      setScbRestoreStatus(t('lightningOps.scbRecoveryBackupRequired'))
+      return
+    }
+    if (!scbRestoreConfirm) {
+      setScbRestoreStatus(t('lightningOps.scbRecoveryCheckRequired'))
+      return
+    }
+    if (!scbRestorePhraseValid) {
+      setScbRestoreStatus(t('lightningOps.scbRecoveryPhraseInvalid'))
+      return
+    }
+
+    const confirmed = window.confirm(t('lightningOps.scbRecoveryRunConfirm'))
+    if (!confirmed) return
+
+    setScbRestoreBusy(true)
+    setScbRestoreResult(null)
+    setScbRestoreStatus(t('lightningOps.scbRecoveryRunning'))
+    try {
+      const res = await restoreLnScb({
+        multi_chan_backup: backup,
+        confirm_phrase: scbRestorePhrase.trim(),
+      })
+      const numRestored = Number(res?.num_restored ?? 0)
+      const safeNumRestored = Number.isFinite(numRestored) ? numRestored : 0
+      setScbRestoreResult(safeNumRestored)
+      setScbRestoreStatus(t('lightningOps.scbRecoveryDone', { count: safeNumRestored }))
+      await load()
+    } catch (err: any) {
+      setScbRestoreStatus(err?.message || t('lightningOps.scbRecoveryFailed'))
+    } finally {
+      setScbRestoreBusy(false)
     }
   }
 
@@ -4695,6 +4785,83 @@ export default function LightningOps() {
           <p className="text-sm text-fog/60">{t('lightningOps.noConnectedPeers')}</p>
         )}
       </div>
+
+      {scbRecoveryAvailable && (
+        <div className="section-card space-y-4 border border-ember/20">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold">{t('lightningOps.scbRecoveryTitle')}</h3>
+              <p className="text-sm text-fog/60">{t('lightningOps.scbRecoverySubtitle')}</p>
+            </div>
+            <span className="rounded-full px-3 py-1 text-xs bg-ember/20 text-ember">{t('lightningOps.scbRecoveryWarningTag')}</span>
+          </div>
+
+          <p className="text-xs text-ember">{t('lightningOps.scbRecoveryWarningBody')}</p>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="btn-secondary text-xs px-3 py-2 cursor-pointer">
+              {t('lightningOps.scbRecoverySelectFile')}
+              <input
+                className="hidden"
+                type="file"
+                accept=".scb,.backup,.bin,text/plain,application/octet-stream"
+                onChange={handleScbFileSelected}
+              />
+            </label>
+            {scbRestoreFileName && <span className="text-xs text-fog/60">{scbRestoreFileName}</span>}
+          </div>
+
+          <label className="text-sm text-fog/70">
+            {t('lightningOps.scbRecoveryBackupLabel')}
+            <textarea
+              className="input-field mt-2 h-28 font-mono text-xs"
+              value={scbRestoreData}
+              onChange={(e) => {
+                setScbRestoreData(e.target.value)
+                if (scbRestoreResult !== null) {
+                  setScbRestoreResult(null)
+                }
+              }}
+              placeholder={t('lightningOps.scbRecoveryBackupPlaceholder')}
+              spellCheck={false}
+            />
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-fog/70">
+            <input
+              type="checkbox"
+              checked={scbRestoreConfirm}
+              onChange={(e) => setScbRestoreConfirm(e.target.checked)}
+            />
+            {t('lightningOps.scbRecoveryAcknowledge')}
+          </label>
+
+          <label className="text-sm text-fog/70">
+            {t('lightningOps.scbRecoveryPhraseLabel')}
+            <input
+              className="input-field mt-2 font-mono text-xs"
+              value={scbRestorePhrase}
+              onChange={(e) => setScbRestorePhrase(e.target.value)}
+              placeholder={SCB_RECOVERY_CONFIRM_PHRASE}
+              spellCheck={false}
+            />
+          </label>
+
+          <button
+            className="btn-secondary text-xs px-3 py-2 border border-ember/40 text-ember disabled:opacity-60 disabled:cursor-not-allowed"
+            type="button"
+            onClick={handleScbRestore}
+            disabled={!scbRestoreCanSubmit}
+          >
+            {scbRestoreBusy ? t('lightningOps.scbRecoveryRunning') : t('lightningOps.scbRecoveryRun')}
+          </button>
+
+          {scbRestoreStatus && <p className="text-sm text-brass">{scbRestoreStatus}</p>}
+          {scbRestoreResult !== null && (
+            <p className="text-xs text-fog/60">{t('lightningOps.scbRecoveryResult', { count: scbRestoreResult })}</p>
+          )}
+        </div>
+      )}
     </section>
   )
 }

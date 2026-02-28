@@ -152,6 +152,8 @@ export const updateLnTorPeerChecker = (payload: {
 }) => request('/api/lnops/channel/tor-peers', { method: 'POST', body: JSON.stringify(payload) })
 export const getLnTorPeerCheckerLogs = (limit = 100) =>
   request(`/api/lnops/channel/tor-peers/logs?limit=${encodeURIComponent(String(limit))}`)
+export const restoreLnScb = (payload: { multi_chan_backup: string; confirm_phrase: string }) =>
+  request('/api/lnops/channel/scb/restore', { method: 'POST', body: JSON.stringify(payload) })
 export const getAutofeeConfig = () => request('/api/lnops/autofee/config')
 export const updateAutofeeConfig = (payload: {
   enabled?: boolean
