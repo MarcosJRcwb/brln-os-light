@@ -27,6 +27,7 @@ type TelegramNotificationConfig = {
   chat_id?: string
   bot_token_set?: boolean
   scb_backup_enabled?: boolean
+  activity_mirror_enabled?: boolean
   summary_enabled?: boolean
   summary_interval_min?: number
   system_summary_enabled?: boolean
@@ -164,6 +165,7 @@ export default function Notifications() {
   const [telegramToken, setTelegramToken] = useState('')
   const [telegramChatId, setTelegramChatId] = useState('')
   const [telegramScbEnabled, setTelegramScbEnabled] = useState(true)
+  const [telegramActivityMirrorEnabled, setTelegramActivityMirrorEnabled] = useState(false)
   const [telegramSummaryEnabled, setTelegramSummaryEnabled] = useState(false)
   const [telegramSummaryInterval, setTelegramSummaryInterval] = useState('')
   const [telegramSystemEnabled, setTelegramSystemEnabled] = useState(false)
@@ -206,6 +208,7 @@ export default function Notifications() {
         setTelegramChatId(data?.chat_id || '')
         setTelegramToken('')
         setTelegramScbEnabled(Boolean(data?.scb_backup_enabled))
+        setTelegramActivityMirrorEnabled(Boolean(data?.activity_mirror_enabled))
         setTelegramSummaryEnabled(Boolean(data?.summary_enabled))
         setTelegramSummaryInterval(data?.summary_interval_min ? String(data.summary_interval_min) : '')
         setTelegramSystemEnabled(Boolean(data?.system_summary_enabled))
@@ -304,6 +307,7 @@ export default function Notifications() {
 
   const handleSaveTelegram = async (overrides?: {
     scbBackupEnabled?: boolean
+    activityMirrorEnabled?: boolean
     summaryEnabled?: boolean
     summaryInterval?: string
     systemSummaryEnabled?: boolean
@@ -314,6 +318,7 @@ export default function Notifications() {
     setTelegramStatus(t('common.saving'))
     try {
       const nextScbEnabled = overrides?.scbBackupEnabled ?? telegramScbEnabled
+      const nextActivityMirrorEnabled = overrides?.activityMirrorEnabled ?? telegramActivityMirrorEnabled
       const nextSummaryEnabled = overrides?.summaryEnabled ?? telegramSummaryEnabled
       const nextSummaryInterval = overrides?.summaryInterval ?? telegramSummaryInterval
       const nextSystemEnabled = overrides?.systemSummaryEnabled ?? telegramSystemEnabled
@@ -349,12 +354,14 @@ export default function Notifications() {
         bot_token?: string
         chat_id?: string
         scb_backup_enabled?: boolean
+        activity_mirror_enabled?: boolean
         summary_enabled?: boolean
         summary_interval_min?: number
         system_summary_enabled?: boolean
         system_summary_interval_min?: number
       } = {
         scb_backup_enabled: nextScbEnabled,
+        activity_mirror_enabled: nextActivityMirrorEnabled,
         summary_enabled: nextSummaryEnabled,
         summary_interval_min: summaryIntervalValue || undefined,
         system_summary_enabled: nextSystemEnabled,
@@ -377,6 +384,7 @@ export default function Notifications() {
       setTelegramChatId(data?.chat_id || '')
       setTelegramToken('')
       setTelegramScbEnabled(Boolean(data?.scb_backup_enabled))
+      setTelegramActivityMirrorEnabled(Boolean(data?.activity_mirror_enabled))
       setTelegramSummaryEnabled(Boolean(data?.summary_enabled))
       setTelegramSummaryInterval(data?.summary_interval_min ? String(data.summary_interval_min) : '')
       setTelegramSystemEnabled(Boolean(data?.system_summary_enabled))
@@ -390,16 +398,18 @@ export default function Notifications() {
           await triggerTelegramTest(t('notifications.telegram.savedSendingTest'), true)
         } else {
           const prevScbEnabled = Boolean(telegramConfig?.scb_backup_enabled)
+          const prevActivityMirrorEnabled = Boolean(telegramConfig?.activity_mirror_enabled)
           const prevSummaryEnabled = Boolean(telegramConfig?.summary_enabled)
           const prevSystemEnabled = Boolean(telegramConfig?.system_summary_enabled)
           const prevIntervalValue = Number(telegramConfig?.summary_interval_min || 0)
           const prevSystemIntervalValue = Number(telegramConfig?.system_summary_interval_min || 0)
           const scbChanged = prevScbEnabled !== nextScbEnabled
+          const activityMirrorChanged = prevActivityMirrorEnabled !== nextActivityMirrorEnabled
           const summaryChanged = prevSummaryEnabled !== nextSummaryEnabled
           const systemChanged = prevSystemEnabled !== nextSystemEnabled
           const intervalChanged = summaryIntervalValue > 0 && prevIntervalValue !== summaryIntervalValue
           const systemIntervalChanged = systemIntervalValue > 0 && prevSystemIntervalValue !== systemIntervalValue
-          if ((intervalChanged || systemIntervalChanged) && !scbChanged && !summaryChanged && !systemChanged) {
+          if ((intervalChanged || systemIntervalChanged) && !scbChanged && !activityMirrorChanged && !summaryChanged && !systemChanged) {
             setTelegramStatus(t('notifications.telegram.frequencySaved'))
           } else {
             setTelegramStatus(t('notifications.telegram.rulesSaved'))
@@ -518,6 +528,21 @@ export default function Notifications() {
                 <span>
                   <span className="font-semibold">{t('notifications.telegram.scbBackupLabel')}</span>
                   <span className="block text-xs text-fog/60">{t('notifications.telegram.scbBackupHint')}</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm text-fog">
+                <input
+                  type="checkbox"
+                  checked={telegramActivityMirrorEnabled}
+                  onChange={(e) => {
+                    const checked = e.target.checked
+                    setTelegramActivityMirrorEnabled(checked)
+                    void handleSaveTelegram({ activityMirrorEnabled: checked })
+                  }}
+                />
+                <span>
+                  <span className="font-semibold">{t('notifications.telegram.activityMirrorLabel')}</span>
+                  <span className="block text-xs text-fog/60">{t('notifications.telegram.activityMirrorHint')}</span>
                 </span>
               </label>
               <div className="grid gap-3 sm:items-start sm:grid-cols-[minmax(220px,320px)_96px_minmax(320px,1fr)]">

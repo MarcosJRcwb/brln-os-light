@@ -605,6 +605,8 @@
       "notificationsSubtitle": "Escolha o que enviar para o Telegram.",
       "scbBackupLabel": "Backup SCB",
       "scbBackupHint": "Envie um backup de canal estático a cada abertura ou fechamento de canal.",
+      "activityMirrorLabel": "Espelhar atividade",
+      "activityMirrorHint": "Espelhe cada nova entrada do card de notificações no Telegram.",
       "summaryLabel": "Resumo de saúde financeira",
       "summaryHint": "Envie saldos e resultados de roteamento em uma agenda.",
       "summaryInterval": "Intervalo do resumo (minutos)",
