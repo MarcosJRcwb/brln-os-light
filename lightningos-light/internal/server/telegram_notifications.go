@@ -1058,55 +1058,28 @@ func uniqueStrings(values []string) []string {
 func telegramActivityMirrorMessage(evt Notification) string {
 	typeLabel := telegramNotificationTypeLabel(evt.Type)
 	header := typeLabel
-	if evt.Type != "forward" && evt.Type != "rebalance" {
-		actionLabel := telegramNotificationActionLabel(evt.Action)
-		if actionLabel != "" {
-			header = strings.TrimSpace(typeLabel + " " + actionLabel)
-		}
+	actionLabel := telegramNotificationActionLabel(evt.Action)
+	if evt.Type != "forward" && evt.Type != "rebalance" && actionLabel != "" {
+		header = strings.TrimSpace(typeLabel + " " + actionLabel)
 	}
 	if header == "" {
 		header = "Notification"
 	}
+
+	prefix := header
 	if emoji := telegramNotificationTypeEmoji(evt.Type); emoji != "" {
-		header = emoji + " " + header
+		prefix = emoji + " " + prefix
 	}
 
-	status := telegramNotificationStatusLabel(evt.Status)
-	details := []string{}
-	if peer := telegramNotificationPeerDetail(evt); peer != "" {
-		details = append(details, peer)
-	}
-	if memo := telegramNotificationMemoDetail(evt); memo != "" {
-		details = append(details, memo)
-	}
-	if channelPoint := strings.TrimSpace(evt.ChannelPoint); channelPoint != "" {
-		details = append(details, fmt.Sprintf("Channel %s", telegramShortValue(channelPoint, 16)))
-	}
-	if txid := strings.TrimSpace(evt.Txid); txid != "" {
-		details = append(details, fmt.Sprintf("Tx %s", telegramShortValue(txid, 16)))
+	main := fmt.Sprintf("%s %s sats", prefix, formatIntWithSign(evt.AmountSat))
+	if route := telegramNotificationRoute(evt); route != "" {
+		main += " - " + route
 	}
 	if feeDetail := telegramNotificationFeeDetail(evt); feeDetail != "" {
-		details = append(details, feeDetail)
-	}
-	if evt.Type == "rebalance" {
-		if memo := strings.TrimSpace(evt.Memo); memo != "" {
-			details = append(details, memo)
-		}
+		main += " | " + feeDetail
 	}
 
-	statusLine := status
-	if len(details) > 0 {
-		statusLine = status + " - " + strings.Join(details, " - ")
-	}
-
-	amountPart := telegramNotificationAmountPart(evt.Direction, evt.AmountSat)
-	statusLine = statusLine + " | " + amountPart
-	if feeDisplay := telegramNotificationFeeDisplay(evt.FeeSat, evt.FeeMsat); feeDisplay != "" {
-		statusLine = statusLine + " | Fee " + feeDisplay
-	}
-
-	lines := []string{header, statusLine}
-	msg := strings.Join(lines, "\n")
+	msg := main
 	if len(msg) > 3900 {
 		return strings.TrimSpace(msg[:3897]) + "..."
 	}
@@ -1141,9 +1114,9 @@ func telegramNotificationTypeLabel(value string) string {
 	case "channel":
 		return "Channel"
 	case "forward":
-		return "Forwards"
+		return "Forwarded"
 	case "rebalance":
-		return "Rebalance"
+		return "Rebalanced"
 	case "keysend":
 		return "Keysend"
 	default:
@@ -1178,56 +1151,12 @@ func telegramNotificationActionLabel(value string) string {
 	}
 }
 
-func telegramDirectionArrow(value string) string {
-	switch strings.TrimSpace(value) {
-	case "in":
-		return "<-"
-	case "out":
-		return "->"
-	default:
-		return ""
-	}
-}
-
-func telegramNotificationAmountPart(direction string, amountSat int64) string {
-	amount := fmt.Sprintf("%s sats", formatIntWithSign(amountSat))
-	arrow := telegramDirectionArrow(direction)
-	if arrow == "" {
-		return amount
-	}
-	return arrow + " " + amount
-}
-
-func telegramNotificationStatusLabel(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "UNKNOWN"
-	}
-	return strings.ToUpper(strings.ReplaceAll(trimmed, "_", " "))
-}
-
-func telegramNotificationPeerDetail(evt Notification) string {
+func telegramNotificationRoute(evt Notification) string {
 	peer := strings.TrimSpace(evt.PeerAlias)
 	if peer == "" {
 		peer = shortPubKey(evt.PeerPubkey)
 	}
-	if peer == "" {
-		return ""
-	}
-	switch evt.Type {
-	case "rebalance":
-		return "Route " + peer
-	case "keysend":
-		if evt.Direction == "in" {
-			return "From " + peer
-		}
-		if evt.Direction == "out" {
-			return "To " + peer
-		}
-		return "Peer " + peer
-	default:
-		return "Peer " + peer
-	}
+	return strings.TrimSpace(peer)
 }
 
 func telegramNotificationMemoDetail(evt Notification) string {
@@ -1275,21 +1204,27 @@ func telegramNotificationFeeRate(amountSat, feeSat, feeMsat int64) string {
 }
 
 func telegramNotificationFeeDetail(evt Notification) string {
-	rate := telegramNotificationFeeRate(evt.AmountSat, evt.FeeSat, evt.FeeMsat)
-	if rate == "" {
-		return ""
-	}
 	fee := telegramNotificationFeeDisplay(evt.FeeSat, evt.FeeMsat)
 	if fee == "" {
 		return ""
 	}
+	rate := telegramNotificationFeeRate(evt.AmountSat, evt.FeeSat, evt.FeeMsat)
 	if evt.Type == "forward" {
-		return fmt.Sprintf("Earned %s (%s)", fee, rate)
+		if rate != "" {
+			return fmt.Sprintf("earned %s (%s)", fee, rate)
+		}
+		return fmt.Sprintf("earned %s", fee)
 	}
 	if evt.Type == "rebalance" {
-		return fmt.Sprintf("Fee %s (%s)", fee, rate)
+		if rate != "" {
+			return fmt.Sprintf("paid %s (%s)", fee, rate)
+		}
+		return fmt.Sprintf("paid %s", fee)
 	}
-	return ""
+	if rate != "" {
+		return fmt.Sprintf("fee %s (%s)", fee, rate)
+	}
+	return fmt.Sprintf("fee %s", fee)
 }
 
 func telegramTrimMemo(value string, max int) string {
