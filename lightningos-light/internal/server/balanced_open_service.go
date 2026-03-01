@@ -1380,20 +1380,21 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		balancedOpenMetadataString(metaMap, unavailableKey) != "" &&
 		balancedOpenMetadataString(metaMap, txidKey) == ""
 	orphanEligible := balancedOpenHasOrphanFundingCandidate(session, meta)
+	orphanRecoverable := orphanEligible || balancedOpenCanProcessOrphanRecovery(meta)
 
-	if session.State == balancedOpenStateRecovered && !recoveredRetry && !(orphanEligible && strings.TrimSpace(meta.OrphanRecoveryTxID) == "") {
+	if session.State == balancedOpenStateRecovered && !recoveredRetry && !(orphanRecoverable && strings.TrimSpace(meta.OrphanRecoveryTxID) == "") {
 		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 	}
-	if orphanEligible && strings.TrimSpace(meta.OrphanRecoveryTxID) != "" {
+	if orphanRecoverable && strings.TrimSpace(meta.OrphanRecoveryTxID) != "" {
 		return session, nil
 	}
-	if session.State == balancedOpenStateActive && !orphanEligible {
+	if session.State == balancedOpenStateActive && !orphanRecoverable {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 	if session.State != balancedOpenStateRecoveryRequired &&
 		session.State != balancedOpenStateCanceled &&
-		!(session.State == balancedOpenStateActive && orphanEligible) &&
-		!(session.State == balancedOpenStateRecovered && orphanEligible) &&
+		!(session.State == balancedOpenStateActive && orphanRecoverable) &&
+		!(session.State == balancedOpenStateRecovered && orphanRecoverable) &&
 		!recoveredRetry {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
@@ -1417,10 +1418,10 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		_, _ = matchBalancedOpenActiveChannel(session, balancedOpenSessionChannelPoint(session.Metadata), active)
 	}
 
-	if orphanEligible && strings.TrimSpace(meta.OrphanRecoveryTxID) == "" {
+	if orphanRecoverable && strings.TrimSpace(meta.OrphanRecoveryTxID) == "" {
 		spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
 		if lookupErr == nil && foundSpender && strings.EqualFold(strings.TrimSpace(spendingTxid), strings.TrimSpace(meta.FundingTxID)) {
-			return s.recoverOrphanFundingOutput(ctx, session, meta, satPerVbyte, true)
+			return s.recoverOrphanFundingOutput(ctx, session, meta, satPerVbyte, true, true)
 		}
 	}
 
@@ -1430,10 +1431,10 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 			spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
 			if lookupErr == nil &&
 				foundSpender &&
-				orphanEligible &&
+				orphanRecoverable &&
 				strings.EqualFold(strings.TrimSpace(spendingTxid), strings.TrimSpace(meta.FundingTxID)) &&
 				strings.TrimSpace(meta.OrphanRecoveryTxID) == "" {
-				return s.recoverOrphanFundingOutput(ctx, session, meta, satPerVbyte, true)
+				return s.recoverOrphanFundingOutput(ctx, session, meta, satPerVbyte, true, true)
 			}
 			if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
 				patch := map[string]any{
@@ -1805,7 +1806,7 @@ func (s *BalancedOpenService) handleOrphanRecoveryRequestFromPeer(ctx context.Co
 	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
-	if !balancedOpenHasOrphanFundingCandidate(session, meta) {
+	if !balancedOpenHasOrphanFundingCandidate(session, meta) && !balancedOpenCanProcessOrphanRecovery(meta) {
 		return BalancedOpenSession{}, errors.New("orphan funding recovery not required")
 	}
 	if !isBalancedOpenSigHex(msg.RecoverySigHex) {
@@ -1854,7 +1855,7 @@ func (s *BalancedOpenService) handleOrphanRecoveryRequestFromPeer(ctx context.Co
 		return BalancedOpenSession{}, err
 	}
 
-	updated, err = s.recoverOrphanFundingOutput(ctx, updated, updatedMeta, feeRate, false)
+	updated, err = s.recoverOrphanFundingOutput(ctx, updated, updatedMeta, feeRate, false, true)
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -1889,7 +1890,7 @@ func (s *BalancedOpenService) handleOrphanRecoverySignatureFromPeer(ctx context.
 	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
-	if !balancedOpenHasOrphanFundingCandidate(session, meta) {
+	if !balancedOpenHasOrphanFundingCandidate(session, meta) && !balancedOpenCanProcessOrphanRecovery(meta) {
 		return BalancedOpenSession{}, errors.New("orphan funding recovery not required")
 	}
 	if !isBalancedOpenSigHex(msg.RecoverySigHex) {
@@ -1937,14 +1938,14 @@ func (s *BalancedOpenService) handleOrphanRecoverySignatureFromPeer(ctx context.
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
-	return s.recoverOrphanFundingOutput(ctx, updated, updatedMeta, feeRate, false)
+	return s.recoverOrphanFundingOutput(ctx, updated, updatedMeta, feeRate, false, true)
 }
 
-func (s *BalancedOpenService) recoverOrphanFundingOutput(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata, satPerVbyte int64, notifyPeer bool) (BalancedOpenSession, error) {
+func (s *BalancedOpenService) recoverOrphanFundingOutput(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata, satPerVbyte int64, notifyPeer bool, allowWithoutCandidate bool) (BalancedOpenSession, error) {
 	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
-	if !balancedOpenHasOrphanFundingCandidate(session, meta) {
+	if !balancedOpenHasOrphanFundingCandidate(session, meta) && !(allowWithoutCandidate && balancedOpenCanProcessOrphanRecovery(meta)) {
 		return BalancedOpenSession{}, errors.New("orphan funding recovery not required")
 	}
 
@@ -3024,6 +3025,22 @@ func balancedOpenHasOrphanFundingCandidate(session BalancedOpenSession, meta bal
 		return false
 	}
 	return expected != actual
+}
+
+func balancedOpenCanProcessOrphanRecovery(meta balancedOpenMetadata) bool {
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return false
+	}
+	if !isBalancedOpenTxID(meta.FundingTxID) {
+		return false
+	}
+	if !isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) || !isValidPubkeyHex(meta.AccepterMultisigKey.PublicKey) {
+		return false
+	}
+	if !hasBalancedTransit(meta.InitiatorTransit, false) || !hasBalancedTransit(meta.AccepterTransit, false) {
+		return false
+	}
+	return true
 }
 
 func balancedOpenCounterpartyRole(role string) string {
