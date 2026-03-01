@@ -2136,15 +2136,15 @@ func (c *Client) BatchOpenChannel(ctx context.Context, channels []BatchOpenChann
 	return results, nil
 }
 
-func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bool, satPerVbyte int64) error {
+func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bool, satPerVbyte int64) (string, error) {
 	cp, err := parseChannelPoint(channelPoint)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	conn, err := c.dial(ctx, true)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer conn.Close()
 
@@ -2159,13 +2159,35 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 	}
 	stream, err := client.CloseChannel(ctx, req)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = stream.Recv()
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
+
+	closingTxid := ""
+	for {
+		update, recvErr := stream.Recv()
+		if recvErr != nil {
+			if errors.Is(recvErr, io.EOF) {
+				break
+			}
+			return "", recvErr
+		}
+		if update == nil {
+			continue
+		}
+		if pending := update.GetClosePending(); pending != nil {
+			if txid := txidFromBytes(pending.GetTxid()); txid != "" {
+				closingTxid = txid
+				break
+			}
+		}
+		if closed := update.GetChanClose(); closed != nil {
+			if txid := txidFromBytes(closed.GetClosingTxid()); txid != "" {
+				closingTxid = txid
+				break
+			}
+		}
 	}
-	return nil
+	return closingTxid, nil
 }
 
 func (c *Client) UpdateChannelFees(ctx context.Context, channelPoint string, applyAll bool, baseFeeMsat int64, feeRatePpm int64, timeLockDelta int64, inboundEnabled bool, inboundBaseMsat int64, inboundFeeRatePpm int64) error {

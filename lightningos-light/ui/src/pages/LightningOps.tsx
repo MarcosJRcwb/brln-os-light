@@ -701,6 +701,7 @@ export default function LightningOps() {
   const [closeFeeHint, setCloseFeeHint] = useState<{ fastest?: number; hour?: number } | null>(null)
   const [closeFeeStatus, setCloseFeeStatus] = useState('')
   const [closeStatus, setCloseStatus] = useState('')
+  const [closingTxHints, setClosingTxHints] = useState<Record<string, string>>({})
 
   const [feeScopeAll, setFeeScopeAll] = useState(true)
   const [feeChannelPoint, setFeeChannelPoint] = useState('')
@@ -1683,12 +1684,24 @@ export default function LightningOps() {
 
   const applyChannelsPayload = (res: any) => {
     const list = Array.isArray(res?.channels) ? res.channels : []
+    const pending = Array.isArray(res?.pending_channels) ? res.pending_channels : []
     setChannels(list)
     setActiveCount(res?.active_count ?? 0)
     setInactiveCount(res?.inactive_count ?? 0)
     setPendingOpenCount(res?.pending_open_count ?? 0)
     setPendingCloseCount(res?.pending_close_count ?? 0)
-    setPendingChannels(Array.isArray(res?.pending_channels) ? res.pending_channels : [])
+    setPendingChannels(pending)
+    setClosingTxHints((prev) => {
+      const next = { ...prev }
+      pending.forEach((item: any) => {
+        const channelPoint = String(item?.channel_point || '').trim()
+        const closingTxid = String(item?.closing_txid || '').trim()
+        if (channelPoint && closingTxid) {
+          next[channelPoint] = closingTxid
+        }
+      })
+      return next
+    })
   }
 
   const refreshBalancedOpen = async (opts?: { quiet?: boolean }) => {
@@ -3358,12 +3371,18 @@ export default function LightningOps() {
     }
     try {
       const feeRate = Number(closeFeeRate || 0)
-      await closeChannel({
+      const res: any = await closeChannel({
         channel_point: closePoint,
         force: closeForce,
         sat_per_vbyte: closeForce ? undefined : (feeRate > 0 ? feeRate : undefined)
       })
-      setCloseStatus(t('lightningOps.closeInitiated'))
+      const closingTxid = String(res?.closing_txid || '').trim()
+      if (closingTxid) {
+        setClosingTxHints((prev) => ({ ...prev, [closePoint]: closingTxid }))
+        setCloseStatus(t('lightningOps.closingTx', { txid: closingTxid }))
+      } else {
+        setCloseStatus(t('lightningOps.closeInitiated'))
+      }
       load()
     } catch (err: any) {
       setCloseStatus(err?.message || t('lightningOps.closeFailed'))
@@ -3895,7 +3914,8 @@ export default function LightningOps() {
                     {pendingClose.map((ch) => {
                       const pointLink = mempoolLink(ch.channel_point)
                       const maturitySeconds = estimateMaturitySeconds(ch.blocks_til_maturity)
-                      const closingTxLink = mempoolTxLink(ch.closing_txid)
+                      const closingTxid = (ch.closing_txid || closingTxHints[ch.channel_point] || '').trim()
+                      const closingTxLink = mempoolTxLink(closingTxid)
                       return (
                         <div key={ch.channel_point} className="rounded-xl border border-white/10 bg-ink/70 p-3">
                           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3944,7 +3964,7 @@ export default function LightningOps() {
                               </div>
                             )}
                           </div>
-                          {ch.closing_txid && (
+                          {closingTxid && (
                             closingTxLink ? (
                               <a
                                 className="mt-2 block text-[11px] text-emerald-200 hover:text-emerald-100 break-all"
@@ -3952,10 +3972,10 @@ export default function LightningOps() {
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
-                                {t('lightningOps.closingTx', { txid: ch.closing_txid })}
+                                {t('lightningOps.closingTx', { txid: closingTxid })}
                               </a>
                             ) : (
-                              <p className="mt-2 text-[11px] text-fog/50 break-all">{t('lightningOps.closingTx', { txid: ch.closing_txid })}</p>
+                              <p className="mt-2 text-[11px] text-fog/50 break-all">{t('lightningOps.closingTx', { txid: closingTxid })}</p>
                             )
                           )}
                         </div>

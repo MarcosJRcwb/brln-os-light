@@ -2270,12 +2270,34 @@ func (s *Server) handleLNCloseChannel(w http.ResponseWriter, r *http.Request) {
 		satPerVbyte = 0
 	}
 
-	if err := s.lnd.CloseChannel(ctx, req.ChannelPoint, req.Force, satPerVbyte); err != nil {
+	closingTxid, err := s.lnd.CloseChannel(ctx, req.ChannelPoint, req.Force, satPerVbyte)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, lndDetailedErrorMessage(err))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	channelPoint := strings.TrimSpace(req.ChannelPoint)
+	closingTxid = strings.TrimSpace(closingTxid)
+	if s.notifier != nil && channelPoint != "" && closingTxid != "" {
+		eventKey := "channel:closing:" + channelPoint
+		evt := Notification{
+			OccurredAt:   time.Now().UTC(),
+			Type:         "channel",
+			Action:       "closing",
+			Direction:    "neutral",
+			Status:       "PENDING",
+			ChannelPoint: channelPoint,
+			Txid:         closingTxid,
+		}
+		nctx, ncancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _ = s.notifier.upsertNotification(nctx, eventKey, evt)
+		ncancel()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"closing_txid": closingTxid,
+	})
 }
 
 func (s *Server) handleLNUpdateFees(w http.ResponseWriter, r *http.Request) {

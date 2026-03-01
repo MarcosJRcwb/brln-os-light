@@ -1445,9 +1445,6 @@ func (n *Notifier) notifyPendingChannelClosing(item lndclient.PendingChannelInfo
 		return
 	}
 	eventKey = "channel:closing:" + eventKey
-	if !n.markPendingNotification(eventKey) {
-		return
-	}
 
 	amount := item.LocalBalanceSat
 	if amount <= 0 && item.LimboBalance > 0 {
@@ -1460,6 +1457,11 @@ func (n *Notifier) notifyPendingChannelClosing(item lndclient.PendingChannelInfo
 	case "waiting_close":
 		status = "WAITING_CLOSE"
 	}
+	closingTxid := strings.TrimSpace(item.ClosingTxid)
+	dedupeKey := fmt.Sprintf("%s|%s|%s", eventKey, status, strings.ToLower(closingTxid))
+	if !n.markPendingNotification(dedupeKey) {
+		return
+	}
 
 	evt := Notification{
 		OccurredAt:   time.Now().UTC(),
@@ -1471,7 +1473,7 @@ func (n *Notifier) notifyPendingChannelClosing(item lndclient.PendingChannelInfo
 		PeerPubkey:   item.RemotePubkey,
 		PeerAlias:    item.PeerAlias,
 		ChannelPoint: item.ChannelPoint,
-		Txid:         item.ClosingTxid,
+		Txid:         closingTxid,
 	}
 	if evt.PeerAlias == "" && evt.PeerPubkey != "" {
 		evt.PeerAlias = n.lookupNodeAlias(evt.PeerPubkey)
