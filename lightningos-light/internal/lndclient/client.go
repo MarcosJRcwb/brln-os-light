@@ -2151,7 +2151,6 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 	req := &lnrpc.CloseChannelRequest{
 		ChannelPoint: cp,
 		Force:        force,
-		NoWait:       true,
 	}
 	if !force && satPerVbyte > 0 {
 		req.SatPerVbyte = uint64(satPerVbyte)
@@ -2186,7 +2185,56 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 			}
 		}
 	}
+	if closingTxid == "" {
+		closingTxid = c.lookupPendingClosingTxid(ctx, channelPoint)
+	}
 	return closingTxid, nil
+}
+
+func (c *Client) lookupPendingClosingTxid(ctx context.Context, channelPoint string) string {
+	point := strings.ToLower(strings.TrimSpace(channelPoint))
+	if point == "" {
+		return ""
+	}
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.PendingChannels(ctx, &lnrpc.PendingChannelsRequest{})
+	if err != nil {
+		return ""
+	}
+	matchPoint := func(itemPoint string) bool {
+		return strings.EqualFold(strings.TrimSpace(itemPoint), point)
+	}
+	for _, item := range resp.PendingClosingChannels {
+		if item == nil || item.Channel == nil || !matchPoint(item.Channel.ChannelPoint) {
+			continue
+		}
+		if txid := strings.TrimSpace(item.ClosingTxid); txid != "" {
+			return txid
+		}
+	}
+	for _, item := range resp.PendingForceClosingChannels {
+		if item == nil || item.Channel == nil || !matchPoint(item.Channel.ChannelPoint) {
+			continue
+		}
+		if txid := strings.TrimSpace(item.ClosingTxid); txid != "" {
+			return txid
+		}
+	}
+	for _, item := range resp.WaitingCloseChannels {
+		if item == nil || item.Channel == nil || !matchPoint(item.Channel.ChannelPoint) {
+			continue
+		}
+		if txid := strings.TrimSpace(item.ClosingTxid); txid != "" {
+			return txid
+		}
+	}
+	return ""
 }
 
 func (c *Client) UpdateChannelFees(ctx context.Context, channelPoint string, applyAll bool, baseFeeMsat int64, feeRatePpm int64, timeLockDelta int64, inboundEnabled bool, inboundBaseMsat int64, inboundFeeRatePpm int64) error {
