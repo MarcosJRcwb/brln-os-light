@@ -1075,6 +1075,11 @@ func telegramActivityMirrorMessage(evt Notification) string {
 	if route := telegramNotificationRoute(evt); route != "" {
 		main += " - " + route
 	}
+	if evt.Type == "keysend" {
+		if memoDetail := telegramNotificationMemoDetail(evt); memoDetail != "" {
+			main += " | " + memoDetail
+		}
+	}
 	if feeDetail := telegramNotificationFeeDetail(evt); feeDetail != "" {
 		main += " | " + feeDetail
 	}
