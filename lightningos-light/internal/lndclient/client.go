@@ -24,6 +24,7 @@ import (
 	"lightningos-light/lnrpc/walletrpc"
 	"lightningos-light/lnrpc/wtclientrpc"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -1350,6 +1351,10 @@ func (c *Client) FindSpendingTransactionByOutpoint(ctx context.Context, txid str
 		return "", false, err
 	}
 	targetOutpoint := fmt.Sprintf("%s:%d", targetTxid, vout)
+	targetHash, err := chainhash.NewHashFromStr(targetTxid)
+	if err != nil {
+		return "", false, err
+	}
 
 	conn, err := c.dial(ctx, true)
 	if err != nil {
@@ -1379,6 +1384,36 @@ func (c *Client) FindSpendingTransactionByOutpoint(ctx context.Context, txid str
 			if outpoint == targetOutpoint {
 				return strings.TrimSpace(tx.GetTxHash()), true, nil
 			}
+		}
+
+		rawTxHex := strings.TrimSpace(tx.GetRawTxHex())
+		if rawTxHex == "" {
+			continue
+		}
+		rawTx, decodeErr := hex.DecodeString(rawTxHex)
+		if decodeErr != nil || len(rawTx) == 0 {
+			continue
+		}
+		var msgTx wire.MsgTx
+		if err := msgTx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+			continue
+		}
+		for _, in := range msgTx.TxIn {
+			if in == nil {
+				continue
+			}
+			prev := in.PreviousOutPoint
+			if prev.Index != vout {
+				continue
+			}
+			if !prev.Hash.IsEqual(targetHash) {
+				continue
+			}
+			hash := strings.TrimSpace(tx.GetTxHash())
+			if hash == "" {
+				hash = msgTx.TxHash().String()
+			}
+			return hash, true, nil
 		}
 	}
 
