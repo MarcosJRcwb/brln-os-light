@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import QRCode from 'qrcode'
 import { createInvoice, decodeInvoice, getLnChannels, getMempoolFees, getWalletAddress, getWalletSummary, payInvoice, sendOnchain } from '../api'
 import { getLocale } from '../i18n'
 
@@ -25,6 +26,7 @@ export default function Wallet() {
   const [summaryWarning, setSummaryWarning] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(true)
   const [address, setAddress] = useState('')
+  const [addressQr, setAddressQr] = useState<string | null>(null)
   const [addressStatus, setAddressStatus] = useState('')
   const [addressLoading, setAddressLoading] = useState(false)
   const [showAddress, setShowAddress] = useState(false)
@@ -305,6 +307,16 @@ export default function Wallet() {
     }
   }, [availableChannels, outgoingChannelPoint])
 
+  useEffect(() => {
+    if (!address) {
+      setAddressQr(null)
+      return
+    }
+    QRCode.toDataURL(address, { width: 220, margin: 1 })
+      .then(setAddressQr)
+      .catch(() => setAddressQr(null))
+  }, [address])
+
   const handleAddFunds = async () => {
     setShowAddress(true)
     setAddress('')
@@ -471,6 +483,13 @@ export default function Wallet() {
                 )}
                 {!addressLoading && address && (
                   <>
+                    {addressQr && (
+                      <img
+                        src={addressQr}
+                        alt={t('wallet.onchainDepositAddress')}
+                        className="mt-3 w-full max-w-[220px] rounded-xl border border-white/10 bg-white p-2"
+                      />
+                    )}
                     <p className="mt-2 text-xs font-mono break-all">{address}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <button className="btn-secondary text-xs px-3 py-1.5" onClick={handleCopy}>
