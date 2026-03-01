@@ -1328,20 +1328,6 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 		}
 		return ""
 	}
-	resolveClosingTxid := func(primary string, commitments *lnrpc.PendingChannelsResponse_Commitments) string {
-		candidates := []string{primary}
-		if commitments != nil {
-			candidates = append(candidates, commitments.GetLocalTxid(), commitments.GetRemoteTxid(), commitments.GetRemotePendingTxid())
-		}
-		for _, candidate := range candidates {
-			txid := strings.TrimSpace(candidate)
-			if txid != "" {
-				return txid
-			}
-		}
-		return ""
-	}
-
 	pending := []PendingChannelInfo{}
 	for _, item := range resp.PendingOpenChannels {
 		if item == nil || item.Channel == nil {
@@ -1375,7 +1361,7 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 			LocalBalanceSat:  ch.LocalBalance,
 			RemoteBalanceSat: ch.RemoteBalance,
 			Status:           "closing",
-			ClosingTxid:      resolveClosingTxid(item.ClosingTxid, nil),
+			ClosingTxid:      strings.TrimSpace(item.ClosingTxid),
 			Private:          ch.Private,
 		})
 	}
@@ -1393,7 +1379,7 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 			LocalBalanceSat:   ch.LocalBalance,
 			RemoteBalanceSat:  ch.RemoteBalance,
 			Status:            "force_closing",
-			ClosingTxid:       resolveClosingTxid(item.ClosingTxid, nil),
+			ClosingTxid:       strings.TrimSpace(item.ClosingTxid),
 			BlocksTilMaturity: item.BlocksTilMaturity,
 			LimboBalance:      item.LimboBalance,
 			Private:           ch.Private,
@@ -1413,7 +1399,7 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 			LocalBalanceSat:  ch.LocalBalance,
 			RemoteBalanceSat: ch.RemoteBalance,
 			Status:           "waiting_close",
-			ClosingTxid:      resolveClosingTxid(item.ClosingTxid, item.GetCommitments()),
+			ClosingTxid:      strings.TrimSpace(item.ClosingTxid),
 			LimboBalance:     item.LimboBalance,
 			Private:          ch.Private,
 		})
