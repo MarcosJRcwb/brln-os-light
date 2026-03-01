@@ -513,6 +513,9 @@ const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
   return btoa(binary)
 }
 
+const isFCRiskChannel = (ch: Channel) =>
+  !ch.active && Number(ch.unsettled_balance_sat || 0) > 0
+
 export default function LightningOps() {
   const { t } = useTranslation()
   const [channels, setChannels] = useState<Channel[]>([])
@@ -524,6 +527,7 @@ export default function LightningOps() {
   const [status, setStatus] = useState('')
   const [filter, setFilter] = useState<'all' | 'active' | 'inactive'>('all')
   const [profitFilter, setProfitFilter] = useState<'all' | 'profitable' | 'neutral' | 'deficit'>('all')
+  const [fcRiskOnly, setFcRiskOnly] = useState(false)
   const [search, setSearch] = useState('')
   const [minCapacity, setMinCapacity] = useState('')
   const [sortBy, setSortBy] = useState<'capacity' | 'local' | 'remote' | 'alias'>('local')
@@ -2097,6 +2101,8 @@ export default function LightningOps() {
     return counts
   }, [baseFilteredChannels])
 
+  const fcRiskCount = useMemo(() => channels.filter(isFCRiskChannel).length, [channels])
+
   const filteredChannels = useMemo(() => {
     let list = baseFilteredChannels
     if (profitFilter === 'profitable') {
@@ -2105,6 +2111,9 @@ export default function LightningOps() {
       list = list.filter((ch) => typeof ch.profit_fee_7d_sat === 'number' && ch.profit_fee_7d_sat === 0)
     } else if (profitFilter === 'deficit') {
       list = list.filter((ch) => typeof ch.profit_fee_7d_sat === 'number' && ch.profit_fee_7d_sat < 0)
+    }
+    if (fcRiskOnly) {
+      list = list.filter((ch) => isFCRiskChannel(ch))
     }
     const sorted = [...list]
     const direction = sortDir === 'desc' ? -1 : 1
@@ -2127,7 +2136,7 @@ export default function LightningOps() {
       return (aVal - bVal) * direction
     })
     return sorted
-  }, [baseFilteredChannels, profitFilter, sortBy, sortDir])
+  }, [baseFilteredChannels, fcRiskOnly, profitFilter, sortBy, sortDir])
   useEffect(() => {
     if (typeof window === 'undefined') return
     const targetChannelPoint = pendingScrollChannelRef.current
@@ -3048,6 +3057,24 @@ export default function LightningOps() {
     }))
   }, [channels])
 
+  const handleToggleFCRiskFilter = () => {
+    if (fcRiskOnly) {
+      setFcRiskOnly(false)
+      return
+    }
+    if (!fcRiskCount) return
+    setFilter('inactive')
+    setProfitFilter('all')
+    setSearch('')
+    setMinCapacity('')
+    setShowPrivate(true)
+    setFcRiskOnly(true)
+    const firstRiskChannel = channels.find((ch) => isFCRiskChannel(ch))
+    if (firstRiskChannel?.channel_point) {
+      pendingScrollChannelRef.current = firstRiskChannel.channel_point
+    }
+  }
+
   return (
     <section className="space-y-6">
       <div className="section-card">
@@ -3306,18 +3333,31 @@ export default function LightningOps() {
       <div className="section-card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold">{t('lightningOps.channels')}</h3>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <button className={filter === 'all' ? 'btn-primary' : 'btn-secondary'} onClick={() => setFilter('all')}>{t('common.all')}</button>
-            <button className={filter === 'active' ? 'btn-primary' : 'btn-secondary'} onClick={() => setFilter('active')}>{t('common.active')}</button>
-            <button className={filter === 'inactive' ? 'btn-primary' : 'btn-secondary'} onClick={() => setFilter('inactive')}>{t('common.inactive')}</button>
-            <button className={profitFilter === 'profitable' ? 'btn-primary' : 'btn-secondary'} onClick={() => setProfitFilter((prev) => (prev === 'profitable' ? 'all' : 'profitable'))}>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <button className={filter === 'all' && !fcRiskOnly ? 'btn-primary' : 'btn-secondary'} onClick={() => { setFilter('all'); setFcRiskOnly(false) }}>{t('common.all')}</button>
+            <button className={filter === 'active' && !fcRiskOnly ? 'btn-primary' : 'btn-secondary'} onClick={() => { setFilter('active'); setFcRiskOnly(false) }}>{t('common.active')}</button>
+            <button className={filter === 'inactive' && !fcRiskOnly ? 'btn-primary' : 'btn-secondary'} onClick={() => { setFilter('inactive'); setFcRiskOnly(false) }}>{t('common.inactive')}</button>
+            <button className={profitFilter === 'profitable' && !fcRiskOnly ? 'btn-primary' : 'btn-secondary'} onClick={() => { setProfitFilter((prev) => (prev === 'profitable' ? 'all' : 'profitable')); setFcRiskOnly(false) }}>
               {t('lightningOps.profitPositive')}: {profitCounts.profitable}
             </button>
-            <button className={profitFilter === 'neutral' ? 'btn-primary' : 'btn-secondary'} onClick={() => setProfitFilter((prev) => (prev === 'neutral' ? 'all' : 'neutral'))}>
+            <button className={profitFilter === 'neutral' && !fcRiskOnly ? 'btn-primary' : 'btn-secondary'} onClick={() => { setProfitFilter((prev) => (prev === 'neutral' ? 'all' : 'neutral')); setFcRiskOnly(false) }}>
               {t('lightningOps.profitNeutral')}: {profitCounts.neutral}
             </button>
-            <button className={profitFilter === 'deficit' ? 'btn-primary' : 'btn-secondary'} onClick={() => setProfitFilter((prev) => (prev === 'deficit' ? 'all' : 'deficit'))}>
+            <button className={profitFilter === 'deficit' && !fcRiskOnly ? 'btn-primary' : 'btn-secondary'} onClick={() => { setProfitFilter((prev) => (prev === 'deficit' ? 'all' : 'deficit')); setFcRiskOnly(false) }}>
               {t('lightningOps.profitNegative')}: {profitCounts.deficit}
+            </button>
+            <button
+              className={`px-3 py-2 rounded-full border text-xs transition ${
+                fcRiskOnly
+                  ? 'border-rose-300/70 bg-rose-500/25 text-rose-100'
+                  : 'border-rose-500/45 bg-rose-500/10 text-rose-300 hover:border-rose-300/70'
+              } ${!fcRiskCount && !fcRiskOnly ? 'opacity-60 cursor-not-allowed' : ''}`}
+              onClick={handleToggleFCRiskFilter}
+              disabled={!fcRiskCount && !fcRiskOnly}
+              title={t('lightningOps.fcRiskFilterHint')}
+              aria-label={t('lightningOps.fcRiskFilterHint')}
+            >
+              {t('lightningOps.fcRiskBadge', { count: fcRiskCount })}
             </button>
           </div>
         </div>
@@ -3551,6 +3591,7 @@ export default function LightningOps() {
                 const pendingHtlcCount = typeof ch.pending_htlc_count === 'number' && Number.isFinite(ch.pending_htlc_count)
                   ? Math.max(0, Math.round(ch.pending_htlc_count))
                   : 0
+                const isFCRisk = !ch.active && unsettledBalanceSat > 0
                 const marginPpm7d = typeof ch.out_ppm7d === 'number' && typeof ch.rebal_ppm7d === 'number'
                   ? ch.out_ppm7d - ch.rebal_ppm7d
                   : undefined
@@ -3559,9 +3600,11 @@ export default function LightningOps() {
                 const rebalanceLink = ch.channel_point
                   ? buildHashWithChannelPoint(REBALANCE_ROUTE_KEY, ch.channel_point)
                   : `#${REBALANCE_ROUTE_KEY}`
-                const cardClassBase = localDisabled && ch.active
-                  ? 'rounded-2xl border border-ember/40 bg-ember/10 p-5 min-h-[170px]'
-                  : 'rounded-2xl border border-white/10 bg-ink/60 p-5 min-h-[170px]'
+                const cardClassBase = isFCRisk
+                  ? 'rounded-2xl border border-rose-400/45 bg-rose-500/10 p-5 min-h-[170px]'
+                  : localDisabled && ch.active
+                    ? 'rounded-2xl border border-ember/40 bg-ember/10 p-5 min-h-[170px]'
+                    : 'rounded-2xl border border-white/10 bg-ink/60 p-5 min-h-[170px]'
                 const cardClass = `${cardClassBase} ${isFocused ? 'ring-1 ring-sky-300/70 bg-sky-500/10' : ''}`
                 return (
                   <div key={ch.channel_point} id={channelCardID(ch.channel_point)} className={cardClass}>
@@ -3584,9 +3627,14 @@ export default function LightningOps() {
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full px-3 py-1 text-xs ${ch.active ? 'bg-glow/20 text-glow' : 'bg-ember/20 text-ember'}`}>
+                        <span className={`rounded-full px-3 py-1 text-xs ${ch.active ? 'bg-glow/20 text-glow' : isFCRisk ? 'bg-rose-500/25 text-rose-100' : 'bg-ember/20 text-ember'}`}>
                           {ch.active ? t('common.active') : t('common.inactive')}
                         </span>
+                        {isFCRisk && (
+                          <span className="rounded-full px-2 py-1 text-[11px] border border-rose-300/70 bg-rose-500/20 text-rose-100">
+                            {t('lightningOps.fcRiskLabel')}
+                          </span>
+                        )}
                         {showToggle && (
                           <button
                             className={`btn-secondary text-xs px-3 py-1 ${statusBusy ? 'opacity-60 pointer-events-none' : ''}`}
@@ -3674,7 +3722,7 @@ export default function LightningOps() {
                         )}
                       </div>
                     )}
-                    <div className="mt-3 grid gap-2 xl:grid-cols-[1.2fr_0.6fr_1fr]">
+                    <div className="mt-3 grid gap-2 xl:grid-cols-[1.25fr_0.3fr_1fr]">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between gap-3 text-xs text-fog/70">
                           <span>{t('lightningOps.localLabel', { value: ch.local_balance_sat })}</span>
@@ -3695,13 +3743,13 @@ export default function LightningOps() {
                           <span className="w-12 text-left text-fog/70">{remotePctLabel}</span>
                         </div>
                       </div>
-                      <div className="rounded-xl border border-white/10 bg-ink/70 p-2.5">
-                        <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('lightningOps.pendingHtlcsTitle')}</p>
+                      <div className={`rounded-xl p-2.5 ${isFCRisk ? 'border border-rose-400/45 bg-rose-500/10' : 'border border-white/10 bg-ink/70'}`}>
+                        <p className={`text-[10px] uppercase tracking-wide ${isFCRisk ? 'text-rose-200' : 'text-fog/60'}`}>{t('lightningOps.pendingHtlcsTitle')}</p>
                         <div className="mt-1 grid grid-cols-1 gap-y-0.5 text-[11px]">
-                          <p className={unsettledBalanceSat > 0 ? 'text-brass' : 'text-fog'}>
+                          <p className={unsettledBalanceSat > 0 ? (isFCRisk ? 'text-rose-300' : 'text-brass') : 'text-fog'}>
                             {t('lightningOps.unsettledBalanceLabel', { value: unsettledBalanceSat })}
                           </p>
-                          <p className={pendingHtlcCount > 0 ? 'text-brass' : 'text-fog'}>
+                          <p className={pendingHtlcCount > 0 ? (isFCRisk ? 'text-rose-300' : 'text-brass') : 'text-fog'}>
                             {t('lightningOps.pendingHtlcCountLabel', { count: pendingHtlcCount })}
                           </p>
                         </div>
