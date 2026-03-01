@@ -18,6 +18,8 @@ import (
 
 	"lightningos-light/internal/lndclient"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -85,6 +87,11 @@ var (
 	ErrBalancedOpenInvalidAction              = errors.New("invalid session action")
 	ErrBalancedOpenInsufficientOnchainSafety  = errors.New("insufficient on-chain spendable balance for anchor reserve")
 	ErrBalancedOpenTransitOutpointUnavailable = errors.New("transit outpoint unavailable in wallet")
+)
+
+const (
+	balancedOpenRecoverySweepVBytes = int64(110)
+	balancedOpenRecoveryMinOutput   = int64(330)
 )
 
 type BalancedOpenService struct {
@@ -1361,37 +1368,9 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		}
 	}
 
-	unspent, err := s.lnd.IsOutpointUnspent(ctx, localTransit.TxID, localTransit.Vout)
-	if err == nil && !unspent {
-		spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
-		if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
-			patch := map[string]any{
-				"last_execution_err":        "",
-				"last_execution_error_unix": int64(0),
-			}
-			if session.Role == balancedOpenRoleInitiator {
-				patch["initiator_recovery_txid"] = spendingTxid
-			} else {
-				patch["accepter_recovery_txid"] = spendingTxid
-			}
-			updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_outpoint_already_spent", map[string]any{
-				"role":            session.Role,
-				"transit_tx_id":   localTransit.TxID,
-				"transit_tx_vout": localTransit.Vout,
-				"outpoint":        outpoint,
-				"spending_txid":   spendingTxid,
-			}, patch)
-			if err != nil {
-				return BalancedOpenSession{}, err
-			}
-			return updated, nil
-		}
-		return s.markTransitUnavailableRecovered(ctx, session, localTransit, outpoint)
-	}
-
-	txid, address, err := s.lnd.SweepOutpoint(ctx, localTransit.TxID, localTransit.Vout, satPerVbyte)
+	txid, address, err := s.publishBalancedTransitRecovery(ctx, session, localTransit, satPerVbyte)
 	if err != nil {
-		if strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "unknown utxo") {
+		if isBalancedOpenOutpointUnavailableError(err) {
 			spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
 			if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
 				patch := map[string]any{
@@ -1415,7 +1394,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 				}
 				return updated, nil
 			}
-			return s.markTransitUnavailableRecovered(ctx, session, localTransit, outpoint)
+			return BalancedOpenSession{}, fmt.Errorf("%w: %s", ErrBalancedOpenTransitOutpointUnavailable, outpoint)
 		}
 		return BalancedOpenSession{}, err
 	}
@@ -1444,25 +1423,6 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		return BalancedOpenSession{}, err
 	}
 	return updated, nil
-}
-
-func (s *BalancedOpenService) markTransitUnavailableRecovered(ctx context.Context, session BalancedOpenSession, localTransit balancedOpenTransitDetails, outpoint string) (BalancedOpenSession, error) {
-	patch := map[string]any{
-		"last_execution_err":        "",
-		"last_execution_error_unix": int64(0),
-	}
-	if session.Role == balancedOpenRoleInitiator {
-		patch["initiator_recovery_unavailable_outpoint"] = outpoint
-	} else {
-		patch["accepter_recovery_unavailable_outpoint"] = outpoint
-	}
-	return s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_outpoint_unavailable", map[string]any{
-		"role":            session.Role,
-		"transit_tx_id":   localTransit.TxID,
-		"transit_tx_vout": localTransit.Vout,
-		"outpoint":        outpoint,
-		"note":            "outpoint unavailable for recovery; likely already spent or wallet-resynced",
-	}, patch)
 }
 
 func (s *BalancedOpenService) handleIncomingCustomMessage(msg lndclient.CustomPeerMessage) {
@@ -2484,6 +2444,120 @@ func balancedTransitContribution(capacitySat int64, feeRateSatVb int64) (int64, 
 		return 0, ErrBalancedOpenInvalidFeeRate
 	}
 	return (capacitySat + (balancedOpenFundingVBytes * feeRateSatVb)) / 2, nil
+}
+
+func (s *BalancedOpenService) publishBalancedTransitRecovery(ctx context.Context, session BalancedOpenSession, transit balancedOpenTransitDetails, satPerVbyte int64) (string, string, error) {
+	if !hasBalancedTransit(transit, true) {
+		return "", "", errors.New("missing transit recovery details")
+	}
+	feeRate := satPerVbyte
+	if feeRate <= 0 {
+		feeRate = 1
+	}
+	feeSat := feeRate * balancedOpenRecoverySweepVBytes
+	outputSat := transit.OutputSat - feeSat
+	if outputSat < balancedOpenRecoveryMinOutput {
+		return "", "", fmt.Errorf("transit output too small to recover after fee: output=%d fee=%d", transit.OutputSat, feeSat)
+	}
+
+	recoveryAddress, err := s.lnd.NewAddress(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	recoveryScript, err := balancedAddressToScript(recoveryAddress)
+	if err != nil {
+		return "", "", err
+	}
+
+	hash, err := chainhash.NewHashFromStr(strings.ToLower(strings.TrimSpace(transit.TxID)))
+	if err != nil {
+		return "", "", err
+	}
+	tx := wire.NewMsgTx(2)
+	txin := wire.NewTxIn(wire.NewOutPoint(hash, transit.Vout), nil, nil)
+	txin.Sequence = 0
+	tx.AddTxIn(txin)
+	tx.AddTxOut(wire.NewTxOut(outputSat, recoveryScript))
+
+	unsignedTxHex, err := encodeBalancedTxHex(tx)
+	if err != nil {
+		return "", "", err
+	}
+	inputScript, err := s.lnd.ComputeInputScript(ctx, lndclient.ComputeInputScriptParams{
+		RawTxHex:        unsignedTxHex,
+		InputIndex:      0,
+		OutputScriptHex: transit.OutputScript,
+		OutputSat:       transit.OutputSat,
+		Key: lndclient.DerivedKey{
+			PublicKey: transit.Key.PublicKey,
+			Family:    transit.Key.Family,
+			Index:     transit.Key.Index,
+		},
+	})
+	if err != nil {
+		return "", "", err
+	}
+	tx.TxIn[0].Witness = cloneBalancedWitness(inputScript.Witness)
+	tx.TxIn[0].SignatureScript = append([]byte(nil), inputScript.SigScript...)
+
+	finalTxHex, err := encodeBalancedTxHex(tx)
+	if err != nil {
+		return "", "", err
+	}
+	publishErr := s.lnd.PublishTransaction(ctx, finalTxHex, fmt.Sprintf("balanced-open-recover-%s", session.SessionID))
+	if publishErr != nil && !isBalancedOpenAlreadyPublishedError(publishErr) {
+		return "", "", publishErr
+	}
+
+	return tx.TxHash().String(), strings.TrimSpace(recoveryAddress), nil
+}
+
+func balancedAddressToScript(address string) ([]byte, error) {
+	trimmed := strings.TrimSpace(address)
+	if trimmed == "" {
+		return nil, errors.New("recovery address required")
+	}
+
+	networks := []*chaincfg.Params{
+		&chaincfg.MainNetParams,
+		&chaincfg.TestNet3Params,
+		&chaincfg.RegressionNetParams,
+		&chaincfg.SigNetParams,
+	}
+	for _, net := range networks {
+		decoded, err := btcutil.DecodeAddress(trimmed, net)
+		if err != nil || decoded == nil || !decoded.IsForNet(net) {
+			continue
+		}
+		script, err := txscript.PayToAddrScript(decoded)
+		if err != nil {
+			return nil, err
+		}
+		return script, nil
+	}
+	return nil, errors.New("failed to decode recovery address script")
+}
+
+func isBalancedOpenAlreadyPublishedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "already have transaction") ||
+		strings.Contains(value, "transaction already in block chain") ||
+		strings.Contains(value, "already exists")
+}
+
+func isBalancedOpenOutpointUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "unknown utxo") ||
+		strings.Contains(value, "missing inputs") ||
+		strings.Contains(value, "missingorspent") ||
+		strings.Contains(value, "already spent") ||
+		strings.Contains(value, "txn-mempool-conflict")
 }
 
 func validateBalancedCapacityByMode(capacitySat int64, mode string) error {
