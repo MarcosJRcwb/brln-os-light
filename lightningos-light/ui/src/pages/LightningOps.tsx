@@ -4471,10 +4471,10 @@ export default function LightningOps() {
               {t('lightningOps.feeHint', { fastest: openFeeHint?.fastest ?? '-', hour: openFeeHint?.hour ?? '-' })}
             </span>
           </label>
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              className="input-field flex-1 min-w-[140px]"
-              placeholder={t('common.auto')}
+	          <div className="flex flex-wrap items-center gap-3">
+	            <input
+	              className="input-field flex-1 min-w-[140px]"
+	              placeholder={t('common.auto')}
               type="number"
               min={1}
               value={openFeeRate}
@@ -4552,15 +4552,18 @@ export default function LightningOps() {
                 }
               }}
               disabled={!closeFeeHint?.fastest || closeForce}
-            >
-              {t('lightningOps.useFastest')}
-            </button>
-            {closeFeeStatus && <p className="text-xs text-fog/50">{closeFeeStatus}</p>}
-          </div>
-          <label className="flex items-center gap-2 text-sm text-fog/70">
-            <input type="checkbox" checked={closeForce} onChange={(e) => setCloseForce(e.target.checked)} />
-            {t('lightningOps.forceClose')}
-          </label>
+	            >
+	              {t('lightningOps.useFastest')}
+	            </button>
+	            {closeFeeStatus && <p className="text-xs text-fog/50">{closeFeeStatus}</p>}
+	          </div>
+	          {!closeForce && Number(closeFeeRate || 0) > 0 && Number(closeFeeRate || 0) <= 1 && (
+	            <p className="text-xs text-brass">{t('lightningOps.closeLowFeeWarning')}</p>
+	          )}
+	          <label className="flex items-center gap-2 text-sm text-fog/70">
+	            <input type="checkbox" checked={closeForce} onChange={(e) => setCloseForce(e.target.checked)} />
+	            {t('lightningOps.forceClose')}
+	          </label>
           <button className="btn-secondary" onClick={handleCloseChannel}>{t('lightningOps.closeChannel')}</button>
           {closeStatus && <p className="text-sm text-brass">{closeStatus}</p>}
         </div>

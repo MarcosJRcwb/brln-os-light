@@ -1311,6 +1311,7 @@
     "enableChannel": "Habilitar",
     "feeHint": "Mais rápido: {{fastest}} | 1h: {{hour}}",
     "feeRate": "Fee rate (sat/vB)",
+    "closeLowFeeWarning": "Aviso: fechamento cooperativo com 1 sat/vB pode travar. Considere 2+ sat/vB ou force close se ficar preso.",
     "feeRatePpm": "Fee rate (ppm)",
     "feeSuggestionsUnavailable": "Sugestões de fee rate indisponíveis.",
     "feeUpdateFailed": "Falha ao atualizar fees.",

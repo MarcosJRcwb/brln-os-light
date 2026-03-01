@@ -37,6 +37,7 @@ const (
 	lndRPCTimeout              = 15 * time.Second
 	lndConnectTimeout          = 30 * time.Second
 	lndOpenChannelTimeout      = 60 * time.Second
+	lndCloseChannelTimeout     = 60 * time.Second
 	lndBatchOpenChannelTimeout = 90 * time.Second
 	batchOpenMaxChannels       = 50
 	lndWarmupPeriod            = 90 * time.Second
@@ -2257,7 +2258,7 @@ func (s *Server) handleLNCloseChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), lndRPCTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), lndCloseChannelTimeout)
 	defer cancel()
 
 	if req.SatPerVbyte < 0 {
