@@ -1377,7 +1377,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 			}
 			return updated, nil
 		}
-		return BalancedOpenSession{}, fmt.Errorf("%w: %s", ErrBalancedOpenTransitOutpointUnavailable, outpoint)
+		return s.markTransitUnavailableRecovered(ctx, session, localTransit, outpoint)
 	}
 
 	txid, address, err := s.lnd.SweepOutpoint(ctx, localTransit.TxID, localTransit.Vout, satPerVbyte)
@@ -1406,7 +1406,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 				}
 				return updated, nil
 			}
-			return BalancedOpenSession{}, fmt.Errorf("%w: %s", ErrBalancedOpenTransitOutpointUnavailable, outpoint)
+			return s.markTransitUnavailableRecovered(ctx, session, localTransit, outpoint)
 		}
 		return BalancedOpenSession{}, err
 	}
@@ -1435,6 +1435,25 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		return BalancedOpenSession{}, err
 	}
 	return updated, nil
+}
+
+func (s *BalancedOpenService) markTransitUnavailableRecovered(ctx context.Context, session BalancedOpenSession, localTransit balancedOpenTransitDetails, outpoint string) (BalancedOpenSession, error) {
+	patch := map[string]any{
+		"last_execution_err":        "",
+		"last_execution_error_unix": int64(0),
+	}
+	if session.Role == balancedOpenRoleInitiator {
+		patch["initiator_recovery_unavailable_outpoint"] = outpoint
+	} else {
+		patch["accepter_recovery_unavailable_outpoint"] = outpoint
+	}
+	return s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_outpoint_unavailable", map[string]any{
+		"role":            session.Role,
+		"transit_tx_id":   localTransit.TxID,
+		"transit_tx_vout": localTransit.Vout,
+		"outpoint":        outpoint,
+		"note":            "outpoint unavailable for recovery; likely already spent or wallet-resynced",
+	}, patch)
 }
 
 func (s *BalancedOpenService) handleIncomingCustomMessage(msg lndclient.CustomPeerMessage) {

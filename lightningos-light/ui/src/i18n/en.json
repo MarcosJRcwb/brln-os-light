@@ -1482,6 +1482,7 @@
     "balancedOpenEventAnchorPrecheckFailed": "Anchor reserve pre-check failed",
     "balancedOpenEventTransitRecovered": "Transit funds recovered",
     "balancedOpenEventTransitAlreadySpent": "Transit outpoint already spent",
+    "balancedOpenEventTransitUnavailable": "Transit outpoint unavailable (likely already settled)",
     "balancedOpenEventCanceled": "Session canceled",
     "balancedOpenStateSessionCreated": "Session created",
     "balancedOpenStateProposalSent": "Proposal sent",

@@ -2490,6 +2490,8 @@ export default function LightningOps() {
         return t('lightningOps.balancedOpenEventTransitRecovered')
       case 'transit_outpoint_already_spent':
         return t('lightningOps.balancedOpenEventTransitAlreadySpent')
+      case 'transit_outpoint_unavailable':
+        return t('lightningOps.balancedOpenEventTransitUnavailable')
       case 'session_canceled':
       case 'session_canceled_remote':
         return t('lightningOps.balancedOpenEventCanceled')
