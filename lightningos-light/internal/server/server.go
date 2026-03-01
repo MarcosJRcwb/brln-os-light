@@ -53,6 +53,10 @@ type Server struct {
 	shortcutsMu          sync.Mutex
 	shortcuts            *ShortcutsService
 	shortcutsErr         string
+	balancedOpenInitAt   time.Time
+	balancedOpenMu       sync.Mutex
+	balancedOpen         *BalancedOpenService
+	balancedOpenErr      string
 	scbRestoreMu         sync.Mutex
 	lndRestartMu         sync.RWMutex
 	lastLNDRestart       time.Time
@@ -82,6 +86,7 @@ func (s *Server) Run() error {
 	s.initDepix()
 	s.initAutofee()
 	s.initShortcuts()
+	s.initBalancedOpen()
 	if s.chat != nil {
 		s.chat.Start()
 	}
@@ -102,6 +107,9 @@ func (s *Server) Run() error {
 	}
 	if s.autofee != nil {
 		s.autofee.Start()
+	}
+	if s.balancedOpen != nil {
+		s.balancedOpen.Start()
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)

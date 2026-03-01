@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { addLnWatchtower, boostPeers, closeChannel, connectPeer, disconnectPeer, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
+import { acceptBalancedOpenSession, addLnWatchtower, boostPeers, cancelBalancedOpenSession, closeChannel, connectPeer, createBalancedOpenSession, disconnectPeer, executeBalancedOpenSession, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBalancedOpenSessionEvents, getBalancedOpenSessions, getBalancedOpenStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, proposeBalancedOpenSession, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
 
 type Channel = {
   channel_point: string
@@ -74,6 +74,36 @@ type BatchOpenItem = {
   local_funding_sat: number
   private: boolean
   close_address?: string
+}
+
+type BalancedOpenStatusPayload = {
+  enabled: boolean
+  available: boolean
+  error?: string
+}
+
+type BalancedOpenSession = {
+  session_id: string
+  role: 'initiator' | 'accepter'
+  peer_pubkey: string
+  peer_host?: string
+  capacity_sat: number
+  fee_rate_sat_vb: number
+  private: boolean
+  close_address?: string
+  state: string
+  state_updated_at: string
+  last_error?: string
+  created_at: string
+  metadata?: Record<string, unknown>
+}
+
+type BalancedOpenEvent = {
+  id: number
+  session_id: string
+  event_type: string
+  detail?: Record<string, unknown>
+  created_at: string
 }
 
 type AmbossHealthStatus = {
@@ -646,6 +676,21 @@ export default function LightningOps() {
   const [batchStatus, setBatchStatus] = useState('')
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchChannelPoints, setBatchChannelPoints] = useState<string[]>([])
+  const [balancedOpenInfo, setBalancedOpenInfo] = useState<BalancedOpenStatusPayload | null>(null)
+  const [balancedOpenSessions, setBalancedOpenSessions] = useState<BalancedOpenSession[]>([])
+  const [balancedPeer, setBalancedPeer] = useState('')
+  const [balancedCapacity, setBalancedCapacity] = useState('')
+  const [balancedFeeRate, setBalancedFeeRate] = useState('')
+  const [balancedCloseAddress, setBalancedCloseAddress] = useState('')
+  const [balancedPrivate, setBalancedPrivate] = useState(false)
+  const [balancedOpenStatus, setBalancedOpenStatus] = useState('')
+  const [balancedOpenBusy, setBalancedOpenBusy] = useState(false)
+  const [balancedOpenRefreshBusy, setBalancedOpenRefreshBusy] = useState(false)
+  const [balancedOpenActionBusyID, setBalancedOpenActionBusyID] = useState('')
+  const [balancedOpenDetailsSessionID, setBalancedOpenDetailsSessionID] = useState('')
+  const [balancedOpenEventsBySession, setBalancedOpenEventsBySession] = useState<Record<string, BalancedOpenEvent[]>>({})
+  const [balancedOpenEventsLoadingSessionID, setBalancedOpenEventsLoadingSessionID] = useState('')
+  const [balancedOpenEventsErrorBySession, setBalancedOpenEventsErrorBySession] = useState<Record<string, string>>({})
 
   const [closePoint, setClosePoint] = useState('')
   const [closeForce, setCloseForce] = useState(false)
@@ -1643,6 +1688,46 @@ export default function LightningOps() {
     setPendingChannels(Array.isArray(res?.pending_channels) ? res.pending_channels : [])
   }
 
+  const refreshBalancedOpen = async (opts?: { quiet?: boolean }) => {
+    const quiet = Boolean(opts?.quiet)
+    if (!quiet) {
+      setBalancedOpenRefreshBusy(true)
+    }
+    try {
+      const status = await getBalancedOpenStatus() as BalancedOpenStatusPayload
+      setBalancedOpenInfo(status)
+      if (!status?.enabled || !status?.available) {
+        setBalancedOpenSessions([])
+        setBalancedOpenDetailsSessionID('')
+        if (!quiet) {
+          setBalancedOpenStatus(status?.error || t('lightningOps.balancedOpenUnavailable'))
+        }
+        return
+      }
+
+      const payload = await getBalancedOpenSessions({ limit: 40 }) as any
+      const sessions = Array.isArray(payload?.items) ? payload.items as BalancedOpenSession[] : []
+      setBalancedOpenSessions(sessions)
+      if (balancedOpenDetailsSessionID) {
+        const stillExists = sessions.some((item) => item.session_id === balancedOpenDetailsSessionID)
+        if (!stillExists) {
+          setBalancedOpenDetailsSessionID('')
+        }
+      }
+      if (!quiet) {
+        setBalancedOpenStatus('')
+      }
+    } catch (err: any) {
+      if (!quiet) {
+        setBalancedOpenStatus(err?.message || t('lightningOps.balancedOpenLoadFailed'))
+      }
+    } finally {
+      if (!quiet) {
+        setBalancedOpenRefreshBusy(false)
+      }
+    }
+  }
+
   const load = async () => {
     setStatus(t('lightningOps.loadingChannels'))
     setPeerListStatus(t('lightningOps.loadingPeers'))
@@ -1652,7 +1737,7 @@ export default function LightningOps() {
     setHtlcManagerStatus(t('lightningOps.htlcManagerLoading'))
     setTorPeerCheckerStatus(t('lightningOps.torPeerLoading'))
     setAutofeeMessage(t('lightningOps.autofeeLoading'))
-    const [channelsResult, peersResult, watchtowerResult, ambossResult, chanHealResult, htlcManagerResult, htlcManagerLogsResult, htlcManagerFailedResult, torPeerCheckerResult, torPeerCheckerLogsResult, bitcoinLocalResult, autofeeConfigResult, autofeeStatusResult, autofeeChannelsResult, autofeeResultsResult] = await Promise.allSettled([
+    const [channelsResult, peersResult, watchtowerResult, ambossResult, chanHealResult, htlcManagerResult, htlcManagerLogsResult, htlcManagerFailedResult, torPeerCheckerResult, torPeerCheckerLogsResult, bitcoinLocalResult, autofeeConfigResult, autofeeStatusResult, autofeeChannelsResult, autofeeResultsResult, balancedOpenStatusResult, balancedOpenSessionsResult] = await Promise.allSettled([
       getLnChannels(),
       getLnPeers(),
       getLnWatchtowers(),
@@ -1667,7 +1752,9 @@ export default function LightningOps() {
       getAutofeeConfig(),
       getAutofeeStatus(),
       getAutofeeChannels(),
-      getAutofeeResults(buildAutofeeResultsQuery())
+      getAutofeeResults(buildAutofeeResultsQuery()),
+      getBalancedOpenStatus(),
+      getBalancedOpenSessions({ limit: 40 })
     ])
     if (channelsResult.status === 'fulfilled') {
       const res = channelsResult.value
@@ -1836,6 +1923,35 @@ export default function LightningOps() {
       const message = (autofeeResultsResult.reason as any)?.message || t('lightningOps.autofeeResultsUnavailable')
       setAutofeeResultsStatus(message)
     }
+    if (balancedOpenStatusResult.status === 'fulfilled') {
+      const payload = balancedOpenStatusResult.value as BalancedOpenStatusPayload
+      setBalancedOpenInfo(payload)
+      if (!payload?.enabled || !payload?.available) {
+        setBalancedOpenSessions([])
+        setBalancedOpenDetailsSessionID('')
+        setBalancedOpenStatus(payload?.error || t('lightningOps.balancedOpenUnavailable'))
+      } else if (balancedOpenSessionsResult.status === 'fulfilled') {
+        const itemsPayload = balancedOpenSessionsResult.value as any
+        const sessions = Array.isArray(itemsPayload?.items) ? itemsPayload.items as BalancedOpenSession[] : []
+        setBalancedOpenSessions(sessions)
+        if (balancedOpenDetailsSessionID) {
+          const stillExists = sessions.some((item) => item.session_id === balancedOpenDetailsSessionID)
+          if (!stillExists) {
+            setBalancedOpenDetailsSessionID('')
+          }
+        }
+        setBalancedOpenStatus('')
+      } else {
+        const message = (balancedOpenSessionsResult as PromiseRejectedResult)?.reason?.message || t('lightningOps.balancedOpenLoadFailed')
+        setBalancedOpenStatus(message)
+      }
+    } else {
+      const message = (balancedOpenStatusResult.reason as any)?.message || t('lightningOps.balancedOpenUnavailable')
+      setBalancedOpenInfo({ enabled: true, available: false, error: message })
+      setBalancedOpenSessions([])
+      setBalancedOpenDetailsSessionID('')
+      setBalancedOpenStatus(message)
+    }
   }
 
   useEffect(() => {
@@ -1971,12 +2087,39 @@ export default function LightningOps() {
           setTorPeerCheckerLogs([])
         })
     }
+    const fetchBalancedOpen = () => {
+      getBalancedOpenStatus()
+        .then((statusPayload: any) => {
+          if (!mounted) return
+          const status = statusPayload as BalancedOpenStatusPayload
+          setBalancedOpenInfo(status)
+          if (!status?.enabled || !status?.available) {
+            setBalancedOpenSessions([])
+            return
+          }
+          getBalancedOpenSessions({ limit: 40 })
+            .then((sessionsPayload: any) => {
+              if (!mounted) return
+              setBalancedOpenSessions(Array.isArray(sessionsPayload?.items) ? sessionsPayload.items : [])
+            })
+            .catch(() => {
+              if (!mounted) return
+              setBalancedOpenSessions([])
+            })
+        })
+        .catch(() => {
+          if (!mounted) return
+          setBalancedOpenInfo({ enabled: true, available: false })
+          setBalancedOpenSessions([])
+        })
+    }
     const timer = window.setInterval(() => {
       fetchWatchtowers()
       fetchAmboss()
       fetchChanHeal()
       fetchHtlcManager()
       fetchTorPeerChecker()
+      fetchBalancedOpen()
     }, 30000)
     return () => {
       mounted = false
@@ -2160,6 +2303,16 @@ export default function LightningOps() {
 
   const pendingOpen = useMemo(() => pendingChannels.filter((ch) => ch.status === 'opening'), [pendingChannels])
   const pendingClose = useMemo(() => pendingChannels.filter((ch) => ch.status !== 'opening'), [pendingChannels])
+  const balancedOpenSelectedSession = useMemo(
+    () => balancedOpenSessions.find((item) => item.session_id === balancedOpenDetailsSessionID) || null,
+    [balancedOpenSessions, balancedOpenDetailsSessionID]
+  )
+  const balancedOpenSelectedEvents = useMemo(
+    () => (balancedOpenDetailsSessionID ? (balancedOpenEventsBySession[balancedOpenDetailsSessionID] || []) : []),
+    [balancedOpenDetailsSessionID, balancedOpenEventsBySession]
+  )
+  const balancedOpenSelectedEventsError = balancedOpenDetailsSessionID ? (balancedOpenEventsErrorBySession[balancedOpenDetailsSessionID] || '') : ''
+  const balancedOpenSelectedEventsLoading = Boolean(balancedOpenDetailsSessionID && balancedOpenEventsLoadingSessionID === balancedOpenDetailsSessionID)
   const scbRecoveryAvailable = channels.length === 0 && pendingChannels.length === 0
   const scbRestorePhraseValid = scbRestorePhrase.trim().toUpperCase() === SCB_RECOVERY_CONFIRM_PHRASE
   const scbRestoreCanSubmit = scbRecoveryAvailable
@@ -2180,6 +2333,104 @@ export default function LightningOps() {
         return t('lightningOps.statusWaitingClose')
       default:
         return status
+    }
+  }
+
+  const balancedOpenStateLabel = (state: string) => {
+    switch (state) {
+      case 'session_created':
+        return t('lightningOps.balancedOpenStateSessionCreated')
+      case 'proposal_sent':
+        return t('lightningOps.balancedOpenStateProposalSent')
+      case 'proposal_received':
+        return t('lightningOps.balancedOpenStateProposalReceived')
+      case 'accepted':
+        return t('lightningOps.balancedOpenStateAccepted')
+      case 'funding_tx_half_signed':
+        return t('lightningOps.balancedOpenStateFundingHalf')
+      case 'funding_tx_fully_signed':
+        return t('lightningOps.balancedOpenStateFundingFull')
+      case 'channel_proposed_to_lnd':
+        return t('lightningOps.balancedOpenStateProposed')
+      case 'funding_broadcasted':
+        return t('lightningOps.balancedOpenStateBroadcasted')
+      case 'pending_open_detected':
+        return t('lightningOps.balancedOpenStatePending')
+      case 'active':
+        return t('lightningOps.balancedOpenStateActive')
+      case 'failed':
+        return t('lightningOps.balancedOpenStateFailed')
+      case 'canceled':
+        return t('lightningOps.balancedOpenStateCanceled')
+      case 'recovery_required':
+        return t('lightningOps.balancedOpenStateRecoveryRequired')
+      case 'recovered':
+        return t('lightningOps.balancedOpenStateRecovered')
+      default:
+        return state || t('common.unknown')
+    }
+  }
+
+  const isBalancedOpenTerminalState = (state: string) => {
+    return state === 'active' || state === 'failed' || state === 'canceled' || state === 'recovered'
+  }
+
+  const isBalancedOpenProposeEligible = (state: string) => {
+    return state === 'session_created' || state === 'proposal_sent' || state === 'proposal_received'
+  }
+
+  const canAcceptBalancedSession = (session: BalancedOpenSession) => {
+    return session.role === 'accepter' && session.state === 'proposal_received'
+  }
+
+  const canExecuteBalancedSession = (session: BalancedOpenSession) => {
+    return session.role === 'initiator' && (session.state === 'accepted' || session.state === 'recovery_required')
+  }
+
+  const canProposeBalancedSession = (session: BalancedOpenSession) => {
+    return session.role === 'initiator' && isBalancedOpenProposeEligible(session.state)
+  }
+
+  const formatBalancedDate = (value?: string) => {
+    if (!value) return t('common.na')
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return t('common.na')
+    return parsed.toLocaleString()
+  }
+
+  const formatBalancedEventType = (eventType: string) => {
+    switch ((eventType || '').trim()) {
+      case 'session_created':
+        return t('lightningOps.balancedOpenEventSessionCreated')
+      case 'proposal_sent':
+        return t('lightningOps.balancedOpenEventProposalSent')
+      case 'proposal_received':
+        return t('lightningOps.balancedOpenEventProposalReceived')
+      case 'proposal_accepted_local':
+      case 'proposal_accepted_remote':
+        return t('lightningOps.balancedOpenEventAccepted')
+      case 'channel_open_submitted':
+        return t('lightningOps.balancedOpenEventOpenSubmitted')
+      case 'funding_broadcasted_local':
+        return t('lightningOps.balancedOpenEventFundingBroadcasted')
+      case 'pending_open_detected':
+        return t('lightningOps.balancedOpenEventPendingDetected')
+      case 'channel_active_detected':
+        return t('lightningOps.balancedOpenEventActiveDetected')
+      case 'session_canceled':
+      case 'session_canceled_remote':
+        return t('lightningOps.balancedOpenEventCanceled')
+      default:
+        return eventType || t('common.unknown')
+    }
+  }
+
+  const formatBalancedEventDetail = (detail: unknown) => {
+    if (!detail || typeof detail !== 'object') return ''
+    try {
+      return JSON.stringify(detail, null, 2)
+    } catch {
+      return ''
     }
   }
 
@@ -2887,6 +3138,150 @@ export default function LightningOps() {
     } finally {
       setBatchBusy(false)
     }
+  }
+
+  const handleBalancedOpenCreateAndPropose = async () => {
+    if (balancedOpenBusy) return
+
+    const parsed = parseBatchPeerAddress(balancedPeer)
+    if (parsed.error) {
+      setBalancedOpenStatus(parsed.error)
+      return
+    }
+
+    const capacity = Number(balancedCapacity || 0)
+    if (capacity < 20000) {
+      setBalancedOpenStatus(t('lightningOps.minimumChannelSize'))
+      return
+    }
+    if (capacity % 2 !== 0) {
+      setBalancedOpenStatus(t('lightningOps.balancedOpenCapacityEven'))
+      return
+    }
+
+    const feeRate = Number(balancedFeeRate || 0)
+    const pubkey = parsed.pubkey.trim()
+    const pubkeyKey = pubkey.toLowerCase()
+    const hasHost = Boolean(parsed.host?.trim())
+
+    if (!connectedPubkeys.has(pubkeyKey) && !hasHost) {
+      setBalancedOpenStatus(t('lightningOps.batchOpenHostRequired'))
+      return
+    }
+
+    setBalancedOpenBusy(true)
+    setBalancedOpenStatus(t('lightningOps.balancedOpenCreating'))
+    try {
+      if (!connectedPubkeys.has(pubkeyKey) && hasHost) {
+        setBalancedOpenStatus(t('lightningOps.batchOpenConnectingPeer'))
+        try {
+          await connectPeer({ address: `${pubkey}@${parsed.host}`, perm: false })
+        } catch (err: any) {
+          const msg = String(err?.message || '').toLowerCase()
+          const alreadyConnected = msg.includes('already connected') || msg.includes('already have a connection')
+          if (!alreadyConnected) {
+            throw err
+          }
+        }
+      }
+
+      const peerAddress = hasHost ? `${pubkey}@${parsed.host}` : pubkey
+      const created = await createBalancedOpenSession({
+        peer_address: peerAddress,
+        capacity_sat: capacity,
+        fee_rate_sat_vb: feeRate > 0 ? feeRate : undefined,
+        private: balancedPrivate,
+        close_address: balancedCloseAddress.trim() || undefined,
+        role: 'initiator',
+      }) as any
+
+      const sessionID = String(created?.session_id || '').trim()
+      if (!sessionID) {
+        throw new Error(t('lightningOps.balancedOpenCreateFailed'))
+      }
+
+      setBalancedOpenStatus(t('lightningOps.balancedOpenProposing'))
+      await proposeBalancedOpenSession(sessionID)
+      setBalancedOpenStatus(t('lightningOps.balancedOpenProposalSent'))
+      setBalancedPeer('')
+      setBalancedCapacity('')
+      setBalancedCloseAddress('')
+      setBalancedPrivate(false)
+      await refreshBalancedOpen()
+      load()
+    } catch (err: any) {
+      setBalancedOpenStatus(err?.message || t('lightningOps.balancedOpenCreateFailed'))
+    } finally {
+      setBalancedOpenBusy(false)
+    }
+  }
+
+  const handleBalancedOpenAction = async (session: BalancedOpenSession, action: 'propose' | 'accept' | 'execute' | 'cancel') => {
+    if (balancedOpenActionBusyID) return
+    const sessionID = String(session.session_id || '').trim()
+    if (!sessionID) return
+
+    setBalancedOpenActionBusyID(`${action}:${sessionID}`)
+    try {
+      if (action === 'propose') {
+        setBalancedOpenStatus(t('lightningOps.balancedOpenProposing'))
+        await proposeBalancedOpenSession(sessionID)
+        setBalancedOpenStatus(t('lightningOps.balancedOpenProposalSent'))
+      } else if (action === 'accept') {
+        setBalancedOpenStatus(t('lightningOps.balancedOpenAccepting'))
+        await acceptBalancedOpenSession(sessionID)
+        setBalancedOpenStatus(t('lightningOps.balancedOpenAccepted'))
+      } else if (action === 'execute') {
+        setBalancedOpenStatus(t('lightningOps.balancedOpenExecuting'))
+        await executeBalancedOpenSession(sessionID)
+        setBalancedOpenStatus(t('lightningOps.balancedOpenExecutionSubmitted'))
+      } else if (action === 'cancel') {
+        const confirmed = window.confirm(t('lightningOps.balancedOpenCancelConfirm'))
+        if (!confirmed) return
+        setBalancedOpenStatus(t('lightningOps.balancedOpenCanceling'))
+        await cancelBalancedOpenSession(sessionID)
+        setBalancedOpenStatus(t('lightningOps.balancedOpenCanceled'))
+      }
+
+      await refreshBalancedOpen()
+      load()
+    } catch (err: any) {
+      setBalancedOpenStatus(err?.message || t('lightningOps.balancedOpenActionFailed'))
+    } finally {
+      setBalancedOpenActionBusyID('')
+    }
+  }
+
+  const fetchBalancedOpenEvents = async (sessionID: string) => {
+    const id = String(sessionID || '').trim()
+    if (!id) return
+
+    setBalancedOpenEventsLoadingSessionID(id)
+    setBalancedOpenEventsErrorBySession((prev) => ({ ...prev, [id]: '' }))
+    try {
+      const payload = await getBalancedOpenSessionEvents(id, { limit: 120 }) as any
+      const items = Array.isArray(payload?.items) ? payload.items as BalancedOpenEvent[] : []
+      setBalancedOpenEventsBySession((prev) => ({ ...prev, [id]: items }))
+    } catch (err: any) {
+      setBalancedOpenEventsErrorBySession((prev) => ({ ...prev, [id]: err?.message || t('lightningOps.balancedOpenEventsLoadFailed') }))
+    } finally {
+      setBalancedOpenEventsLoadingSessionID((current) => (current === id ? '' : current))
+    }
+  }
+
+  const handleBalancedOpenToggleDetails = async (sessionID: string) => {
+    const id = String(sessionID || '').trim()
+    if (!id) return
+
+    if (balancedOpenDetailsSessionID === id) {
+      setBalancedOpenDetailsSessionID('')
+      return
+    }
+
+    setBalancedOpenDetailsSessionID(id)
+    const cached = balancedOpenEventsBySession[id]
+    if (Array.isArray(cached) && cached.length > 0) return
+    await fetchBalancedOpenEvents(id)
   }
 
   const mempoolLink = (channelPoint: string) => {
@@ -4290,6 +4685,173 @@ export default function LightningOps() {
       </div>
 
       <div className="section-card space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold">{t('lightningOps.balancedOpenTitle')}</h3>
+            <p className="text-sm text-fog/60">{t('lightningOps.balancedOpenSubtitle')}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full ${balancedOpenInfo?.enabled ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-400/30' : 'bg-white/10 text-fog/60 border border-white/10'}`}>
+              {balancedOpenInfo?.enabled ? t('common.enabled') : t('common.disabled')}
+            </span>
+            <span className={`text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full ${balancedOpenInfo?.available ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-400/30' : 'bg-amber-500/15 text-amber-200 border border-amber-400/30'}`}>
+              {balancedOpenInfo?.available ? t('common.ok') : t('common.unavailable')}
+            </span>
+            <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => refreshBalancedOpen()} disabled={balancedOpenRefreshBusy}>
+              {balancedOpenRefreshBusy ? t('lightningOps.balancedOpenRefreshing') : t('common.refresh')}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <input
+            className="input-field"
+            placeholder={t('lightningOps.peerAddressPlaceholder')}
+            value={balancedPeer}
+            onChange={(e) => setBalancedPeer(e.target.value)}
+            disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
+          />
+          <input
+            className="input-field"
+            placeholder={t('lightningOps.balancedOpenCapacity')}
+            type="number"
+            min={20000}
+            step={2}
+            value={balancedCapacity}
+            onChange={(e) => setBalancedCapacity(e.target.value)}
+            disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
+          />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <input
+            className="input-field"
+            placeholder={t('lightningOps.feeRate')}
+            type="number"
+            min={0}
+            value={balancedFeeRate}
+            onChange={(e) => setBalancedFeeRate(e.target.value)}
+            disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
+          />
+          <input
+            className="input-field"
+            placeholder={t('lightningOps.closeAddressOptional')}
+            type="text"
+            value={balancedCloseAddress}
+            onChange={(e) => setBalancedCloseAddress(e.target.value)}
+            disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-fog/70">
+            <input type="checkbox" checked={balancedPrivate} onChange={(e) => setBalancedPrivate(e.target.checked)} disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available} />
+            {t('lightningOps.privateChannel')}
+          </label>
+          <button className="btn-primary" type="button" onClick={handleBalancedOpenCreateAndPropose} disabled={balancedOpenBusy || !balancedOpenInfo?.enabled || !balancedOpenInfo?.available}>
+            {balancedOpenBusy ? t('lightningOps.balancedOpenRunning') : t('lightningOps.balancedOpenCreateAndPropose')}
+          </button>
+        </div>
+        <p className="text-xs text-fog/50">{t('lightningOps.balancedOpenNote')}</p>
+        {balancedOpenInfo?.error && !balancedOpenInfo?.available && (
+          <p className="text-xs text-amber-200">{balancedOpenInfo.error}</p>
+        )}
+        {balancedOpenStatus && <p className="text-sm text-brass">{balancedOpenStatus}</p>}
+
+        {balancedOpenSessions.length > 0 ? (
+          <div className="rounded-2xl border border-white/10 bg-ink/60 p-3 space-y-2 max-h-[320px] overflow-y-auto">
+            {balancedOpenSessions.map((session) => {
+              const alias = peerAliasMap.get((session.peer_pubkey || '').toLowerCase()) || session.peer_pubkey
+              const oneSideSat = Math.floor(Number(session.capacity_sat || 0) / 2)
+              const sessionBusy = Boolean(balancedOpenActionBusyID && balancedOpenActionBusyID.endsWith(`:${session.session_id}`))
+              const detailsOpen = balancedOpenDetailsSessionID === session.session_id
+              return (
+                <div key={session.session_id} className="flex flex-wrap items-start justify-between gap-3 border-b border-white/5 pb-2 last:border-b-0 last:pb-0">
+                  <div className="space-y-1 text-xs text-fog/75">
+                    <p className="text-fog">
+                      {alias} - <span className="uppercase">{session.role}</span>
+                    </p>
+                    <p className="text-fog/60 break-all">{session.peer_pubkey}{session.peer_host ? `@${session.peer_host}` : ''}</p>
+                    <p>
+                      {t('lightningOps.balancedOpenCapacityLabel', {
+                        total: Number(session.capacity_sat || 0).toLocaleString(),
+                        each: oneSideSat.toLocaleString(),
+                      })}
+                    </p>
+                    <p>{t('lightningOps.balancedOpenStateLabel', { state: balancedOpenStateLabel(session.state) })}</p>
+                    <p className="text-fog/60">{t('lightningOps.balancedOpenUpdatedAt', { time: formatBalancedDate(session.state_updated_at) })}</p>
+                    {session.last_error ? <p className="text-amber-200">{session.last_error}</p> : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {canProposeBalancedSession(session) && (
+                      <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'propose')} disabled={sessionBusy}>
+                        {t('lightningOps.balancedOpenActionPropose')}
+                      </button>
+                    )}
+                    {canAcceptBalancedSession(session) && (
+                      <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'accept')} disabled={sessionBusy}>
+                        {t('lightningOps.balancedOpenActionAccept')}
+                      </button>
+                    )}
+                    {canExecuteBalancedSession(session) && (
+                      <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'execute')} disabled={sessionBusy}>
+                        {t('lightningOps.balancedOpenActionExecute')}
+                      </button>
+                    )}
+                    {!isBalancedOpenTerminalState(session.state) && (
+                      <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'cancel')} disabled={sessionBusy}>
+                        {t('lightningOps.balancedOpenActionCancel')}
+                      </button>
+                    )}
+                    <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenToggleDetails(session.session_id)} disabled={sessionBusy}>
+                      {detailsOpen ? t('common.hide') : t('lightningOps.balancedOpenActionDetails')}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-fog/50">{t('lightningOps.balancedOpenNoSessions')}</p>
+        )}
+        {balancedOpenDetailsSessionID && balancedOpenSelectedSession && (
+          <div className="rounded-2xl border border-white/10 bg-ink/60 p-3 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-fog/70">{t('lightningOps.balancedOpenEventsTitle')}</p>
+              <button
+                className="btn-secondary text-xs px-3 py-1.5"
+                type="button"
+                onClick={() => fetchBalancedOpenEvents(balancedOpenDetailsSessionID)}
+                disabled={balancedOpenSelectedEventsLoading}
+              >
+                {balancedOpenSelectedEventsLoading ? t('lightningOps.balancedOpenRefreshing') : t('common.refresh')}
+              </button>
+            </div>
+            <p className="text-xs text-fog/60 break-all">{balancedOpenSelectedSession.session_id}</p>
+            {balancedOpenSelectedEventsError ? <p className="text-xs text-amber-200">{balancedOpenSelectedEventsError}</p> : null}
+            {balancedOpenSelectedEventsLoading ? (
+              <p className="text-xs text-fog/60">{t('lightningOps.balancedOpenEventsLoading')}</p>
+            ) : balancedOpenSelectedEvents.length > 0 ? (
+              <div className="space-y-2 max-h-[260px] overflow-y-auto">
+                {balancedOpenSelectedEvents.map((event) => {
+                  const rawDetail = formatBalancedEventDetail(event.detail)
+                  return (
+                    <div key={`${event.id}-${event.created_at}`} className="rounded-xl border border-white/10 bg-black/20 p-2 text-xs text-fog/75 space-y-1">
+                      <p className="text-fog">{formatBalancedEventType(event.event_type)}</p>
+                      <p className="text-fog/60">{formatBalancedDate(event.created_at)}</p>
+                      {rawDetail ? (
+                        <pre className="text-[11px] text-fog/70 whitespace-pre-wrap break-all">{rawDetail}</pre>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-xs text-fog/60">{t('lightningOps.balancedOpenEventsEmpty')}</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="section-card space-y-4">
         <div>
           <h3 className="text-lg font-semibold">{t('lightningOps.watchtowerTitle')}</h3>
           <p className="text-sm text-fog/60">{t('lightningOps.watchtowerSubtitle')}</p>
@@ -4932,3 +5494,4 @@ export default function LightningOps() {
     </section>
   )
 }
+

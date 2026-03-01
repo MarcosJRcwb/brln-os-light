@@ -130,6 +130,15 @@ func (s *Server) routes() http.Handler {
 		r.Post("/channel/close", s.handleLNCloseChannel)
 		r.Post("/channel/fees", s.handleLNUpdateFees)
 		r.Post("/channel/status", s.handleLNUpdateChanStatus)
+		r.Get("/balanced-open/status", s.handleBalancedOpenStatusGet)
+		r.Get("/balanced-open/sessions", s.handleBalancedOpenSessionsGet)
+		r.Post("/balanced-open/sessions", s.handleBalancedOpenSessionsPost)
+		r.Get("/balanced-open/sessions/{id}", s.handleBalancedOpenSessionGet)
+		r.Get("/balanced-open/sessions/{id}/events", s.handleBalancedOpenSessionEventsGet)
+		r.Post("/balanced-open/sessions/{id}/propose", s.handleBalancedOpenSessionProposePost)
+		r.Post("/balanced-open/sessions/{id}/accept", s.handleBalancedOpenSessionAcceptPost)
+		r.Post("/balanced-open/sessions/{id}/execute", s.handleBalancedOpenSessionExecutePost)
+		r.Post("/balanced-open/sessions/{id}/cancel", s.handleBalancedOpenSessionCancelPost)
 	})
 
 	r.Route("/api/rebalance", func(r chi.Router) {

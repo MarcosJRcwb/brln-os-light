@@ -239,6 +239,46 @@ export const updateChannelFees = (payload: {
   inbound_base_msat?: number
   inbound_fee_rate_ppm?: number
 }) => request('/api/lnops/channel/fees', { method: 'POST', body: JSON.stringify(payload) })
+export const getBalancedOpenStatus = () => request('/api/lnops/balanced-open/status')
+export const getBalancedOpenSessions = (params?: {
+  limit?: number
+  state?: string
+  role?: string
+  peer_pubkey?: string
+}) => request(`/api/lnops/balanced-open/sessions${buildQuery(params)}`)
+export const getBalancedOpenSession = (sessionId: string) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}`)
+export const getBalancedOpenSessionEvents = (sessionId: string, params?: { limit?: number }) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/events${buildQuery(params)}`)
+export const createBalancedOpenSession = (payload: {
+  peer_address: string
+  capacity_sat: number
+  fee_rate_sat_vb?: number
+  private?: boolean
+  close_address?: string
+  role?: 'initiator' | 'accepter'
+  metadata?: Record<string, unknown>
+}) => request('/api/lnops/balanced-open/sessions', { method: 'POST', body: JSON.stringify(payload) })
+export const proposeBalancedOpenSession = (sessionId: string) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/propose`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+export const acceptBalancedOpenSession = (sessionId: string) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/accept`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+export const executeBalancedOpenSession = (sessionId: string) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/execute`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+export const cancelBalancedOpenSession = (sessionId: string, payload?: { reason?: string }) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+  })
 
 export const getChatMessages = (peerPubkey: string, limit = 200) =>
   request(`/api/chat/messages?peer_pubkey=${encodeURIComponent(peerPubkey)}&limit=${limit}`)

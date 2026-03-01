@@ -1589,9 +1589,22 @@ func (c *Client) GetNodeDetails(ctx context.Context, pubkey string) (NodeDetails
 }
 
 func (c *Client) OpenChannel(ctx context.Context, pubkeyHex string, localFundingSat int64, closeAddress string, private bool, satPerVbyte int64) (string, error) {
+	return c.OpenChannelWithPush(ctx, pubkeyHex, localFundingSat, 0, closeAddress, private, satPerVbyte)
+}
+
+func (c *Client) OpenChannelWithPush(ctx context.Context, pubkeyHex string, localFundingSat int64, pushSat int64, closeAddress string, private bool, satPerVbyte int64) (string, error) {
 	pubkeyHex = strings.TrimSpace(pubkeyHex)
 	if pubkeyHex == "" {
 		return "", errors.New("pubkey required")
+	}
+	if localFundingSat <= 0 {
+		return "", errors.New("local funding must be positive")
+	}
+	if pushSat < 0 {
+		return "", errors.New("push amount must be zero or positive")
+	}
+	if pushSat > localFundingSat {
+		return "", errors.New("push amount cannot exceed local funding")
 	}
 	pubkey, err := hex.DecodeString(pubkeyHex)
 	if err != nil {
@@ -1608,6 +1621,7 @@ func (c *Client) OpenChannel(ctx context.Context, pubkeyHex string, localFunding
 	req := &lnrpc.OpenChannelRequest{
 		NodePubkey:         pubkey,
 		LocalFundingAmount: localFundingSat,
+		PushSat:            pushSat,
 		Private:            private,
 	}
 	if satPerVbyte > 0 {
