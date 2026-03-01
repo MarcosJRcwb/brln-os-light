@@ -27,20 +27,21 @@ import (
 )
 
 const (
-	balancedOpenDefaultListLimit  = 50
-	balancedOpenMaxListLimit      = 500
-	balancedOpenDefaultEventList  = 100
-	balancedOpenMaxEventList      = 500
-	balancedOpenMinCapacitySat    = 20000
-	balancedOpenProtocolVersion   = 1
-	balancedOpenCustomMsgType     = uint32(42069)
-	balancedOpenReconcileEvery    = 20 * time.Second
-	balancedOpenExecutionModePush = "push_sat_v1"
-	balancedOpenExecutionModeDual = "dual_funded_v1"
-	balancedOpenMultiSigKeyFamily = int32(0)
-	balancedOpenTransitKeyFamily  = int32(805)
-	balancedOpenFundingVBytes     = int64(190)
-	balancedOpenAnchorSafetySat   = int64(10000)
+	balancedOpenDefaultListLimit   = 50
+	balancedOpenMaxListLimit       = 500
+	balancedOpenDefaultEventList   = 100
+	balancedOpenMaxEventList       = 500
+	balancedOpenMinCapacitySat     = 20000
+	balancedOpenMinDualCapacitySat = 40000
+	balancedOpenProtocolVersion    = 1
+	balancedOpenCustomMsgType      = uint32(42069)
+	balancedOpenReconcileEvery     = 20 * time.Second
+	balancedOpenExecutionModePush  = "push_sat_v1"
+	balancedOpenExecutionModeDual  = "dual_funded_v1"
+	balancedOpenMultiSigKeyFamily  = int32(0)
+	balancedOpenTransitKeyFamily   = int32(805)
+	balancedOpenFundingVBytes      = int64(190)
+	balancedOpenAnchorSafetySat    = int64(10000)
 )
 
 const (
@@ -946,9 +947,6 @@ func (s *BalancedOpenService) CreateSession(ctx context.Context, params Balanced
 	if !isValidPubkeyHex(pubkey) {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidPeerKey
 	}
-	if params.CapacitySat < balancedOpenMinCapacitySat || params.CapacitySat%2 != 0 {
-		return BalancedOpenSession{}, ErrBalancedOpenInvalidCapacity
-	}
 	if params.FeeRateSatVb < 0 {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidFeeRate
 	}
@@ -966,6 +964,17 @@ func (s *BalancedOpenService) CreateSession(ctx context.Context, params Balanced
 		meta = json.RawMessage(fmt.Sprintf(`{"execution_mode":"%s"}`, balancedOpenExecutionModeDual))
 	} else if !json.Valid(meta) {
 		return BalancedOpenSession{}, errors.New("invalid metadata json")
+	}
+	metaState, err := decodeBalancedOpenMetadata(meta)
+	if err != nil {
+		return BalancedOpenSession{}, errors.New("invalid metadata json")
+	}
+	mode := normalizeBalancedExecutionMode(metaState.ExecutionMode)
+	if mode == "" {
+		mode = balancedOpenExecutionModeDual
+	}
+	if err := validateBalancedCapacityByMode(params.CapacitySat, mode); err != nil {
+		return BalancedOpenSession{}, err
 	}
 
 	sessionID, err := newBalancedOpenSessionID()
@@ -1505,15 +1514,15 @@ func (s *BalancedOpenService) upsertSessionFromProposal(ctx context.Context, sen
 	if !isValidPubkeyHex(sender) {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidPeerKey
 	}
-	if msg.CapacitySat < balancedOpenMinCapacitySat || msg.CapacitySat%2 != 0 {
-		return BalancedOpenSession{}, ErrBalancedOpenInvalidCapacity
-	}
 	if msg.FeeRateSatVb < 0 {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidFeeRate
 	}
 	mode := normalizeBalancedExecutionMode(msg.ExecutionMode)
 	if mode == "" {
 		mode = balancedOpenExecutionModePush
+	}
+	if err := validateBalancedCapacityByMode(msg.CapacitySat, mode); err != nil {
+		return BalancedOpenSession{}, err
 	}
 	if mode == balancedOpenExecutionModeDual {
 		if !isValidPubkeyHex(msg.MultisigPubkey) {
@@ -2038,8 +2047,8 @@ func validateBalancedDualExecuteArtifacts(session BalancedOpenSession, meta bala
 	if len(meta.AccepterInputWitness) == 0 {
 		return errors.New("missing accepter funding witness")
 	}
-	if session.CapacitySat <= 0 || session.CapacitySat%2 != 0 {
-		return ErrBalancedOpenInvalidCapacity
+	if err := validateBalancedCapacityByMode(session.CapacitySat, balancedOpenExecutionModeDual); err != nil {
+		return err
 	}
 	return nil
 }
@@ -2468,13 +2477,23 @@ func balancedEffectiveFeeRate(value int64) int64 {
 }
 
 func balancedTransitContribution(capacitySat int64, feeRateSatVb int64) (int64, error) {
-	if capacitySat <= 0 || capacitySat%2 != 0 {
-		return 0, ErrBalancedOpenInvalidCapacity
+	if err := validateBalancedCapacityByMode(capacitySat, balancedOpenExecutionModeDual); err != nil {
+		return 0, err
 	}
 	if feeRateSatVb <= 0 {
 		return 0, ErrBalancedOpenInvalidFeeRate
 	}
 	return (capacitySat + (balancedOpenFundingVBytes * feeRateSatVb)) / 2, nil
+}
+
+func validateBalancedCapacityByMode(capacitySat int64, mode string) error {
+	if capacitySat < balancedOpenMinCapacitySat || capacitySat%2 != 0 {
+		return ErrBalancedOpenInvalidCapacity
+	}
+	if normalizeBalancedExecutionMode(mode) == balancedOpenExecutionModeDual && capacitySat < balancedOpenMinDualCapacitySat {
+		return fmt.Errorf("%w: dual-funded requires at least %d sats total capacity (%d sats per side)", ErrBalancedOpenInvalidCapacity, balancedOpenMinDualCapacitySat, balancedOpenMinCapacitySat)
+	}
+	return nil
 }
 
 func isBalancedOpenTxID(txid string) bool {

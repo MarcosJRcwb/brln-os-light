@@ -1439,6 +1439,7 @@
     "balancedOpenRunning": "Executando balanced open...",
     "balancedOpenCreating": "Criando sessao de balanced open...",
     "balancedOpenCreateFailed": "Falha ao criar sessao de balanced open.",
+    "balancedOpenMinimumDualCapacity": "No modo dual-funded, o minimo total e 40000 sats (20000 sats por lado).",
     "balancedOpenProposing": "Enviando proposta de balanced open...",
     "balancedOpenProposalSent": "Proposta de balanced open enviada.",
     "balancedOpenAccepting": "Aceitando proposta de balanced open...",

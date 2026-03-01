@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { acceptBalancedOpenSession, addLnWatchtower, boostPeers, cancelBalancedOpenSession, closeChannel, connectPeer, createBalancedOpenSession, disconnectPeer, executeBalancedOpenSession, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBalancedOpenSessionEvents, getBalancedOpenSessions, getBalancedOpenStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, proposeBalancedOpenSession, recoverBalancedOpenSession, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
 
+const BALANCED_OPEN_MIN_DUAL_CAPACITY_SAT = 40000
+
 type Channel = {
   channel_point: string
   channel_id: number
@@ -3237,8 +3239,8 @@ export default function LightningOps() {
     }
 
     const capacity = Number(balancedCapacity || 0)
-    if (capacity < 20000) {
-      setBalancedOpenStatus(t('lightningOps.minimumChannelSize'))
+    if (capacity < BALANCED_OPEN_MIN_DUAL_CAPACITY_SAT) {
+      setBalancedOpenStatus(t('lightningOps.balancedOpenMinimumDualCapacity'))
       return
     }
     if (capacity % 2 !== 0) {

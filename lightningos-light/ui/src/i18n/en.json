@@ -1439,6 +1439,7 @@
     "balancedOpenRunning": "Running balanced open...",
     "balancedOpenCreating": "Creating balanced open session...",
     "balancedOpenCreateFailed": "Failed to create balanced open session.",
+    "balancedOpenMinimumDualCapacity": "In dual-funded mode, minimum total capacity is 40000 sats (20000 sats per side).",
     "balancedOpenProposing": "Sending balanced open proposal...",
     "balancedOpenProposalSent": "Balanced open proposal sent.",
     "balancedOpenAccepting": "Accepting balanced open proposal...",
