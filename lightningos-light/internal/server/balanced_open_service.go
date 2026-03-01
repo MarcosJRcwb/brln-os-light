@@ -1971,7 +1971,7 @@ func (s *BalancedOpenService) recoverOrphanFundingOutput(ctx context.Context, se
 
 	localSig := balancedOpenOrphanSigForRole(meta, session.Role)
 	if !isBalancedOpenSigHex(localSig) {
-		inputScript, err := s.lnd.ComputeInputScript(ctx, lndclient.ComputeInputScriptParams{
+		rawSig, err := s.lnd.SignOutputRaw(ctx, lndclient.SignOutputRawParams{
 			RawTxHex:        plan.TxHex,
 			InputIndex:      0,
 			OutputScriptHex: plan.FundingPkScriptHex,
@@ -1986,10 +1986,11 @@ func (s *BalancedOpenService) recoverOrphanFundingOutput(ctx context.Context, se
 		if err != nil {
 			return BalancedOpenSession{}, err
 		}
-		sigHex, err := balancedExtractSigHex(inputScript.Witness)
-		if err != nil {
-			return BalancedOpenSession{}, err
+		// SignOutputRaw returns DER signature without sighash flag.
+		if len(rawSig) == 0 || rawSig[0] != 0x30 {
+			return BalancedOpenSession{}, errors.New("invalid orphan recovery signature format")
 		}
+		sigHex := hex.EncodeToString(append(append([]byte(nil), rawSig...), byte(0x01)))
 		meta = balancedOpenSetOrphanSigForRole(meta, session.Role, sigHex)
 		localSig = sigHex
 	}

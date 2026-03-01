@@ -106,6 +106,17 @@ type ComputeInputScriptParams struct {
 	SignMethod       signrpc.SignMethod
 }
 
+type SignOutputRawParams struct {
+	RawTxHex         string
+	InputIndex       uint32
+	OutputScriptHex  string
+	OutputSat        int64
+	Key              DerivedKey
+	WitnessScriptHex string
+	SighashType      uint32
+	SignMethod       signrpc.SignMethod
+}
+
 func New(cfg *config.Config, logger *log.Logger) *Client {
 	return &Client{cfg: cfg, logger: logger}
 }
@@ -2108,6 +2119,84 @@ func (c *Client) ComputeInputScript(ctx context.Context, params ComputeInputScri
 	}
 
 	return out, nil
+}
+
+func (c *Client) SignOutputRaw(ctx context.Context, params SignOutputRawParams) ([]byte, error) {
+	txHex := strings.TrimSpace(params.RawTxHex)
+	if txHex == "" {
+		return nil, errors.New("raw tx required")
+	}
+	rawTx, err := hex.DecodeString(txHex)
+	if err != nil || len(rawTx) == 0 {
+		return nil, errors.New("invalid raw tx")
+	}
+	if params.OutputSat <= 0 {
+		return nil, errors.New("output sat must be positive")
+	}
+
+	outputScriptHex := strings.TrimSpace(params.OutputScriptHex)
+	if outputScriptHex == "" {
+		return nil, errors.New("output script required")
+	}
+	outputScript, err := hex.DecodeString(outputScriptHex)
+	if err != nil || len(outputScript) == 0 {
+		return nil, errors.New("invalid output script")
+	}
+
+	keyRaw, err := hex.DecodeString(strings.TrimSpace(params.Key.PublicKey))
+	if err != nil || len(keyRaw) == 0 {
+		return nil, errors.New("invalid signing key")
+	}
+
+	desc := &signrpc.SignDescriptor{
+		KeyDesc: &signrpc.KeyDescriptor{
+			RawKeyBytes: keyRaw,
+			KeyLoc: &signrpc.KeyLocator{
+				KeyFamily: params.Key.Family,
+				KeyIndex:  params.Key.Index,
+			},
+		},
+		Output: &signrpc.TxOut{
+			Value:    params.OutputSat,
+			PkScript: outputScript,
+		},
+		Sighash:    params.SighashType,
+		InputIndex: int32(params.InputIndex),
+		SignMethod: params.SignMethod,
+	}
+	if desc.Sighash == 0 {
+		desc.Sighash = 1
+	}
+
+	if witnessScriptHex := strings.TrimSpace(params.WitnessScriptHex); witnessScriptHex != "" {
+		witnessScript, err := hex.DecodeString(witnessScriptHex)
+		if err != nil {
+			return nil, errors.New("invalid witness script")
+		}
+		desc.WitnessScript = witnessScript
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	client := signrpc.NewSignerClient(conn)
+	resp, err := client.SignOutputRaw(ctx, &signrpc.SignReq{
+		RawTxBytes: rawTx,
+		SignDescs: []*signrpc.SignDescriptor{
+			desc,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.GetRawSigs()) == 0 || len(resp.GetRawSigs()[0]) == 0 {
+		return nil, errors.New("empty raw signature")
+	}
+
+	return append([]byte(nil), resp.GetRawSigs()[0]...), nil
 }
 
 func (c *Client) PublishTransaction(ctx context.Context, txHex string, label string) error {
