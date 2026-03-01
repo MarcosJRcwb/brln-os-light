@@ -1393,6 +1393,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	if session.State != balancedOpenStateRecoveryRequired &&
 		session.State != balancedOpenStateCanceled &&
 		!(session.State == balancedOpenStateActive && orphanEligible) &&
+		!(session.State == balancedOpenStateRecovered && orphanEligible) &&
 		!recoveredRetry {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
