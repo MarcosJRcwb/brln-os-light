@@ -72,17 +72,18 @@ const (
 )
 
 var (
-	ErrBalancedOpenDBUnavailable             = errors.New("balanced open db unavailable")
-	ErrBalancedOpenSessionNotFound           = errors.New("balanced open session not found")
-	ErrBalancedOpenInvalidPeerKey            = errors.New("invalid peer pubkey")
-	ErrBalancedOpenInvalidCapacity           = errors.New("invalid capacity")
-	ErrBalancedOpenInvalidFeeRate            = errors.New("invalid fee rate")
-	ErrBalancedOpenInvalidRole               = errors.New("invalid role")
-	ErrBalancedOpenInvalidState              = errors.New("invalid state")
-	ErrBalancedOpenTerminalState             = errors.New("session already in terminal state")
-	ErrBalancedOpenInvalidSession            = errors.New("invalid session")
-	ErrBalancedOpenInvalidAction             = errors.New("invalid session action")
-	ErrBalancedOpenInsufficientOnchainSafety = errors.New("insufficient on-chain spendable balance for anchor reserve")
+	ErrBalancedOpenDBUnavailable              = errors.New("balanced open db unavailable")
+	ErrBalancedOpenSessionNotFound            = errors.New("balanced open session not found")
+	ErrBalancedOpenInvalidPeerKey             = errors.New("invalid peer pubkey")
+	ErrBalancedOpenInvalidCapacity            = errors.New("invalid capacity")
+	ErrBalancedOpenInvalidFeeRate             = errors.New("invalid fee rate")
+	ErrBalancedOpenInvalidRole                = errors.New("invalid role")
+	ErrBalancedOpenInvalidState               = errors.New("invalid state")
+	ErrBalancedOpenTerminalState              = errors.New("session already in terminal state")
+	ErrBalancedOpenInvalidSession             = errors.New("invalid session")
+	ErrBalancedOpenInvalidAction              = errors.New("invalid session action")
+	ErrBalancedOpenInsufficientOnchainSafety  = errors.New("insufficient on-chain spendable balance for anchor reserve")
+	ErrBalancedOpenTransitOutpointUnavailable = errors.New("transit outpoint unavailable in wallet")
 )
 
 type BalancedOpenService struct {
@@ -1334,6 +1335,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	if !ok {
 		return BalancedOpenSession{}, errors.New("missing local transit details")
 	}
+	outpoint := fmt.Sprintf("%s:%d", strings.ToLower(strings.TrimSpace(localTransit.TxID)), localTransit.Vout)
 
 	pending, err := s.lnd.ListPendingChannels(ctx)
 	if err == nil {
@@ -1350,8 +1352,62 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		}
 	}
 
+	unspent, err := s.lnd.IsOutpointUnspent(ctx, localTransit.TxID, localTransit.Vout)
+	if err == nil && !unspent {
+		spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
+		if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
+			patch := map[string]any{
+				"last_execution_err":        "",
+				"last_execution_error_unix": int64(0),
+			}
+			if session.Role == balancedOpenRoleInitiator {
+				patch["initiator_recovery_txid"] = spendingTxid
+			} else {
+				patch["accepter_recovery_txid"] = spendingTxid
+			}
+			updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_outpoint_already_spent", map[string]any{
+				"role":            session.Role,
+				"transit_tx_id":   localTransit.TxID,
+				"transit_tx_vout": localTransit.Vout,
+				"outpoint":        outpoint,
+				"spending_txid":   spendingTxid,
+			}, patch)
+			if err != nil {
+				return BalancedOpenSession{}, err
+			}
+			return updated, nil
+		}
+		return BalancedOpenSession{}, fmt.Errorf("%w: %s", ErrBalancedOpenTransitOutpointUnavailable, outpoint)
+	}
+
 	txid, address, err := s.lnd.SweepOutpoint(ctx, localTransit.TxID, localTransit.Vout, satPerVbyte)
 	if err != nil {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "unknown utxo") {
+			spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
+			if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
+				patch := map[string]any{
+					"last_execution_err":        "",
+					"last_execution_error_unix": int64(0),
+				}
+				if session.Role == balancedOpenRoleInitiator {
+					patch["initiator_recovery_txid"] = spendingTxid
+				} else {
+					patch["accepter_recovery_txid"] = spendingTxid
+				}
+				updated, txErr := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_outpoint_already_spent", map[string]any{
+					"role":            session.Role,
+					"transit_tx_id":   localTransit.TxID,
+					"transit_tx_vout": localTransit.Vout,
+					"outpoint":        outpoint,
+					"spending_txid":   spendingTxid,
+				}, patch)
+				if txErr != nil {
+					return BalancedOpenSession{}, txErr
+				}
+				return updated, nil
+			}
+			return BalancedOpenSession{}, fmt.Errorf("%w: %s", ErrBalancedOpenTransitOutpointUnavailable, outpoint)
+		}
 		return BalancedOpenSession{}, err
 	}
 

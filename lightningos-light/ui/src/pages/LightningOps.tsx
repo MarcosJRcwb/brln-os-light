@@ -2488,6 +2488,8 @@ export default function LightningOps() {
         return t('lightningOps.balancedOpenEventAnchorPrecheckFailed')
       case 'transit_recovered':
         return t('lightningOps.balancedOpenEventTransitRecovered')
+      case 'transit_outpoint_already_spent':
+        return t('lightningOps.balancedOpenEventTransitAlreadySpent')
       case 'session_canceled':
       case 'session_canceled_remote':
         return t('lightningOps.balancedOpenEventCanceled')

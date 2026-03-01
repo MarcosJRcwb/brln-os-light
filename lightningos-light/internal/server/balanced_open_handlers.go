@@ -427,7 +427,8 @@ func (s *Server) handleBalancedOpenSessionRecoverPost(w http.ResponseWriter, r *
 			errors.Is(err, ErrBalancedOpenInvalidState),
 			errors.Is(err, ErrBalancedOpenInvalidRole),
 			errors.Is(err, ErrBalancedOpenInvalidFeeRate),
-			errors.Is(err, ErrBalancedOpenInsufficientOnchainSafety):
+			errors.Is(err, ErrBalancedOpenInsufficientOnchainSafety),
+			errors.Is(err, ErrBalancedOpenTransitOutpointUnavailable):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, ErrBalancedOpenTerminalState):
 			writeError(w, http.StatusConflict, err.Error())

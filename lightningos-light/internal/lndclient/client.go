@@ -1300,6 +1300,91 @@ func (c *Client) ListOnchainUtxos(ctx context.Context, minConfs int32, maxConfs 
 	return items, nil
 }
 
+func (c *Client) IsOutpointUnspent(ctx context.Context, txid string, vout uint32) (bool, error) {
+	targetTxid, err := normalizeTxidHex(txid)
+	if err != nil {
+		return false, err
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.ListUnspent(ctx, &lnrpc.ListUnspentRequest{
+		MinConfs: 0,
+		MaxConfs: 2147483647,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	for _, utxo := range resp.GetUtxos() {
+		if utxo == nil {
+			continue
+		}
+		out := utxo.GetOutpoint()
+		if out == nil {
+			continue
+		}
+		utxoTxid := strings.TrimSpace(out.GetTxidStr())
+		if utxoTxid == "" {
+			utxoTxid = txidFromBytes(out.GetTxidBytes())
+		}
+		if !strings.EqualFold(targetTxid, strings.TrimSpace(utxoTxid)) {
+			continue
+		}
+		if out.GetOutputIndex() == vout {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (c *Client) FindSpendingTransactionByOutpoint(ctx context.Context, txid string, vout uint32) (string, bool, error) {
+	targetTxid, err := normalizeTxidHex(txid)
+	if err != nil {
+		return "", false, err
+	}
+	targetOutpoint := fmt.Sprintf("%s:%d", targetTxid, vout)
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return "", false, err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.GetTransactions(ctx, &lnrpc.GetTransactionsRequest{
+		MaxTransactions: 0,
+		StartHeight:     0,
+		EndHeight:       -1,
+	})
+	if err != nil {
+		return "", false, err
+	}
+
+	for _, tx := range resp.GetTransactions() {
+		if tx == nil {
+			continue
+		}
+		for _, prev := range tx.GetPreviousOutpoints() {
+			if prev == nil {
+				continue
+			}
+			outpoint := strings.ToLower(strings.TrimSpace(prev.GetOutpoint()))
+			if outpoint == targetOutpoint {
+				return strings.TrimSpace(tx.GetTxHash()), true, nil
+			}
+		}
+	}
+
+	return "", false, nil
+}
+
 func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 	conn, err := c.dial(ctx, true)
 	if err != nil {
@@ -2504,6 +2589,17 @@ func txidFromBytes(raw []byte) string {
 		rev[len(raw)-1-i] = raw[i]
 	}
 	return hex.EncodeToString(rev)
+}
+
+func normalizeTxidHex(value string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if len(trimmed) != 64 {
+		return "", errors.New("invalid txid")
+	}
+	if _, err := hex.DecodeString(trimmed); err != nil {
+		return "", errors.New("invalid txid")
+	}
+	return trimmed, nil
 }
 
 func parseChannelPoint(point string) (*lnrpc.ChannelPoint, error) {
