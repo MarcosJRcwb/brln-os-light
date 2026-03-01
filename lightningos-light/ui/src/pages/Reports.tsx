@@ -571,15 +571,15 @@ export default function Reports() {
                       formatter={(value) => formatSats(Number(value))}
                     />
                     <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
-                    <Bar dataKey="revenue" stackId="revenue" name={t('reports.revenue')} fill={COLORS.revenue} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="rebalanceCost" stackId="cost" name={t('reports.rebalances')} fill={COLORS.costRebalance} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="paymentCost" stackId="cost" name={t('reports.payments')} fill={COLORS.costPayment} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="netRouting" stackId="net" name={t('reports.routingNet')} fill={COLORS.net} radius={[8, 8, 8, 8]}>
+                    <Bar dataKey="revenue" stackId="live" name={t('reports.revenue')} fill={COLORS.revenue} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="rebalanceCost" stackId="live" name={t('reports.rebalances')} fill={COLORS.costRebalance} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="paymentCost" stackId="live" name={t('reports.payments')} fill={COLORS.costPayment} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="netRouting" stackId="live" name={t('reports.routingNet')} fill={COLORS.net} radius={[8, 8, 8, 8]}>
                       {liveChartData.map((entry) => (
                         <Cell key={entry.name} fill={entry.netRoutingColor ?? COLORS.net} />
                       ))}
                     </Bar>
-                    <Bar dataKey="keysendInNet" stackId="net" name={t('reports.keysendReceived')} fill={COLORS.keysend} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="keysendInNet" stackId="live" name={t('reports.keysendReceived')} fill={COLORS.keysend} radius={[8, 8, 8, 8]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
