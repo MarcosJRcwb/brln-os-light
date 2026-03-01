@@ -69,9 +69,11 @@ const (
 )
 
 const (
-	balancedOpenMessageKindProposal = "proposal"
-	balancedOpenMessageKindAccept   = "accept"
-	balancedOpenMessageKindCancel   = "cancel"
+	balancedOpenMessageKindProposal              = "proposal"
+	balancedOpenMessageKindAccept                = "accept"
+	balancedOpenMessageKindCancel                = "cancel"
+	balancedOpenMessageKindOrphanRecoveryRequest = "orphan_recovery_request"
+	balancedOpenMessageKindOrphanRecoverySig     = "orphan_recovery_sig"
 )
 
 var (
@@ -90,8 +92,9 @@ var (
 )
 
 const (
-	balancedOpenRecoverySweepVBytes = int64(110)
-	balancedOpenRecoveryMinOutput   = int64(330)
+	balancedOpenRecoverySweepVBytes  = int64(110)
+	balancedOpenRecoveryMinOutput    = int64(330)
+	balancedOpenOrphanRecoveryVBytes = int64(180)
 )
 
 type BalancedOpenService struct {
@@ -171,6 +174,10 @@ type balancedOpenProtocolMessage struct {
 	TransitOutputSat  int64    `json:"transit_output_sat,omitempty"`
 	TransitOutputPk   string   `json:"transit_output_script,omitempty"`
 	TransitInputStack []string `json:"transit_input_witness,omitempty"`
+	FundingTxID       string   `json:"funding_tx_id,omitempty"`
+	FundingTxVout     uint32   `json:"funding_tx_vout,omitempty"`
+	RecoverySigHex    string   `json:"recovery_sig,omitempty"`
+	RecoveryFeeRate   int64    `json:"recovery_fee_rate_sat_vb,omitempty"`
 	SentAtUnix        int64    `json:"sent_at_unix"`
 }
 
@@ -200,6 +207,10 @@ type balancedOpenMetadata struct {
 	FundingTxID            string                     `json:"funding_tx_id,omitempty"`
 	FundingTxVout          uint32                     `json:"funding_tx_vout,omitempty"`
 	ChannelPoint           string                     `json:"channel_point,omitempty"`
+	OrphanRecoveryFeeRate  int64                      `json:"orphan_recovery_fee_rate_sat_vb,omitempty"`
+	OrphanInitiatorSigHex  string                     `json:"orphan_initiator_sig,omitempty"`
+	OrphanAccepterSigHex   string                     `json:"orphan_accepter_sig,omitempty"`
+	OrphanRecoveryTxID     string                     `json:"orphan_recovery_txid,omitempty"`
 	LastExecutionErr       string                     `json:"last_execution_err,omitempty"`
 	LastExecutionErrorUnix int64                      `json:"last_execution_error_unix,omitempty"`
 }
@@ -1368,14 +1379,21 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	recoveredRetry := session.State == balancedOpenStateRecovered &&
 		balancedOpenMetadataString(metaMap, unavailableKey) != "" &&
 		balancedOpenMetadataString(metaMap, txidKey) == ""
+	orphanEligible := balancedOpenHasOrphanFundingCandidate(session, meta)
 
-	if session.State == balancedOpenStateRecovered && !recoveredRetry {
+	if session.State == balancedOpenStateRecovered && !recoveredRetry && !(orphanEligible && strings.TrimSpace(meta.OrphanRecoveryTxID) == "") {
 		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 	}
-	if session.State == balancedOpenStateActive {
+	if orphanEligible && strings.TrimSpace(meta.OrphanRecoveryTxID) != "" {
+		return session, nil
+	}
+	if session.State == balancedOpenStateActive && !orphanEligible {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
-	if session.State != balancedOpenStateRecoveryRequired && session.State != balancedOpenStateCanceled && !recoveredRetry {
+	if session.State != balancedOpenStateRecoveryRequired &&
+		session.State != balancedOpenStateCanceled &&
+		!(session.State == balancedOpenStateActive && orphanEligible) &&
+		!recoveredRetry {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 
@@ -1398,10 +1416,24 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		_, _ = matchBalancedOpenActiveChannel(session, balancedOpenSessionChannelPoint(session.Metadata), active)
 	}
 
+	if orphanEligible && strings.TrimSpace(meta.OrphanRecoveryTxID) == "" {
+		spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
+		if lookupErr == nil && foundSpender && strings.EqualFold(strings.TrimSpace(spendingTxid), strings.TrimSpace(meta.FundingTxID)) {
+			return s.recoverOrphanFundingOutput(ctx, session, meta, satPerVbyte, true)
+		}
+	}
+
 	txid, address, err := s.publishBalancedTransitRecovery(ctx, session, localTransit, satPerVbyte)
 	if err != nil {
 		if isBalancedOpenOutpointUnavailableError(err) {
 			spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
+			if lookupErr == nil &&
+				foundSpender &&
+				orphanEligible &&
+				strings.EqualFold(strings.TrimSpace(spendingTxid), strings.TrimSpace(meta.FundingTxID)) &&
+				strings.TrimSpace(meta.OrphanRecoveryTxID) == "" {
+				return s.recoverOrphanFundingOutput(ctx, session, meta, satPerVbyte, true)
+			}
 			if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
 				patch := map[string]any{
 					"last_execution_err":        "",
@@ -1487,6 +1519,14 @@ func (s *BalancedOpenService) handleIncomingCustomMessage(msg lndclient.CustomPe
 	case balancedOpenMessageKindCancel:
 		if _, err := s.markCanceledFromPeer(ctx, sender, envelope); err != nil && s.logger != nil {
 			s.logger.Printf("balanced-open: failed processing cancel session=%s from=%s err=%v", envelope.SessionID, sender, err)
+		}
+	case balancedOpenMessageKindOrphanRecoveryRequest:
+		if _, err := s.handleOrphanRecoveryRequestFromPeer(ctx, sender, envelope); err != nil && s.logger != nil {
+			s.logger.Printf("balanced-open: failed processing orphan recovery request session=%s from=%s err=%v", envelope.SessionID, sender, err)
+		}
+	case balancedOpenMessageKindOrphanRecoverySig:
+		if _, err := s.handleOrphanRecoverySignatureFromPeer(ctx, sender, envelope); err != nil && s.logger != nil {
+			s.logger.Printf("balanced-open: failed processing orphan recovery signature session=%s from=%s err=%v", envelope.SessionID, sender, err)
 		}
 	default:
 		return
@@ -1748,6 +1788,309 @@ func (s *BalancedOpenService) markCanceledFromPeer(ctx context.Context, sender s
 	})
 }
 
+func (s *BalancedOpenService) handleOrphanRecoveryRequestFromPeer(ctx context.Context, sender string, msg balancedOpenProtocolMessage) (BalancedOpenSession, error) {
+	session, err := s.GetSession(ctx, msg.SessionID)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(session.PeerPubkey), sender) {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidPeerKey
+	}
+
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if !balancedOpenHasOrphanFundingCandidate(session, meta) {
+		return BalancedOpenSession{}, errors.New("orphan funding recovery not required")
+	}
+	if !isBalancedOpenSigHex(msg.RecoverySigHex) {
+		return BalancedOpenSession{}, errors.New("missing orphan recovery signature")
+	}
+	if msg.RecoveryFeeRate < 0 {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidFeeRate
+	}
+	if txid := strings.ToLower(strings.TrimSpace(msg.FundingTxID)); txid != "" && !strings.EqualFold(txid, meta.FundingTxID) {
+		return BalancedOpenSession{}, errors.New("orphan recovery funding tx mismatch")
+	}
+	if msg.FundingTxVout != 0 && msg.FundingTxVout != meta.FundingTxVout {
+		return BalancedOpenSession{}, errors.New("orphan recovery funding vout mismatch")
+	}
+
+	remoteRole := balancedOpenCounterpartyRole(session.Role)
+	if remoteRole == "" {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidRole
+	}
+	meta = balancedOpenSetOrphanSigForRole(meta, remoteRole, msg.RecoverySigHex)
+	feeRate := msg.RecoveryFeeRate
+	if feeRate <= 0 {
+		feeRate = meta.OrphanRecoveryFeeRate
+	}
+	if feeRate <= 0 {
+		feeRate = 1
+	}
+	if meta.OrphanRecoveryFeeRate > 0 && meta.OrphanRecoveryFeeRate != feeRate {
+		return BalancedOpenSession{}, errors.New("orphan recovery fee rate mismatch")
+	}
+	meta.OrphanRecoveryFeeRate = feeRate
+
+	progressState := balancedOpenOrphanProgressState(session.State)
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, progressState, "", "orphan_recovery_request_received", map[string]any{
+		"from_pubkey":     sender,
+		"funding_tx_id":   meta.FundingTxID,
+		"funding_tx_vout": meta.FundingTxVout,
+		"fee_rate":        feeRate,
+	}, balancedEncodeMetadata(meta))
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	updatedMeta, err := decodeBalancedOpenMetadata(updated.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	updated, err = s.recoverOrphanFundingOutput(ctx, updated, updatedMeta, feeRate, false)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	finalMeta, err := decodeBalancedOpenMetadata(updated.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	localSig := balancedOpenOrphanSigForRole(finalMeta, updated.Role)
+	if isBalancedOpenSigHex(localSig) {
+		if err := s.sendOrphanRecoveryMessage(ctx, updated, finalMeta, balancedOpenMessageKindOrphanRecoverySig, feeRate, localSig); err != nil {
+			return BalancedOpenSession{}, err
+		}
+	}
+
+	return updated, nil
+}
+
+func (s *BalancedOpenService) handleOrphanRecoverySignatureFromPeer(ctx context.Context, sender string, msg balancedOpenProtocolMessage) (BalancedOpenSession, error) {
+	session, err := s.GetSession(ctx, msg.SessionID)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(session.PeerPubkey), sender) {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidPeerKey
+	}
+
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if !balancedOpenHasOrphanFundingCandidate(session, meta) {
+		return BalancedOpenSession{}, errors.New("orphan funding recovery not required")
+	}
+	if !isBalancedOpenSigHex(msg.RecoverySigHex) {
+		return BalancedOpenSession{}, errors.New("missing orphan recovery signature")
+	}
+	if msg.RecoveryFeeRate < 0 {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidFeeRate
+	}
+	if txid := strings.ToLower(strings.TrimSpace(msg.FundingTxID)); txid != "" && !strings.EqualFold(txid, meta.FundingTxID) {
+		return BalancedOpenSession{}, errors.New("orphan recovery funding tx mismatch")
+	}
+	if msg.FundingTxVout != 0 && msg.FundingTxVout != meta.FundingTxVout {
+		return BalancedOpenSession{}, errors.New("orphan recovery funding vout mismatch")
+	}
+
+	remoteRole := balancedOpenCounterpartyRole(session.Role)
+	if remoteRole == "" {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidRole
+	}
+	meta = balancedOpenSetOrphanSigForRole(meta, remoteRole, msg.RecoverySigHex)
+	feeRate := msg.RecoveryFeeRate
+	if feeRate <= 0 {
+		feeRate = meta.OrphanRecoveryFeeRate
+	}
+	if feeRate <= 0 {
+		feeRate = 1
+	}
+	if meta.OrphanRecoveryFeeRate > 0 && meta.OrphanRecoveryFeeRate != feeRate {
+		return BalancedOpenSession{}, errors.New("orphan recovery fee rate mismatch")
+	}
+	meta.OrphanRecoveryFeeRate = feeRate
+
+	progressState := balancedOpenOrphanProgressState(session.State)
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, progressState, "", "orphan_recovery_signature_received", map[string]any{
+		"from_pubkey":     sender,
+		"funding_tx_id":   meta.FundingTxID,
+		"funding_tx_vout": meta.FundingTxVout,
+		"fee_rate":        feeRate,
+	}, balancedEncodeMetadata(meta))
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	updatedMeta, err := decodeBalancedOpenMetadata(updated.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	return s.recoverOrphanFundingOutput(ctx, updated, updatedMeta, feeRate, false)
+}
+
+func (s *BalancedOpenService) recoverOrphanFundingOutput(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata, satPerVbyte int64, notifyPeer bool) (BalancedOpenSession, error) {
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if !balancedOpenHasOrphanFundingCandidate(session, meta) {
+		return BalancedOpenSession{}, errors.New("orphan funding recovery not required")
+	}
+
+	feeRate := satPerVbyte
+	if feeRate <= 0 {
+		feeRate = meta.OrphanRecoveryFeeRate
+	}
+	if feeRate <= 0 {
+		feeRate = 1
+	}
+	if meta.OrphanRecoveryFeeRate > 0 && satPerVbyte > 0 && meta.OrphanRecoveryFeeRate != satPerVbyte {
+		return BalancedOpenSession{}, errors.New("orphan recovery already started with another fee rate")
+	}
+	meta.OrphanRecoveryFeeRate = feeRate
+
+	plan, err := buildBalancedOrphanRecoveryPlan(session, meta, feeRate)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	localKey, ok := balancedOpenLocalMultisigKeyForRole(session.Role, meta)
+	if !ok {
+		return BalancedOpenSession{}, errors.New("missing local multisig recovery key")
+	}
+
+	localSig := balancedOpenOrphanSigForRole(meta, session.Role)
+	if !isBalancedOpenSigHex(localSig) {
+		inputScript, err := s.lnd.ComputeInputScript(ctx, lndclient.ComputeInputScriptParams{
+			RawTxHex:        plan.TxHex,
+			InputIndex:      0,
+			OutputScriptHex: plan.FundingPkScriptHex,
+			OutputSat:       plan.FundingOutputSat,
+			Key: lndclient.DerivedKey{
+				PublicKey: localKey.PublicKey,
+				Family:    localKey.Family,
+				Index:     localKey.Index,
+			},
+			WitnessScriptHex: plan.WitnessScriptHex,
+		})
+		if err != nil {
+			return BalancedOpenSession{}, err
+		}
+		sigHex, err := balancedExtractSigHex(inputScript.Witness)
+		if err != nil {
+			return BalancedOpenSession{}, err
+		}
+		meta = balancedOpenSetOrphanSigForRole(meta, session.Role, sigHex)
+		localSig = sigHex
+	}
+
+	progressState := balancedOpenOrphanProgressState(session.State)
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, progressState, "", "orphan_recovery_half_signed", map[string]any{
+		"role":            session.Role,
+		"funding_tx_id":   meta.FundingTxID,
+		"funding_tx_vout": meta.FundingTxVout,
+		"fee_rate":        feeRate,
+	}, balancedEncodeMetadata(meta))
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	if notifyPeer {
+		if err := s.sendOrphanRecoveryMessage(ctx, updated, meta, balancedOpenMessageKindOrphanRecoveryRequest, feeRate, localSig); err != nil {
+			return BalancedOpenSession{}, err
+		}
+	}
+
+	updatedMeta, err := decodeBalancedOpenMetadata(updated.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	initSig := strings.ToLower(strings.TrimSpace(updatedMeta.OrphanInitiatorSigHex))
+	acceptSig := strings.ToLower(strings.TrimSpace(updatedMeta.OrphanAccepterSigHex))
+	if !isBalancedOpenSigHex(initSig) || !isBalancedOpenSigHex(acceptSig) {
+		return updated, nil
+	}
+
+	finalTx := plan.Tx.Copy()
+	witness, err := balancedBuildOrphanRecoveryWitness(updatedMeta, plan.WitnessScript, initSig, acceptSig)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	finalTx.TxIn[0].Witness = witness
+	finalHex, err := encodeBalancedTxHex(finalTx)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	recoveryTxID := finalTx.TxHash().String()
+	publishErr := s.lnd.PublishTransaction(ctx, finalHex, fmt.Sprintf("balanced-open-orphan-recover-%s", updated.SessionID))
+	if publishErr != nil && !isBalancedOpenAlreadyPublishedError(publishErr) {
+		if isBalancedOpenOutpointUnavailableError(publishErr) {
+			spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, updatedMeta.FundingTxID, updatedMeta.FundingTxVout)
+			if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
+				recoveryTxID = strings.TrimSpace(spendingTxid)
+			} else {
+				return BalancedOpenSession{}, publishErr
+			}
+		} else {
+			return BalancedOpenSession{}, publishErr
+		}
+	}
+
+	updatedMeta.OrphanRecoveryTxID = strings.ToLower(strings.TrimSpace(recoveryTxID))
+	finalState := balancedOpenOrphanFinalState(updated.State)
+
+	updated, err = s.transitionSessionWithMetadata(ctx, updated.SessionID, finalState, "", "orphan_funding_recovered", map[string]any{
+		"funding_tx_id":        updatedMeta.FundingTxID,
+		"funding_tx_vout":      updatedMeta.FundingTxVout,
+		"orphan_recovery_txid": updatedMeta.OrphanRecoveryTxID,
+		"fee_rate":             updatedMeta.OrphanRecoveryFeeRate,
+		"initiator_output_sat": plan.InitiatorOutputSat,
+		"accepter_output_sat":  plan.AccepterOutputSat,
+	}, balancedEncodeMetadata(updatedMeta))
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	return updated, nil
+}
+
+func (s *BalancedOpenService) sendOrphanRecoveryMessage(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata, kind string, feeRate int64, sigHex string) error {
+	if !isBalancedOpenSigHex(sigHex) {
+		return errors.New("invalid orphan recovery signature")
+	}
+	msg := balancedOpenProtocolMessage{
+		Version:         balancedOpenProtocolVersion,
+		Kind:            kind,
+		SessionID:       session.SessionID,
+		ToPubkey:        session.PeerPubkey,
+		ExecutionMode:   balancedOpenExecutionModeDual,
+		FundingTxID:     strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
+		FundingTxVout:   meta.FundingTxVout,
+		RecoverySigHex:  strings.ToLower(strings.TrimSpace(sigHex)),
+		RecoveryFeeRate: feeRate,
+		SentAtUnix:      time.Now().UTC().Unix(),
+	}
+	if self, err := s.lnd.SelfPubkey(ctx); err == nil {
+		msg.FromPubkey = strings.ToLower(strings.TrimSpace(self))
+	}
+	if strings.TrimSpace(session.PeerHost) != "" {
+		if err := s.connectPeerForBalancedOpen(ctx, session.PeerPubkey, session.PeerHost); err != nil {
+			return err
+		}
+	}
+	return s.sendProtocolMessage(ctx, session.PeerPubkey, msg)
+}
+
 func (s *BalancedOpenService) transitionSession(ctx context.Context, sessionID string, nextState string, lastError string, eventType string, detail any) (BalancedOpenSession, error) {
 	return s.transitionSessionWithMetadata(ctx, sessionID, nextState, lastError, eventType, detail, nil)
 }
@@ -1887,6 +2230,17 @@ type balancedDualFundingPlan struct {
 	AccepterInputIndex  int
 }
 
+type balancedOrphanRecoveryPlan struct {
+	TxHex              string
+	Tx                 *wire.MsgTx
+	WitnessScript      []byte
+	WitnessScriptHex   string
+	FundingPkScriptHex string
+	FundingOutputSat   int64
+	InitiatorOutputSat int64
+	AccepterOutputSat  int64
+}
+
 type balancedOnchainBudget struct {
 	TotalSat              int64
 	LockedSat             int64
@@ -2007,6 +2361,18 @@ func balancedEncodeMetadata(meta balancedOpenMetadata) map[string]any {
 	}
 	if point := strings.TrimSpace(meta.ChannelPoint); point != "" {
 		out["channel_point"] = point
+	}
+	if meta.OrphanRecoveryFeeRate > 0 {
+		out["orphan_recovery_fee_rate_sat_vb"] = meta.OrphanRecoveryFeeRate
+	}
+	if sig := strings.ToLower(strings.TrimSpace(meta.OrphanInitiatorSigHex)); sig != "" {
+		out["orphan_initiator_sig"] = sig
+	}
+	if sig := strings.ToLower(strings.TrimSpace(meta.OrphanAccepterSigHex)); sig != "" {
+		out["orphan_accepter_sig"] = sig
+	}
+	if txid := strings.ToLower(strings.TrimSpace(meta.OrphanRecoveryTxID)); txid != "" {
+		out["orphan_recovery_txid"] = txid
 	}
 	if errText := strings.TrimSpace(meta.LastExecutionErr); errText != "" {
 		out["last_execution_err"] = errText
@@ -2641,6 +3007,234 @@ func balancedOpenCanonicalChannelPointFromString(value string) string {
 		return ""
 	}
 	return balancedOpenCanonicalChannelPoint(parts[0], uint32(idx))
+}
+
+func balancedOpenHasOrphanFundingCandidate(session BalancedOpenSession, meta balancedOpenMetadata) bool {
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return false
+	}
+	expected := balancedOpenCanonicalChannelPoint(meta.FundingTxID, meta.FundingTxVout)
+	if expected == "" {
+		return false
+	}
+	actual := balancedOpenCanonicalChannelPointFromString(balancedOpenSessionChannelPoint(session.Metadata))
+	if actual == "" {
+		return false
+	}
+	return expected != actual
+}
+
+func balancedOpenCounterpartyRole(role string) string {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		return balancedOpenRoleAccepter
+	case balancedOpenRoleAccepter:
+		return balancedOpenRoleInitiator
+	default:
+		return ""
+	}
+}
+
+func balancedOpenOrphanProgressState(current string) string {
+	switch strings.TrimSpace(current) {
+	case balancedOpenStateCanceled, balancedOpenStateRecovered:
+		return balancedOpenStateRecovered
+	default:
+		return strings.TrimSpace(current)
+	}
+}
+
+func balancedOpenOrphanFinalState(current string) string {
+	switch strings.TrimSpace(current) {
+	case balancedOpenStateActive:
+		return balancedOpenStateActive
+	case balancedOpenStateRecovered:
+		return balancedOpenStateRecovered
+	default:
+		return balancedOpenStateRecovered
+	}
+}
+
+func balancedOpenOrphanSigForRole(meta balancedOpenMetadata, role string) string {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		return strings.ToLower(strings.TrimSpace(meta.OrphanInitiatorSigHex))
+	case balancedOpenRoleAccepter:
+		return strings.ToLower(strings.TrimSpace(meta.OrphanAccepterSigHex))
+	default:
+		return ""
+	}
+}
+
+func balancedOpenSetOrphanSigForRole(meta balancedOpenMetadata, role string, sigHex string) balancedOpenMetadata {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		meta.OrphanInitiatorSigHex = strings.ToLower(strings.TrimSpace(sigHex))
+	case balancedOpenRoleAccepter:
+		meta.OrphanAccepterSigHex = strings.ToLower(strings.TrimSpace(sigHex))
+	}
+	return meta
+}
+
+func balancedOpenLocalMultisigKeyForRole(role string, meta balancedOpenMetadata) (balancedOpenKeyDescriptor, bool) {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		if !isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) {
+			return balancedOpenKeyDescriptor{}, false
+		}
+		return meta.InitiatorMultisigKey, true
+	case balancedOpenRoleAccepter:
+		if !isValidPubkeyHex(meta.AccepterMultisigKey.PublicKey) {
+			return balancedOpenKeyDescriptor{}, false
+		}
+		return meta.AccepterMultisigKey, true
+	default:
+		return balancedOpenKeyDescriptor{}, false
+	}
+}
+
+func isBalancedOpenSigHex(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	raw, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return false
+	}
+	if len(raw) < 9 || len(raw) > 90 {
+		return false
+	}
+	return raw[0] == 0x30
+}
+
+func balancedExtractSigHex(witness wire.TxWitness) (string, error) {
+	for _, item := range witness {
+		if len(item) < 9 || len(item) > 90 {
+			continue
+		}
+		if item[0] != 0x30 {
+			continue
+		}
+		return hex.EncodeToString(item), nil
+	}
+	return "", errors.New("failed to extract orphan recovery signature")
+}
+
+func buildBalancedOrphanRecoveryPlan(session BalancedOpenSession, meta balancedOpenMetadata, feeRateSatVb int64) (balancedOrphanRecoveryPlan, error) {
+	if !isBalancedOpenTxID(meta.FundingTxID) {
+		return balancedOrphanRecoveryPlan{}, errors.New("missing funding tx id for orphan recovery")
+	}
+	if feeRateSatVb <= 0 {
+		feeRateSatVb = 1
+	}
+
+	witnessScript, err := balancedFundingWitnessScript(meta.InitiatorMultisigKey.PublicKey, meta.AccepterMultisigKey.PublicKey)
+	if err != nil {
+		return balancedOrphanRecoveryPlan{}, err
+	}
+	fundingScript := balancedFundingOutputScript(witnessScript)
+	fundingSat := session.CapacitySat
+
+	fundingTxHex := strings.TrimSpace(meta.FundingTxHex)
+	if fundingTxHex != "" {
+		raw, err := hex.DecodeString(fundingTxHex)
+		if err == nil {
+			var fundingTx wire.MsgTx
+			if fundingTx.Deserialize(bytes.NewReader(raw)) == nil {
+				if int(meta.FundingTxVout) < len(fundingTx.TxOut) && fundingTx.TxOut[meta.FundingTxVout] != nil {
+					fundingSat = fundingTx.TxOut[meta.FundingTxVout].Value
+				}
+			}
+		}
+	}
+	if fundingSat <= 0 {
+		return balancedOrphanRecoveryPlan{}, errors.New("invalid orphan funding amount")
+	}
+
+	feeSat := feeRateSatVb * balancedOpenOrphanRecoveryVBytes
+	if feeSat <= 0 {
+		feeSat = 1
+	}
+	remaining := fundingSat - feeSat
+	if remaining <= 0 {
+		return balancedOrphanRecoveryPlan{}, errors.New("orphan funding output too small after fee")
+	}
+
+	initScriptRaw, err := hex.DecodeString(strings.TrimSpace(meta.InitiatorTransit.OutputScript))
+	if err != nil || len(initScriptRaw) == 0 {
+		return balancedOrphanRecoveryPlan{}, errors.New("missing initiator recovery script")
+	}
+	accScriptRaw, err := hex.DecodeString(strings.TrimSpace(meta.AccepterTransit.OutputScript))
+	if err != nil || len(accScriptRaw) == 0 {
+		return balancedOrphanRecoveryPlan{}, errors.New("missing accepter recovery script")
+	}
+
+	initOut := (remaining / 2) + (remaining % 2)
+	accOut := remaining / 2
+	if initOut < balancedOpenRecoveryMinOutput || accOut < balancedOpenRecoveryMinOutput {
+		return balancedOrphanRecoveryPlan{}, errors.New("orphan recovery outputs below dust threshold")
+	}
+
+	hash, err := chainhash.NewHashFromStr(strings.ToLower(strings.TrimSpace(meta.FundingTxID)))
+	if err != nil {
+		return balancedOrphanRecoveryPlan{}, err
+	}
+	tx := wire.NewMsgTx(2)
+	txin := wire.NewTxIn(wire.NewOutPoint(hash, meta.FundingTxVout), nil, nil)
+	txin.Sequence = 0
+	tx.AddTxIn(txin)
+	tx.AddTxOut(wire.NewTxOut(initOut, initScriptRaw))
+	tx.AddTxOut(wire.NewTxOut(accOut, accScriptRaw))
+
+	txHex, err := encodeBalancedTxHex(tx)
+	if err != nil {
+		return balancedOrphanRecoveryPlan{}, err
+	}
+
+	return balancedOrphanRecoveryPlan{
+		TxHex:              txHex,
+		Tx:                 tx,
+		WitnessScript:      witnessScript,
+		WitnessScriptHex:   hex.EncodeToString(witnessScript),
+		FundingPkScriptHex: hex.EncodeToString(fundingScript),
+		FundingOutputSat:   fundingSat,
+		InitiatorOutputSat: initOut,
+		AccepterOutputSat:  accOut,
+	}, nil
+}
+
+func balancedBuildOrphanRecoveryWitness(meta balancedOpenMetadata, witnessScript []byte, initiatorSigHex string, accepterSigHex string) (wire.TxWitness, error) {
+	initSig, err := hex.DecodeString(strings.TrimSpace(initiatorSigHex))
+	if err != nil || len(initSig) == 0 {
+		return nil, errors.New("invalid initiator orphan signature")
+	}
+	accSig, err := hex.DecodeString(strings.TrimSpace(accepterSigHex))
+	if err != nil || len(accSig) == 0 {
+		return nil, errors.New("invalid accepter orphan signature")
+	}
+	initKey, err := hex.DecodeString(strings.TrimSpace(meta.InitiatorMultisigKey.PublicKey))
+	if err != nil || len(initKey) != 33 {
+		return nil, errors.New("invalid initiator multisig key")
+	}
+	accKey, err := hex.DecodeString(strings.TrimSpace(meta.AccepterMultisigKey.PublicKey))
+	if err != nil || len(accKey) != 33 {
+		return nil, errors.New("invalid accepter multisig key")
+	}
+
+	firstSig := initSig
+	secondSig := accSig
+	if bytes.Compare(initKey, accKey) > 0 {
+		firstSig = accSig
+		secondSig = initSig
+	}
+
+	return wire.TxWitness{
+		[]byte{},
+		firstSig,
+		secondSig,
+		witnessScript,
+	}, nil
 }
 
 func balancedPendingChanIDHexFromMultisig(localKey string, remoteKey string) (string, error) {
