@@ -1382,9 +1382,10 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		balancedOpenMetadataString(metaMap, unavailableKey) != "" &&
 		balancedOpenMetadataString(metaMap, txidKey) == ""
 	orphanEligible := balancedOpenHasOrphanFundingCandidate(session, meta)
-	orphanRecoverable := orphanEligible || balancedOpenCanProcessOrphanRecovery(meta)
+	orphanSweepPending := strings.TrimSpace(meta.OrphanRecoveryTxID) != "" && strings.TrimSpace(meta.OrphanLocalSweepTxID) == ""
+	orphanRecoverable := orphanEligible || balancedOpenCanProcessOrphanRecovery(meta) || orphanSweepPending
 
-	if session.State == balancedOpenStateRecovered && !recoveredRetry && !(orphanRecoverable && strings.TrimSpace(meta.OrphanRecoveryTxID) == "") {
+	if session.State == balancedOpenStateRecovered && !recoveredRetry && !orphanRecoverable {
 		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 	}
 	if orphanRecoverable && strings.TrimSpace(meta.OrphanRecoveryTxID) != "" {
