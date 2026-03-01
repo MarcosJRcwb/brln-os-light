@@ -2421,7 +2421,8 @@ export default function LightningOps() {
   }
 
   const canRecoverBalancedSession = (session: BalancedOpenSession) => {
-    return session.state === 'recovery_required' && balancedOpenSessionExecutionMode(session) === 'dual_funded_v1'
+    const recoverableState = session.state === 'recovery_required' || session.state === 'canceled'
+    return recoverableState && balancedOpenSessionExecutionMode(session) === 'dual_funded_v1'
   }
 
   const balancedOpenSessionChannelPoint = (session: BalancedOpenSession) => {

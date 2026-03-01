@@ -1318,7 +1318,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	if session.State == balancedOpenStateActive {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
-	if session.State != balancedOpenStateRecoveryRequired {
+	if session.State != balancedOpenStateRecoveryRequired && session.State != balancedOpenStateCanceled {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 
@@ -1694,7 +1694,9 @@ func (s *BalancedOpenService) transitionSessionWithMetadata(ctx context.Context,
 		return BalancedOpenSession{}, err
 	}
 	if isBalancedOpenTerminalState(current.State) {
-		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
+		if !(current.State == balancedOpenStateCanceled && nextState == balancedOpenStateRecovered) {
+			return BalancedOpenSession{}, ErrBalancedOpenTerminalState
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
