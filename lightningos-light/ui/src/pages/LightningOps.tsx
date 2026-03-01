@@ -15,6 +15,8 @@ type Channel = {
   capacity_sat: number
   local_balance_sat: number
   remote_balance_sat: number
+  unsettled_balance_sat?: number
+  pending_htlc_count?: number
   base_fee_msat?: number
   fee_rate_ppm?: number
   inbound_fee_rate_ppm?: number
@@ -3543,6 +3545,12 @@ export default function LightningOps() {
                 const remotePct = Math.max(0, Math.min(100, remotePctRaw))
                 const localPctLabel = `${localPct.toFixed(0)}%`
                 const remotePctLabel = `${remotePct.toFixed(0)}%`
+                const unsettledBalanceSat = typeof ch.unsettled_balance_sat === 'number' && Number.isFinite(ch.unsettled_balance_sat)
+                  ? Math.max(0, Math.round(ch.unsettled_balance_sat))
+                  : 0
+                const pendingHtlcCount = typeof ch.pending_htlc_count === 'number' && Number.isFinite(ch.pending_htlc_count)
+                  ? Math.max(0, Math.round(ch.pending_htlc_count))
+                  : 0
                 const marginPpm7d = typeof ch.out_ppm7d === 'number' && typeof ch.rebal_ppm7d === 'number'
                   ? ch.out_ppm7d - ch.rebal_ppm7d
                   : undefined
@@ -3666,7 +3674,7 @@ export default function LightningOps() {
                         )}
                       </div>
                     )}
-                    <div className="mt-3 grid gap-2 xl:grid-cols-[1.45fr_1fr]">
+                    <div className="mt-3 grid gap-2 xl:grid-cols-[1.2fr_0.6fr_1fr]">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between gap-3 text-xs text-fog/70">
                           <span>{t('lightningOps.localLabel', { value: ch.local_balance_sat })}</span>
@@ -3685,6 +3693,17 @@ export default function LightningOps() {
                             />
                           </div>
                           <span className="w-12 text-left text-fog/70">{remotePctLabel}</span>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-ink/70 p-2.5">
+                        <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('lightningOps.pendingHtlcsTitle')}</p>
+                        <div className="mt-1 grid grid-cols-1 gap-y-0.5 text-[11px]">
+                          <p className={unsettledBalanceSat > 0 ? 'text-brass' : 'text-fog'}>
+                            {t('lightningOps.unsettledBalanceLabel', { value: unsettledBalanceSat })}
+                          </p>
+                          <p className={pendingHtlcCount > 0 ? 'text-brass' : 'text-fog'}>
+                            {t('lightningOps.pendingHtlcCountLabel', { count: pendingHtlcCount })}
+                          </p>
                         </div>
                       </div>
                       <div className="rounded-xl border border-white/10 bg-ink/70 p-2.5">
