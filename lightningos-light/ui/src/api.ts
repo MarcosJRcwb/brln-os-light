@@ -212,6 +212,7 @@ export const boostPeers = (payload?: { limit?: number }) =>
 export const openChannel = (payload: {
   peer_address: string
   local_funding_sat: number
+  push_sat?: number
   close_address?: string
   sat_per_vbyte?: number
   private?: boolean

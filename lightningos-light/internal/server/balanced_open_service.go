@@ -1,34 +1,45 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"lightningos-light/internal/lndclient"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/ripemd160"
 )
 
 const (
-	balancedOpenDefaultListLimit = 50
-	balancedOpenMaxListLimit     = 500
-	balancedOpenDefaultEventList = 100
-	balancedOpenMaxEventList     = 500
-	balancedOpenMinCapacitySat   = 20000
-	balancedOpenProtocolVersion  = 1
-	balancedOpenCustomMsgType    = uint32(42069)
-	balancedOpenReconcileEvery   = 20 * time.Second
-	balancedOpenExecutionMode    = "push_sat_v1"
+	balancedOpenDefaultListLimit  = 50
+	balancedOpenMaxListLimit      = 500
+	balancedOpenDefaultEventList  = 100
+	balancedOpenMaxEventList      = 500
+	balancedOpenMinCapacitySat    = 20000
+	balancedOpenProtocolVersion   = 1
+	balancedOpenCustomMsgType     = uint32(42069)
+	balancedOpenReconcileEvery    = 20 * time.Second
+	balancedOpenExecutionModePush = "push_sat_v1"
+	balancedOpenExecutionModeDual = "dual_funded_v1"
+	balancedOpenMultiSigKeyFamily = int32(0)
+	balancedOpenTransitKeyFamily  = int32(805)
+	balancedOpenFundingVBytes     = int64(190)
 )
 
 const (
@@ -130,18 +141,56 @@ type BalancedOpenListFilter struct {
 }
 
 type balancedOpenProtocolMessage struct {
-	Version      int    `json:"v"`
-	Kind         string `json:"kind"`
-	SessionID    string `json:"session_id"`
-	FromPubkey   string `json:"from_pubkey,omitempty"`
-	ToPubkey     string `json:"to_pubkey,omitempty"`
-	PeerHost     string `json:"peer_host,omitempty"`
-	CapacitySat  int64  `json:"capacity_sat,omitempty"`
-	FeeRateSatVb int64  `json:"fee_rate_sat_vb,omitempty"`
-	Private      bool   `json:"private,omitempty"`
-	CloseAddress string `json:"close_address,omitempty"`
-	Reason       string `json:"reason,omitempty"`
-	SentAtUnix   int64  `json:"sent_at_unix"`
+	Version           int      `json:"v"`
+	Kind              string   `json:"kind"`
+	SessionID         string   `json:"session_id"`
+	FromPubkey        string   `json:"from_pubkey,omitempty"`
+	ToPubkey          string   `json:"to_pubkey,omitempty"`
+	PeerHost          string   `json:"peer_host,omitempty"`
+	CapacitySat       int64    `json:"capacity_sat,omitempty"`
+	FeeRateSatVb      int64    `json:"fee_rate_sat_vb,omitempty"`
+	Private           bool     `json:"private,omitempty"`
+	CloseAddress      string   `json:"close_address,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	ExecutionMode     string   `json:"execution_mode,omitempty"`
+	PendingChanIDHex  string   `json:"pending_chan_id,omitempty"`
+	MultisigPubkey    string   `json:"multisig_pubkey,omitempty"`
+	TransitTxID       string   `json:"transit_tx_id,omitempty"`
+	TransitTxVout     uint32   `json:"transit_tx_vout,omitempty"`
+	TransitOutputSat  int64    `json:"transit_output_sat,omitempty"`
+	TransitOutputPk   string   `json:"transit_output_script,omitempty"`
+	TransitInputStack []string `json:"transit_input_witness,omitempty"`
+	SentAtUnix        int64    `json:"sent_at_unix"`
+}
+
+type balancedOpenKeyDescriptor struct {
+	PublicKey string `json:"public_key"`
+	Family    int32  `json:"family"`
+	Index     int32  `json:"index"`
+}
+
+type balancedOpenTransitDetails struct {
+	TxID         string                    `json:"tx_id"`
+	Vout         uint32                    `json:"vout"`
+	OutputSat    int64                     `json:"output_sat"`
+	OutputScript string                    `json:"output_script"`
+	Key          balancedOpenKeyDescriptor `json:"key,omitempty"`
+}
+
+type balancedOpenMetadata struct {
+	ExecutionMode          string                     `json:"execution_mode,omitempty"`
+	PendingChanID          string                     `json:"pending_chan_id,omitempty"`
+	InitiatorMultisigKey   balancedOpenKeyDescriptor  `json:"initiator_multisig_key,omitempty"`
+	AccepterMultisigKey    balancedOpenKeyDescriptor  `json:"accepter_multisig_key,omitempty"`
+	InitiatorTransit       balancedOpenTransitDetails `json:"initiator_transit,omitempty"`
+	AccepterTransit        balancedOpenTransitDetails `json:"accepter_transit,omitempty"`
+	AccepterInputWitness   []string                   `json:"accepter_input_witness,omitempty"`
+	FundingTxHex           string                     `json:"funding_tx_hex,omitempty"`
+	FundingTxID            string                     `json:"funding_tx_id,omitempty"`
+	FundingTxVout          uint32                     `json:"funding_tx_vout,omitempty"`
+	ChannelPoint           string                     `json:"channel_point,omitempty"`
+	LastExecutionErr       string                     `json:"last_execution_err,omitempty"`
+	LastExecutionErrorUnix int64                      `json:"last_execution_error_unix,omitempty"`
 }
 
 type balancedOpenScanner interface {
@@ -352,13 +401,26 @@ func (s *BalancedOpenService) ExecuteSession(ctx context.Context, sessionID stri
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	switch normalizeBalancedExecutionMode(meta.ExecutionMode) {
+	case balancedOpenExecutionModeDual:
+		return s.executeSessionDual(ctx, session, meta)
+	default:
+		return s.executeSessionPush(ctx, session)
+	}
+}
+
+func (s *BalancedOpenService) executeSessionPush(ctx context.Context, session BalancedOpenSession) (BalancedOpenSession, error) {
 	pushSat := session.CapacitySat / 2
 	if pushSat <= 0 {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidCapacity
 	}
 
 	submitted, err := s.transitionSession(ctx, session.SessionID, balancedOpenStateChannelProposed, "", "channel_open_submitted", map[string]any{
-		"execution_mode":    balancedOpenExecutionMode,
+		"execution_mode":    balancedOpenExecutionModePush,
 		"capacity_sat":      session.CapacitySat,
 		"local_funding_sat": session.CapacitySat,
 		"push_sat":          pushSat,
@@ -370,7 +432,7 @@ func (s *BalancedOpenService) ExecuteSession(ctx context.Context, sessionID stri
 	if strings.TrimSpace(submitted.PeerHost) != "" {
 		if err := s.connectPeerForBalancedOpen(ctx, submitted.PeerPubkey, submitted.PeerHost); err != nil {
 			_, _ = s.transitionSession(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "channel_open_connect_failed", map[string]any{
-				"execution_mode": balancedOpenExecutionMode,
+				"execution_mode": balancedOpenExecutionModePush,
 			})
 			return BalancedOpenSession{}, err
 		}
@@ -387,7 +449,7 @@ func (s *BalancedOpenService) ExecuteSession(ctx context.Context, sessionID stri
 	)
 	if err != nil {
 		_, _ = s.transitionSession(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "channel_open_failed", map[string]any{
-			"execution_mode": balancedOpenExecutionMode,
+			"execution_mode": balancedOpenExecutionModePush,
 			"capacity_sat":   submitted.CapacitySat,
 			"push_sat":       pushSat,
 		})
@@ -395,13 +457,13 @@ func (s *BalancedOpenService) ExecuteSession(ctx context.Context, sessionID stri
 	}
 
 	updated, err := s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateFundingBroadcasted, "", "funding_broadcasted_local", map[string]any{
-		"execution_mode": balancedOpenExecutionMode,
+		"execution_mode": balancedOpenExecutionModePush,
 		"channel_point":  channelPoint,
 		"capacity_sat":   submitted.CapacitySat,
 		"push_sat":       pushSat,
 	}, map[string]any{
 		"channel_point":      channelPoint,
-		"execution_mode":     balancedOpenExecutionMode,
+		"execution_mode":     balancedOpenExecutionModePush,
 		"local_funding_sat":  submitted.CapacitySat,
 		"push_sat":           pushSat,
 		"opened_at_unix":     time.Now().UTC().Unix(),
@@ -410,6 +472,184 @@ func (s *BalancedOpenService) ExecuteSession(ctx context.Context, sessionID stri
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
+	return updated, nil
+}
+
+func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata) (BalancedOpenSession, error) {
+	if err := validateBalancedDualExecuteArtifacts(session, meta); err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	plan, err := buildBalancedDualFundingPlan(session, meta)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	pushSat := session.CapacitySat / 2
+	submitted, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateChannelProposed, "", "channel_open_submitted", map[string]any{
+		"execution_mode":            balancedOpenExecutionModeDual,
+		"capacity_sat":              session.CapacitySat,
+		"local_funding_sat":         session.CapacitySat,
+		"local_onchain_funding_sat": meta.InitiatorTransit.OutputSat,
+		"peer_onchain_funding_sat":  meta.AccepterTransit.OutputSat,
+		"push_sat":                  pushSat,
+	}, map[string]any{
+		"execution_mode":  balancedOpenExecutionModeDual,
+		"pending_chan_id": meta.PendingChanID,
+		"funding_tx_id":   plan.FundingTxID,
+		"funding_tx_vout": plan.FundingVout,
+		"funding_tx_hex":  plan.TxHex,
+	})
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	if strings.TrimSpace(submitted.PeerHost) != "" {
+		if err := s.connectPeerForBalancedOpen(ctx, submitted.PeerPubkey, submitted.PeerHost); err != nil {
+			_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "channel_open_connect_failed", map[string]any{
+				"execution_mode": balancedOpenExecutionModeDual,
+			}, map[string]any{
+				"last_execution_err":        err.Error(),
+				"last_execution_error_unix": time.Now().UTC().Unix(),
+			})
+			return BalancedOpenSession{}, err
+		}
+	}
+
+	localInputScript, err := s.lnd.ComputeInputScript(ctx, lndclient.ComputeInputScriptParams{
+		RawTxHex:        plan.TxHex,
+		InputIndex:      uint32(plan.InitiatorInputIndex),
+		OutputScriptHex: meta.InitiatorTransit.OutputScript,
+		OutputSat:       meta.InitiatorTransit.OutputSat,
+		Key: lndclient.DerivedKey{
+			PublicKey: meta.InitiatorTransit.Key.PublicKey,
+			Family:    meta.InitiatorTransit.Key.Family,
+			Index:     meta.InitiatorTransit.Key.Index,
+		},
+	})
+	if err != nil {
+		_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "funding_sign_failed", map[string]any{
+			"execution_mode": balancedOpenExecutionModeDual,
+			"side":           balancedOpenRoleInitiator,
+		}, map[string]any{
+			"last_execution_err":        err.Error(),
+			"last_execution_error_unix": time.Now().UTC().Unix(),
+		})
+		return BalancedOpenSession{}, err
+	}
+
+	remoteWitness, err := balancedDecodeWitnessStack(meta.AccepterInputWitness)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	plan.Tx.TxIn[plan.InitiatorInputIndex].Witness = cloneBalancedWitness(localInputScript.Witness)
+	plan.Tx.TxIn[plan.InitiatorInputIndex].SignatureScript = append([]byte(nil), localInputScript.SigScript...)
+	plan.Tx.TxIn[plan.AccepterInputIndex].Witness = cloneBalancedWitness(remoteWitness)
+
+	finalTxHex, err := encodeBalancedTxHex(plan.Tx)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	pendingID, err := hex.DecodeString(meta.PendingChanID)
+	if err != nil {
+		return BalancedOpenSession{}, errors.New("invalid pending channel id")
+	}
+
+	if err := s.lnd.RegisterChanPointShim(ctx, lndclient.ChanPointShimParams{
+		CapacitySat:   session.CapacitySat,
+		PendingChanID: pendingID,
+		FundingTxID:   plan.FundingTxID,
+		FundingVout:   plan.FundingVout,
+		LocalKey: lndclient.DerivedKey{
+			PublicKey: meta.InitiatorMultisigKey.PublicKey,
+			Family:    meta.InitiatorMultisigKey.Family,
+			Index:     meta.InitiatorMultisigKey.Index,
+		},
+		RemoteKeyHex: meta.AccepterMultisigKey.PublicKey,
+	}); err != nil {
+		_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "shim_register_failed", map[string]any{
+			"execution_mode": balancedOpenExecutionModeDual,
+		}, map[string]any{
+			"last_execution_err":        err.Error(),
+			"last_execution_error_unix": time.Now().UTC().Unix(),
+		})
+		return BalancedOpenSession{}, err
+	}
+
+	channelPoint, err := s.lnd.OpenChannelWithShim(ctx, lndclient.OpenChannelWithShimParams{
+		PubkeyHex:    submitted.PeerPubkey,
+		CapacitySat:  submitted.CapacitySat,
+		PushSat:      pushSat,
+		CloseAddress: submitted.CloseAddress,
+		Private:      submitted.Private,
+		ChanPointShimArgs: lndclient.ChanPointShimParams{
+			CapacitySat:   submitted.CapacitySat,
+			PendingChanID: pendingID,
+			FundingTxID:   plan.FundingTxID,
+			FundingVout:   plan.FundingVout,
+			LocalKey: lndclient.DerivedKey{
+				PublicKey: meta.InitiatorMultisigKey.PublicKey,
+				Family:    meta.InitiatorMultisigKey.Family,
+				Index:     meta.InitiatorMultisigKey.Index,
+			},
+			RemoteKeyHex: meta.AccepterMultisigKey.PublicKey,
+		},
+	})
+	if err != nil {
+		_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "channel_open_failed", map[string]any{
+			"execution_mode": balancedOpenExecutionModeDual,
+		}, map[string]any{
+			"last_execution_err":        err.Error(),
+			"last_execution_error_unix": time.Now().UTC().Unix(),
+		})
+		return BalancedOpenSession{}, err
+	}
+
+	if err := s.lnd.PublishTransaction(ctx, finalTxHex, fmt.Sprintf("balanced-open-%s", submitted.SessionID)); err != nil {
+		errText := strings.ToLower(strings.TrimSpace(err.Error()))
+		alreadyPublished := strings.Contains(errText, "already have transaction") ||
+			strings.Contains(errText, "transaction already in block chain") ||
+			strings.Contains(errText, "already exists")
+		if !alreadyPublished {
+			_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "funding_broadcast_failed", map[string]any{
+				"execution_mode": balancedOpenExecutionModeDual,
+				"funding_tx_id":  plan.FundingTxID,
+			}, map[string]any{
+				"last_execution_err":        err.Error(),
+				"last_execution_error_unix": time.Now().UTC().Unix(),
+				"funding_tx_hex":            finalTxHex,
+			})
+			return BalancedOpenSession{}, err
+		}
+	}
+
+	updated, err := s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateFundingBroadcasted, "", "funding_broadcasted_local", map[string]any{
+		"execution_mode":            balancedOpenExecutionModeDual,
+		"channel_point":             channelPoint,
+		"capacity_sat":              submitted.CapacitySat,
+		"push_sat":                  pushSat,
+		"funding_tx_id":             plan.FundingTxID,
+		"funding_tx_vout":           plan.FundingVout,
+		"local_onchain_funding_sat": meta.InitiatorTransit.OutputSat,
+		"peer_onchain_funding_sat":  meta.AccepterTransit.OutputSat,
+	}, map[string]any{
+		"channel_point":             channelPoint,
+		"execution_mode":            balancedOpenExecutionModeDual,
+		"funding_tx_id":             plan.FundingTxID,
+		"funding_tx_vout":           plan.FundingVout,
+		"funding_tx_hex":            finalTxHex,
+		"local_funding_sat":         submitted.CapacitySat,
+		"push_sat":                  pushSat,
+		"opened_at_unix":            time.Now().UTC().Unix(),
+		"last_execution_err":        "",
+		"last_execution_error_unix": int64(0),
+	})
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
 	return updated, nil
 }
 
@@ -508,17 +748,52 @@ func (s *BalancedOpenService) ProposeSession(ctx context.Context, sessionID stri
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	mode := normalizeBalancedExecutionMode(meta.ExecutionMode)
+	if mode == "" {
+		mode = balancedOpenExecutionModeDual
+	}
+
+	if mode == balancedOpenExecutionModeDual {
+		nextMeta, created, err := s.ensureInitiatorDualArtifacts(ctx, session, meta)
+		if err != nil {
+			return BalancedOpenSession{}, err
+		}
+		meta = nextMeta
+		if created {
+			patched, err := s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "funding_artifacts_prepared", map[string]any{
+				"execution_mode": balancedOpenExecutionModeDual,
+			}, balancedEncodeMetadata(meta))
+			if err != nil {
+				return BalancedOpenSession{}, err
+			}
+			session = patched
+		}
+	}
+
 	msg := balancedOpenProtocolMessage{
-		Version:      balancedOpenProtocolVersion,
-		Kind:         balancedOpenMessageKindProposal,
-		SessionID:    session.SessionID,
-		ToPubkey:     session.PeerPubkey,
-		PeerHost:     session.PeerHost,
-		CapacitySat:  session.CapacitySat,
-		FeeRateSatVb: session.FeeRateSatVb,
-		Private:      session.Private,
-		CloseAddress: session.CloseAddress,
-		SentAtUnix:   time.Now().UTC().Unix(),
+		Version:       balancedOpenProtocolVersion,
+		Kind:          balancedOpenMessageKindProposal,
+		SessionID:     session.SessionID,
+		ToPubkey:      session.PeerPubkey,
+		PeerHost:      session.PeerHost,
+		CapacitySat:   session.CapacitySat,
+		FeeRateSatVb:  session.FeeRateSatVb,
+		Private:       session.Private,
+		CloseAddress:  session.CloseAddress,
+		ExecutionMode: mode,
+		SentAtUnix:    time.Now().UTC().Unix(),
+	}
+	if mode == balancedOpenExecutionModeDual {
+		msg.PendingChanIDHex = meta.PendingChanID
+		msg.MultisigPubkey = meta.InitiatorMultisigKey.PublicKey
+		msg.TransitTxID = meta.InitiatorTransit.TxID
+		msg.TransitTxVout = meta.InitiatorTransit.Vout
+		msg.TransitOutputSat = meta.InitiatorTransit.OutputSat
+		msg.TransitOutputPk = meta.InitiatorTransit.OutputScript
 	}
 
 	if self, err := s.lnd.SelfPubkey(ctx); err == nil {
@@ -535,10 +810,11 @@ func (s *BalancedOpenService) ProposeSession(ctx context.Context, sessionID stri
 		return BalancedOpenSession{}, err
 	}
 
-	updated, err := s.transitionSession(ctx, session.SessionID, balancedOpenStateProposalSent, "", "proposal_sent", map[string]any{
-		"kind":         msg.Kind,
-		"sent_at_unix": msg.SentAtUnix,
-	})
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateProposalSent, "", "proposal_sent", map[string]any{
+		"kind":           msg.Kind,
+		"execution_mode": mode,
+		"sent_at_unix":   msg.SentAtUnix,
+	}, balancedEncodeMetadata(meta))
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -556,16 +832,64 @@ func (s *BalancedOpenService) AcceptSession(ctx context.Context, sessionID strin
 	if session.Role != balancedOpenRoleAccepter {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
-	if session.State != balancedOpenStateProposalReceived {
+	if session.State != balancedOpenStateProposalReceived && session.State != balancedOpenStateFundingTxHalfSigned {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	mode := normalizeBalancedExecutionMode(meta.ExecutionMode)
+	if mode == "" {
+		mode = balancedOpenExecutionModePush
+	}
+
+	var localWitness []string
+	if mode == balancedOpenExecutionModeDual {
+		nextMeta, witness, created, err := s.ensureAccepterDualArtifacts(ctx, session, meta)
+		meta = nextMeta
+		if created {
+			patched, err := s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "funding_artifacts_prepared", map[string]any{
+				"execution_mode": mode,
+				"side":           balancedOpenRoleAccepter,
+			}, balancedEncodeMetadata(meta))
+			if err != nil {
+				return BalancedOpenSession{}, err
+			}
+			session = patched
+		}
+		if err != nil {
+			return BalancedOpenSession{}, err
+		}
+		localWitness = witness
+
+		patched, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateFundingTxHalfSigned, "", "funding_tx_half_signed", map[string]any{
+			"execution_mode": mode,
+			"side":           balancedOpenRoleAccepter,
+		}, balancedEncodeMetadata(meta))
+		if err != nil {
+			return BalancedOpenSession{}, err
+		}
+		session = patched
+	}
+
 	msg := balancedOpenProtocolMessage{
-		Version:    balancedOpenProtocolVersion,
-		Kind:       balancedOpenMessageKindAccept,
-		SessionID:  session.SessionID,
-		ToPubkey:   session.PeerPubkey,
-		SentAtUnix: time.Now().UTC().Unix(),
+		Version:       balancedOpenProtocolVersion,
+		Kind:          balancedOpenMessageKindAccept,
+		SessionID:     session.SessionID,
+		ToPubkey:      session.PeerPubkey,
+		ExecutionMode: mode,
+		SentAtUnix:    time.Now().UTC().Unix(),
+	}
+	if mode == balancedOpenExecutionModeDual {
+		msg.PendingChanIDHex = meta.PendingChanID
+		msg.MultisigPubkey = meta.AccepterMultisigKey.PublicKey
+		msg.TransitTxID = meta.AccepterTransit.TxID
+		msg.TransitTxVout = meta.AccepterTransit.Vout
+		msg.TransitOutputSat = meta.AccepterTransit.OutputSat
+		msg.TransitOutputPk = meta.AccepterTransit.OutputScript
+		msg.TransitInputStack = append([]string(nil), localWitness...)
 	}
 
 	if self, err := s.lnd.SelfPubkey(ctx); err == nil {
@@ -582,10 +906,11 @@ func (s *BalancedOpenService) AcceptSession(ctx context.Context, sessionID strin
 		return BalancedOpenSession{}, err
 	}
 
-	updated, err := s.transitionSession(ctx, session.SessionID, balancedOpenStateAccepted, "", "proposal_accepted_local", map[string]any{
-		"kind":         msg.Kind,
-		"sent_at_unix": msg.SentAtUnix,
-	})
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateAccepted, "", "proposal_accepted_local", map[string]any{
+		"kind":           msg.Kind,
+		"execution_mode": mode,
+		"sent_at_unix":   msg.SentAtUnix,
+	}, balancedEncodeMetadata(meta))
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -618,7 +943,7 @@ func (s *BalancedOpenService) CreateSession(ctx context.Context, params Balanced
 
 	meta := params.Metadata
 	if len(meta) == 0 {
-		meta = json.RawMessage(`{}`)
+		meta = json.RawMessage(fmt.Sprintf(`{"execution_mode":"%s"}`, balancedOpenExecutionModeDual))
 	} else if !json.Valid(meta) {
 		return BalancedOpenSession{}, errors.New("invalid metadata json")
 	}
@@ -1011,6 +1336,27 @@ func (s *BalancedOpenService) upsertSessionFromProposal(ctx context.Context, sen
 	if msg.FeeRateSatVb < 0 {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidFeeRate
 	}
+	mode := normalizeBalancedExecutionMode(msg.ExecutionMode)
+	if mode == "" {
+		mode = balancedOpenExecutionModePush
+	}
+	if mode == balancedOpenExecutionModeDual {
+		if !isValidPubkeyHex(msg.MultisigPubkey) {
+			return BalancedOpenSession{}, errors.New("proposal missing multisig pubkey")
+		}
+		if !isBalancedOpenTxID(msg.TransitTxID) {
+			return BalancedOpenSession{}, errors.New("proposal missing transit tx id")
+		}
+		if msg.TransitOutputSat <= 0 {
+			return BalancedOpenSession{}, errors.New("proposal missing transit output amount")
+		}
+		if !isBalancedOpenScriptHex(msg.TransitOutputPk) {
+			return BalancedOpenSession{}, errors.New("proposal missing transit output script")
+		}
+		if !isBalancedPendingChanIDHex(msg.PendingChanIDHex) {
+			return BalancedOpenSession{}, errors.New("proposal missing pending channel id")
+		}
+	}
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -1018,7 +1364,8 @@ func (s *BalancedOpenService) upsertSessionFromProposal(ctx context.Context, sen
 	}
 	defer tx.Rollback(ctx)
 
-	meta, err := marshalBalancedOpenJSON(map[string]any{
+	metaPatch := map[string]any{
+		"execution_mode":   mode,
 		"protocol_version": msg.Version,
 		"last_message": map[string]any{
 			"kind":         msg.Kind,
@@ -1026,7 +1373,23 @@ func (s *BalancedOpenService) upsertSessionFromProposal(ctx context.Context, sen
 			"to_pubkey":    msg.ToPubkey,
 			"sent_at_unix": msg.SentAtUnix,
 		},
-	})
+	}
+	if mode == balancedOpenExecutionModeDual {
+		metaPatch["pending_chan_id"] = strings.ToLower(strings.TrimSpace(msg.PendingChanIDHex))
+		metaPatch["initiator_multisig_key"] = map[string]any{
+			"public_key": strings.ToLower(strings.TrimSpace(msg.MultisigPubkey)),
+			"family":     balancedOpenMultiSigKeyFamily,
+			"index":      0,
+		}
+		metaPatch["initiator_transit"] = map[string]any{
+			"tx_id":         strings.ToLower(strings.TrimSpace(msg.TransitTxID)),
+			"vout":          msg.TransitTxVout,
+			"output_sat":    msg.TransitOutputSat,
+			"output_script": strings.ToLower(strings.TrimSpace(msg.TransitOutputPk)),
+		}
+	}
+
+	meta, err := marshalBalancedOpenJSON(metaPatch)
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -1101,11 +1464,12 @@ returning
 	}
 
 	if err := s.appendEventTx(ctx, tx, session.SessionID, "proposal_received", map[string]any{
-		"from_pubkey":  sender,
-		"capacity_sat": msg.CapacitySat,
-		"fee_rate":     msg.FeeRateSatVb,
-		"private":      msg.Private,
-		"sent_at_unix": msg.SentAtUnix,
+		"from_pubkey":    sender,
+		"capacity_sat":   msg.CapacitySat,
+		"fee_rate":       msg.FeeRateSatVb,
+		"private":        msg.Private,
+		"execution_mode": mode,
+		"sent_at_unix":   msg.SentAtUnix,
 	}); err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -1128,10 +1492,65 @@ func (s *BalancedOpenService) markAcceptedFromPeer(ctx context.Context, sender s
 		return session, nil
 	}
 
-	updated, err := s.transitionSession(ctx, session.SessionID, balancedOpenStateAccepted, "", "proposal_accepted_remote", map[string]any{
-		"from_pubkey":  sender,
-		"sent_at_unix": msg.SentAtUnix,
-	})
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	mode := normalizeBalancedExecutionMode(msg.ExecutionMode)
+	if mode == "" {
+		mode = normalizeBalancedExecutionMode(meta.ExecutionMode)
+	}
+	if mode == "" {
+		mode = balancedOpenExecutionModePush
+	}
+
+	if mode == balancedOpenExecutionModeDual {
+		if !isValidPubkeyHex(msg.MultisigPubkey) {
+			return BalancedOpenSession{}, errors.New("accept missing multisig pubkey")
+		}
+		if !isBalancedOpenTxID(msg.TransitTxID) {
+			return BalancedOpenSession{}, errors.New("accept missing transit tx id")
+		}
+		if msg.TransitOutputSat <= 0 {
+			return BalancedOpenSession{}, errors.New("accept missing transit output amount")
+		}
+		if !isBalancedOpenScriptHex(msg.TransitOutputPk) {
+			return BalancedOpenSession{}, errors.New("accept missing transit output script")
+		}
+		if len(msg.TransitInputStack) == 0 {
+			return BalancedOpenSession{}, errors.New("accept missing funding input witness")
+		}
+		if !isBalancedPendingChanIDHex(msg.PendingChanIDHex) {
+			return BalancedOpenSession{}, errors.New("accept missing pending channel id")
+		}
+
+		pendingID := strings.ToLower(strings.TrimSpace(msg.PendingChanIDHex))
+		if existing := strings.ToLower(strings.TrimSpace(meta.PendingChanID)); existing != "" && existing != pendingID {
+			return BalancedOpenSession{}, errors.New("accept pending channel id mismatch")
+		}
+
+		meta.ExecutionMode = balancedOpenExecutionModeDual
+		meta.PendingChanID = pendingID
+		meta.AccepterMultisigKey = balancedOpenKeyDescriptor{
+			PublicKey: strings.ToLower(strings.TrimSpace(msg.MultisigPubkey)),
+			Family:    balancedOpenMultiSigKeyFamily,
+			Index:     0,
+		}
+		meta.AccepterTransit = balancedOpenTransitDetails{
+			TxID:         strings.ToLower(strings.TrimSpace(msg.TransitTxID)),
+			Vout:         msg.TransitTxVout,
+			OutputSat:    msg.TransitOutputSat,
+			OutputScript: strings.ToLower(strings.TrimSpace(msg.TransitOutputPk)),
+		}
+		meta.AccepterInputWitness = append([]string(nil), msg.TransitInputStack...)
+	}
+
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateAccepted, "", "proposal_accepted_remote", map[string]any{
+		"from_pubkey":    sender,
+		"execution_mode": mode,
+		"sent_at_unix":   msg.SentAtUnix,
+	}, balancedEncodeMetadata(meta))
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -1279,6 +1698,602 @@ order by updated_at asc
 		return nil, err
 	}
 	return out, nil
+}
+
+type balancedDualFundingInput struct {
+	Side string
+	TxID string
+	Vout uint32
+}
+
+type balancedDualFundingPlan struct {
+	Tx                  *wire.MsgTx
+	TxHex               string
+	FundingTxID         string
+	FundingVout         uint32
+	FundingScriptHex    string
+	InitiatorInputIndex int
+	AccepterInputIndex  int
+}
+
+func normalizeBalancedExecutionMode(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case balancedOpenExecutionModeDual:
+		return balancedOpenExecutionModeDual
+	case balancedOpenExecutionModePush:
+		return balancedOpenExecutionModePush
+	default:
+		return ""
+	}
+}
+
+func decodeBalancedOpenMetadata(raw json.RawMessage) (balancedOpenMetadata, error) {
+	if len(raw) == 0 {
+		return balancedOpenMetadata{}, nil
+	}
+	var meta balancedOpenMetadata
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return balancedOpenMetadata{}, err
+	}
+	meta.ExecutionMode = normalizeBalancedExecutionMode(meta.ExecutionMode)
+	return meta, nil
+}
+
+func balancedEncodeMetadata(meta balancedOpenMetadata) map[string]any {
+	out := map[string]any{}
+	if mode := normalizeBalancedExecutionMode(meta.ExecutionMode); mode != "" {
+		out["execution_mode"] = mode
+	}
+	if id := strings.ToLower(strings.TrimSpace(meta.PendingChanID)); id != "" {
+		out["pending_chan_id"] = id
+	}
+	if key := encodeBalancedOpenKey(meta.InitiatorMultisigKey); key != nil {
+		out["initiator_multisig_key"] = key
+	}
+	if key := encodeBalancedOpenKey(meta.AccepterMultisigKey); key != nil {
+		out["accepter_multisig_key"] = key
+	}
+	if transit := encodeBalancedTransit(meta.InitiatorTransit); transit != nil {
+		out["initiator_transit"] = transit
+	}
+	if transit := encodeBalancedTransit(meta.AccepterTransit); transit != nil {
+		out["accepter_transit"] = transit
+	}
+	if len(meta.AccepterInputWitness) > 0 {
+		out["accepter_input_witness"] = append([]string(nil), meta.AccepterInputWitness...)
+	}
+	if txHex := strings.ToLower(strings.TrimSpace(meta.FundingTxHex)); txHex != "" {
+		out["funding_tx_hex"] = txHex
+	}
+	if txid := strings.ToLower(strings.TrimSpace(meta.FundingTxID)); txid != "" {
+		out["funding_tx_id"] = txid
+		out["funding_tx_vout"] = meta.FundingTxVout
+	}
+	if point := strings.TrimSpace(meta.ChannelPoint); point != "" {
+		out["channel_point"] = point
+	}
+	if errText := strings.TrimSpace(meta.LastExecutionErr); errText != "" {
+		out["last_execution_err"] = errText
+	}
+	if meta.LastExecutionErrorUnix > 0 {
+		out["last_execution_error_unix"] = meta.LastExecutionErrorUnix
+	}
+	return out
+}
+
+func encodeBalancedOpenKey(key balancedOpenKeyDescriptor) map[string]any {
+	pub := strings.ToLower(strings.TrimSpace(key.PublicKey))
+	if !isValidPubkeyHex(pub) {
+		return nil
+	}
+	return map[string]any{
+		"public_key": pub,
+		"family":     key.Family,
+		"index":      key.Index,
+	}
+}
+
+func encodeBalancedTransit(transit balancedOpenTransitDetails) map[string]any {
+	txid := strings.ToLower(strings.TrimSpace(transit.TxID))
+	if !isBalancedOpenTxID(txid) {
+		return nil
+	}
+	if transit.OutputSat <= 0 {
+		return nil
+	}
+	script := strings.ToLower(strings.TrimSpace(transit.OutputScript))
+	if !isBalancedOpenScriptHex(script) {
+		return nil
+	}
+	out := map[string]any{
+		"tx_id":         txid,
+		"vout":          transit.Vout,
+		"output_sat":    transit.OutputSat,
+		"output_script": script,
+	}
+	if key := encodeBalancedOpenKey(transit.Key); key != nil {
+		out["key"] = key
+	}
+	return out
+}
+
+func validateBalancedDualExecuteArtifacts(session BalancedOpenSession, meta balancedOpenMetadata) error {
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return ErrBalancedOpenInvalidSession
+	}
+	if !isBalancedPendingChanIDHex(meta.PendingChanID) {
+		return errors.New("missing pending channel id")
+	}
+	if !isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) || !isValidPubkeyHex(meta.AccepterMultisigKey.PublicKey) {
+		return errors.New("missing multisig pubkeys")
+	}
+	if !hasBalancedTransit(meta.InitiatorTransit, true) || !hasBalancedTransit(meta.AccepterTransit, false) {
+		return errors.New("missing transit funding details")
+	}
+	if len(meta.AccepterInputWitness) == 0 {
+		return errors.New("missing accepter funding witness")
+	}
+	if session.CapacitySat <= 0 || session.CapacitySat%2 != 0 {
+		return ErrBalancedOpenInvalidCapacity
+	}
+	return nil
+}
+
+func hasBalancedTransit(transit balancedOpenTransitDetails, requireKey bool) bool {
+	if !isBalancedOpenTxID(transit.TxID) {
+		return false
+	}
+	if transit.OutputSat <= 0 {
+		return false
+	}
+	if !isBalancedOpenScriptHex(transit.OutputScript) {
+		return false
+	}
+	if requireKey && !isValidPubkeyHex(transit.Key.PublicKey) {
+		return false
+	}
+	return true
+}
+
+func (s *BalancedOpenService) ensureInitiatorDualArtifacts(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata) (balancedOpenMetadata, bool, error) {
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) == balancedOpenExecutionModeDual &&
+		isBalancedPendingChanIDHex(meta.PendingChanID) &&
+		isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) &&
+		hasBalancedTransit(meta.InitiatorTransit, true) {
+		return meta, false, nil
+	}
+
+	feeRate := balancedEffectiveFeeRate(session.FeeRateSatVb)
+	transitAmount, err := balancedTransitContribution(session.CapacitySat, feeRate)
+	if err != nil {
+		return meta, false, err
+	}
+
+	multisigKey, err := s.lnd.DeriveNextKey(ctx, balancedOpenMultiSigKeyFamily)
+	if err != nil {
+		return meta, false, err
+	}
+	transitKey, err := s.lnd.DeriveNextKey(ctx, balancedOpenTransitKeyFamily)
+	if err != nil {
+		return meta, false, err
+	}
+	transitScript, err := balancedP2WPKHScriptHex(transitKey.PublicKey)
+	if err != nil {
+		return meta, false, err
+	}
+
+	sendResult, err := s.lnd.SendOutputScript(ctx, lndclient.SendOutputScriptParams{
+		SatPerVbyte:      feeRate,
+		OutputScriptHex:  transitScript,
+		AmountSat:        transitAmount,
+		Label:            fmt.Sprintf("balanced-open-%s-initiator", session.SessionID),
+		MinConfs:         0,
+		SpendUnconfirmed: true,
+	})
+	if err != nil {
+		return meta, false, err
+	}
+
+	pendingID, err := newBalancedOpenPendingChanIDHex()
+	if err != nil {
+		return meta, false, err
+	}
+
+	meta.ExecutionMode = balancedOpenExecutionModeDual
+	meta.PendingChanID = pendingID
+	meta.InitiatorMultisigKey = balancedOpenKeyDescriptor{
+		PublicKey: strings.ToLower(strings.TrimSpace(multisigKey.PublicKey)),
+		Family:    multisigKey.Family,
+		Index:     multisigKey.Index,
+	}
+	meta.InitiatorTransit = balancedOpenTransitDetails{
+		TxID:         strings.ToLower(strings.TrimSpace(sendResult.TxID)),
+		Vout:         sendResult.Vout,
+		OutputSat:    transitAmount,
+		OutputScript: strings.ToLower(strings.TrimSpace(transitScript)),
+		Key: balancedOpenKeyDescriptor{
+			PublicKey: strings.ToLower(strings.TrimSpace(transitKey.PublicKey)),
+			Family:    transitKey.Family,
+			Index:     transitKey.Index,
+		},
+	}
+
+	return meta, true, nil
+}
+
+func (s *BalancedOpenService) ensureAccepterDualArtifacts(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata) (balancedOpenMetadata, []string, bool, error) {
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) == balancedOpenExecutionModeDual &&
+		isValidPubkeyHex(meta.AccepterMultisigKey.PublicKey) &&
+		hasBalancedTransit(meta.AccepterTransit, true) &&
+		len(meta.AccepterInputWitness) > 0 {
+		return meta, append([]string(nil), meta.AccepterInputWitness...), false, nil
+	}
+
+	if !isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) || !hasBalancedTransit(meta.InitiatorTransit, false) {
+		return meta, nil, false, errors.New("proposal missing initiator artifacts")
+	}
+
+	created := false
+	if !isValidPubkeyHex(meta.AccepterMultisigKey.PublicKey) || !hasBalancedTransit(meta.AccepterTransit, true) {
+		feeRate := balancedEffectiveFeeRate(session.FeeRateSatVb)
+		transitAmount, err := balancedTransitContribution(session.CapacitySat, feeRate)
+		if err != nil {
+			return meta, nil, false, err
+		}
+
+		multisigKey, err := s.lnd.DeriveNextKey(ctx, balancedOpenMultiSigKeyFamily)
+		if err != nil {
+			return meta, nil, false, err
+		}
+		transitKey, err := s.lnd.DeriveNextKey(ctx, balancedOpenTransitKeyFamily)
+		if err != nil {
+			return meta, nil, false, err
+		}
+		transitScript, err := balancedP2WPKHScriptHex(transitKey.PublicKey)
+		if err != nil {
+			return meta, nil, false, err
+		}
+
+		sendResult, err := s.lnd.SendOutputScript(ctx, lndclient.SendOutputScriptParams{
+			SatPerVbyte:      feeRate,
+			OutputScriptHex:  transitScript,
+			AmountSat:        transitAmount,
+			Label:            fmt.Sprintf("balanced-open-%s-accepter", session.SessionID),
+			MinConfs:         0,
+			SpendUnconfirmed: true,
+		})
+		if err != nil {
+			return meta, nil, false, err
+		}
+
+		meta.ExecutionMode = balancedOpenExecutionModeDual
+		meta.AccepterMultisigKey = balancedOpenKeyDescriptor{
+			PublicKey: strings.ToLower(strings.TrimSpace(multisigKey.PublicKey)),
+			Family:    multisigKey.Family,
+			Index:     multisigKey.Index,
+		}
+		meta.AccepterTransit = balancedOpenTransitDetails{
+			TxID:         strings.ToLower(strings.TrimSpace(sendResult.TxID)),
+			Vout:         sendResult.Vout,
+			OutputSat:    transitAmount,
+			OutputScript: strings.ToLower(strings.TrimSpace(transitScript)),
+			Key: balancedOpenKeyDescriptor{
+				PublicKey: strings.ToLower(strings.TrimSpace(transitKey.PublicKey)),
+				Family:    transitKey.Family,
+				Index:     transitKey.Index,
+			},
+		}
+		created = true
+	}
+
+	if !isBalancedPendingChanIDHex(meta.PendingChanID) {
+		pendingID, err := newBalancedOpenPendingChanIDHex()
+		if err != nil {
+			return meta, nil, created, err
+		}
+		meta.PendingChanID = pendingID
+		created = true
+	}
+
+	meta.ExecutionMode = balancedOpenExecutionModeDual
+
+	plan, err := buildBalancedDualFundingPlan(session, meta)
+	if err != nil {
+		return meta, nil, created, err
+	}
+	meta.FundingTxID = plan.FundingTxID
+	meta.FundingTxVout = plan.FundingVout
+	meta.FundingTxHex = plan.TxHex
+
+	localInputScript, err := s.lnd.ComputeInputScript(ctx, lndclient.ComputeInputScriptParams{
+		RawTxHex:        plan.TxHex,
+		InputIndex:      uint32(plan.AccepterInputIndex),
+		OutputScriptHex: meta.AccepterTransit.OutputScript,
+		OutputSat:       meta.AccepterTransit.OutputSat,
+		Key: lndclient.DerivedKey{
+			PublicKey: meta.AccepterTransit.Key.PublicKey,
+			Family:    meta.AccepterTransit.Key.Family,
+			Index:     meta.AccepterTransit.Key.Index,
+		},
+	})
+	if err != nil {
+		return meta, nil, created, err
+	}
+
+	localWitness := balancedEncodeWitnessStack(localInputScript.Witness)
+	if len(localWitness) == 0 {
+		return meta, nil, created, errors.New("empty accepter funding witness")
+	}
+	meta.AccepterInputWitness = append([]string(nil), localWitness...)
+
+	pendingID, err := hex.DecodeString(meta.PendingChanID)
+	if err != nil {
+		return meta, nil, created, errors.New("invalid pending channel id")
+	}
+
+	err = s.lnd.RegisterChanPointShim(ctx, lndclient.ChanPointShimParams{
+		CapacitySat:   session.CapacitySat,
+		PendingChanID: pendingID,
+		FundingTxID:   plan.FundingTxID,
+		FundingVout:   plan.FundingVout,
+		LocalKey: lndclient.DerivedKey{
+			PublicKey: meta.AccepterMultisigKey.PublicKey,
+			Family:    meta.AccepterMultisigKey.Family,
+			Index:     meta.AccepterMultisigKey.Index,
+		},
+		RemoteKeyHex: meta.InitiatorMultisigKey.PublicKey,
+	})
+	if err != nil && !isBalancedOpenAlreadyRegisteredErr(err) {
+		return meta, nil, created, err
+	}
+
+	return meta, localWitness, created, nil
+}
+
+func buildBalancedDualFundingPlan(session BalancedOpenSession, meta balancedOpenMetadata) (balancedDualFundingPlan, error) {
+	witnessScript, err := balancedFundingWitnessScript(meta.InitiatorMultisigKey.PublicKey, meta.AccepterMultisigKey.PublicKey)
+	if err != nil {
+		return balancedDualFundingPlan{}, err
+	}
+	fundingPkScript := balancedFundingOutputScript(witnessScript)
+
+	inputs := []balancedDualFundingInput{
+		{
+			Side: balancedOpenRoleInitiator,
+			TxID: strings.ToLower(strings.TrimSpace(meta.InitiatorTransit.TxID)),
+			Vout: meta.InitiatorTransit.Vout,
+		},
+		{
+			Side: balancedOpenRoleAccepter,
+			TxID: strings.ToLower(strings.TrimSpace(meta.AccepterTransit.TxID)),
+			Vout: meta.AccepterTransit.Vout,
+		},
+	}
+	for _, input := range inputs {
+		if !isBalancedOpenTxID(input.TxID) {
+			return balancedDualFundingPlan{}, errors.New("invalid transit tx id")
+		}
+	}
+
+	sort.SliceStable(inputs, func(i, j int) bool {
+		a := balancedTxidSortKey(inputs[i].TxID)
+		b := balancedTxidSortKey(inputs[j].TxID)
+		if cmp := bytes.Compare(a, b); cmp != 0 {
+			return cmp < 0
+		}
+		return inputs[i].Vout < inputs[j].Vout
+	})
+
+	tx := wire.NewMsgTx(2)
+	initiatorIndex := -1
+	accepterIndex := -1
+
+	for idx, input := range inputs {
+		hash, err := chainhash.NewHashFromStr(input.TxID)
+		if err != nil {
+			return balancedDualFundingPlan{}, err
+		}
+		txin := wire.NewTxIn(wire.NewOutPoint(hash, input.Vout), nil, nil)
+		txin.Sequence = 0
+		tx.AddTxIn(txin)
+		if input.Side == balancedOpenRoleInitiator {
+			initiatorIndex = idx
+		} else {
+			accepterIndex = idx
+		}
+	}
+
+	tx.AddTxOut(wire.NewTxOut(session.CapacitySat, fundingPkScript))
+	if initiatorIndex < 0 || accepterIndex < 0 {
+		return balancedDualFundingPlan{}, errors.New("failed to map funding inputs")
+	}
+
+	txHex, err := encodeBalancedTxHex(tx)
+	if err != nil {
+		return balancedDualFundingPlan{}, err
+	}
+
+	return balancedDualFundingPlan{
+		Tx:                  tx,
+		TxHex:               txHex,
+		FundingTxID:         tx.TxHash().String(),
+		FundingVout:         0,
+		FundingScriptHex:    hex.EncodeToString(fundingPkScript),
+		InitiatorInputIndex: initiatorIndex,
+		AccepterInputIndex:  accepterIndex,
+	}, nil
+}
+
+func balancedP2WPKHScriptHex(pubkeyHex string) (string, error) {
+	pubkey, err := hex.DecodeString(strings.TrimSpace(pubkeyHex))
+	if err != nil || len(pubkey) != 33 {
+		return "", errors.New("invalid transit pubkey")
+	}
+	sum := sha256.Sum256(pubkey)
+	r := ripemd160.New()
+	_, _ = r.Write(sum[:])
+	hash160 := r.Sum(nil)
+
+	script := make([]byte, 0, 22)
+	script = append(script, txscript.OP_0, 0x14)
+	script = append(script, hash160...)
+
+	return hex.EncodeToString(script), nil
+}
+
+func balancedFundingWitnessScript(keyA string, keyB string) ([]byte, error) {
+	pubA, err := hex.DecodeString(strings.TrimSpace(keyA))
+	if err != nil || len(pubA) != 33 {
+		return nil, errors.New("invalid local multisig key")
+	}
+	pubB, err := hex.DecodeString(strings.TrimSpace(keyB))
+	if err != nil || len(pubB) != 33 {
+		return nil, errors.New("invalid remote multisig key")
+	}
+
+	pubkeys := [][]byte{pubA, pubB}
+	sort.SliceStable(pubkeys, func(i, j int) bool {
+		return bytes.Compare(pubkeys[i], pubkeys[j]) < 0
+	})
+
+	builder := txscript.NewScriptBuilder()
+	builder.AddOp(txscript.OP_2)
+	builder.AddData(pubkeys[0])
+	builder.AddData(pubkeys[1])
+	builder.AddOp(txscript.OP_2)
+	builder.AddOp(txscript.OP_CHECKMULTISIG)
+	return builder.Script()
+}
+
+func balancedFundingOutputScript(witnessScript []byte) []byte {
+	sum := sha256.Sum256(witnessScript)
+	script := make([]byte, 0, 34)
+	script = append(script, txscript.OP_0, 0x20)
+	script = append(script, sum[:]...)
+	return script
+}
+
+func balancedTxidSortKey(txid string) []byte {
+	raw, err := hex.DecodeString(strings.TrimSpace(txid))
+	if err != nil || len(raw) != 32 {
+		return nil
+	}
+	for i := 0; i < len(raw)/2; i++ {
+		raw[i], raw[len(raw)-1-i] = raw[len(raw)-1-i], raw[i]
+	}
+	return raw
+}
+
+func encodeBalancedTxHex(tx *wire.MsgTx) (string, error) {
+	if tx == nil {
+		return "", errors.New("missing transaction")
+	}
+	var b bytes.Buffer
+	if err := tx.Serialize(&b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b.Bytes()), nil
+}
+
+func balancedDecodeWitnessStack(values []string) (wire.TxWitness, error) {
+	if len(values) == 0 {
+		return nil, errors.New("missing witness stack")
+	}
+	stack := make(wire.TxWitness, 0, len(values))
+	for _, item := range values {
+		raw, err := hex.DecodeString(strings.TrimSpace(item))
+		if err != nil {
+			return nil, errors.New("invalid witness item")
+		}
+		stack = append(stack, raw)
+	}
+	return stack, nil
+}
+
+func balancedEncodeWitnessStack(witness [][]byte) []string {
+	if len(witness) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(witness))
+	for _, item := range witness {
+		out = append(out, hex.EncodeToString(item))
+	}
+	return out
+}
+
+func cloneBalancedWitness(src wire.TxWitness) wire.TxWitness {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(wire.TxWitness, 0, len(src))
+	for _, item := range src {
+		out = append(out, append([]byte(nil), item...))
+	}
+	return out
+}
+
+func balancedEffectiveFeeRate(value int64) int64 {
+	if value <= 0 {
+		return 1
+	}
+	return value
+}
+
+func balancedTransitContribution(capacitySat int64, feeRateSatVb int64) (int64, error) {
+	if capacitySat <= 0 || capacitySat%2 != 0 {
+		return 0, ErrBalancedOpenInvalidCapacity
+	}
+	if feeRateSatVb <= 0 {
+		return 0, ErrBalancedOpenInvalidFeeRate
+	}
+	return (capacitySat + (balancedOpenFundingVBytes * feeRateSatVb)) / 2, nil
+}
+
+func isBalancedOpenTxID(txid string) bool {
+	value := strings.TrimSpace(txid)
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func isBalancedOpenScriptHex(scriptHex string) bool {
+	value := strings.TrimSpace(scriptHex)
+	if value == "" {
+		return false
+	}
+	raw, err := hex.DecodeString(value)
+	return err == nil && len(raw) > 0
+}
+
+func isBalancedPendingChanIDHex(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(trimmed)
+	return err == nil
+}
+
+func newBalancedOpenPendingChanIDHex() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func isBalancedOpenAlreadyRegisteredErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "already registered") ||
+		strings.Contains(text, "already exists")
 }
 
 func balancedOpenSessionChannelPoint(metadata json.RawMessage) string {

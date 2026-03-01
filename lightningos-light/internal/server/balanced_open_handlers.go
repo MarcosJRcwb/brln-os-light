@@ -287,7 +287,7 @@ func (s *Server) handleBalancedOpenSessionProposePost(w http.ResponseWriter, r *
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	session, err := svc.ProposeSession(ctx, sessionID)
@@ -326,7 +326,7 @@ func (s *Server) handleBalancedOpenSessionAcceptPost(w http.ResponseWriter, r *h
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	session, err := svc.AcceptSession(ctx, sessionID)

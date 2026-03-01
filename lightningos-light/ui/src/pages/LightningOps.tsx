@@ -660,6 +660,7 @@ export default function LightningOps() {
 
   const [openPeer, setOpenPeer] = useState('')
   const [openAmount, setOpenAmount] = useState('')
+  const [openPushSat, setOpenPushSat] = useState('')
   const [openCloseAddress, setOpenCloseAddress] = useState('')
   const [openFeeRate, setOpenFeeRate] = useState('')
   const [openFeeHint, setOpenFeeHint] = useState<{ fastest?: number; hour?: number } | null>(null)
@@ -2389,7 +2390,7 @@ export default function LightningOps() {
   }
 
   const canAcceptBalancedSession = (session: BalancedOpenSession) => {
-    return session.role === 'accepter' && session.state === 'proposal_received'
+    return session.role === 'accepter' && (session.state === 'proposal_received' || session.state === 'funding_tx_half_signed')
   }
 
   const canExecuteBalancedSession = (session: BalancedOpenSession) => {
@@ -3042,6 +3043,8 @@ export default function LightningOps() {
     setOpenStatus(t('lightningOps.openingChannel'))
     setOpenChannelPoint('')
     const localFunding = Number(openAmount || 0)
+    const pushRaw = openPushSat.trim()
+    const pushSat = pushRaw === '' ? 0 : Number(pushRaw)
     const feeRate = Number(openFeeRate || 0)
     if (!openPeer.trim()) {
       setOpenStatus(t('lightningOps.peerAddressRequired'))
@@ -3051,10 +3054,19 @@ export default function LightningOps() {
       setOpenStatus(t('lightningOps.minimumChannelSize'))
       return
     }
+    if (!Number.isFinite(pushSat) || pushSat < 0) {
+      setOpenStatus(t('lightningOps.pushAmountInvalid'))
+      return
+    }
+    if (pushSat > localFunding) {
+      setOpenStatus(t('lightningOps.pushAmountExceedsFunding'))
+      return
+    }
     try {
       const res = await openChannel({
         peer_address: openPeer.trim(),
         local_funding_sat: localFunding,
+        push_sat: pushSat > 0 ? pushSat : undefined,
         close_address: openCloseAddress.trim() || undefined,
         sat_per_vbyte: feeRate > 0 ? feeRate : undefined,
         private: openPrivate
@@ -3062,6 +3074,7 @@ export default function LightningOps() {
       setOpenStatus(t('lightningOps.channelOpeningSubmitted'))
       setOpenChannelPoint(res?.channel_point || '')
       setOpenAmount('')
+      setOpenPushSat('')
       setOpenCloseAddress('')
       load()
     } catch (err: any) {
@@ -4423,6 +4436,15 @@ export default function LightningOps() {
               onChange={(e) => setOpenCloseAddress(e.target.value)}
             />
           </div>
+          <input
+            className="input-field"
+            placeholder={t('lightningOps.pushAmountOptional')}
+            type="number"
+            min={0}
+            value={openPushSat}
+            onChange={(e) => setOpenPushSat(e.target.value)}
+          />
+          <p className="text-xs text-fog/50">{t('lightningOps.pushAmountNote')}</p>
           <label className="text-sm text-fog/70">
             {t('lightningOps.feeRate')}
             <span className="ml-2 text-xs text-fog/50">

@@ -1,6 +1,7 @@
 package lndclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/hex"
@@ -19,8 +20,11 @@ import (
 	"lightningos-light/internal/config"
 	"lightningos-light/lnrpc"
 	"lightningos-light/lnrpc/routerrpc"
+	"lightningos-light/lnrpc/signrpc"
+	"lightningos-light/lnrpc/walletrpc"
 	"lightningos-light/lnrpc/wtclientrpc"
 
+	"github.com/btcsuite/btcd/wire"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -38,6 +42,66 @@ type Client struct {
 	infoCache       infoSnapshot
 	infoCacheAt     time.Time
 	infoCacheValid  bool
+}
+
+type DerivedKey struct {
+	PublicKey string
+	Family    int32
+	Index     int32
+}
+
+type ChanPointShimParams struct {
+	CapacitySat   int64
+	PendingChanID []byte
+	FundingTxID   string
+	FundingVout   uint32
+	LocalKey      DerivedKey
+	RemoteKeyHex  string
+	Musig2        bool
+}
+
+type OpenChannelWithShimParams struct {
+	PubkeyHex         string
+	CapacitySat       int64
+	PushSat           int64
+	CloseAddress      string
+	Private           bool
+	SatPerVbyte       int64
+	CommitmentType    lnrpc.CommitmentType
+	ZeroConf          bool
+	ScidAlias         bool
+	ChanPointShimArgs ChanPointShimParams
+}
+
+type OutputScriptSendResult struct {
+	TxID     string
+	Vout     uint32
+	RawTxHex string
+}
+
+type SendOutputScriptParams struct {
+	SatPerVbyte      int64
+	OutputScriptHex  string
+	AmountSat        int64
+	Label            string
+	MinConfs         int32
+	SpendUnconfirmed bool
+}
+
+type ComputedInputScript struct {
+	Witness   [][]byte
+	SigScript []byte
+}
+
+type ComputeInputScriptParams struct {
+	RawTxHex         string
+	InputIndex       uint32
+	OutputScriptHex  string
+	OutputSat        int64
+	Key              DerivedKey
+	WitnessScriptHex string
+	SighashType      uint32
+	SignMethod       signrpc.SignMethod
 }
 
 func New(cfg *config.Config, logger *log.Logger) *Client {
@@ -1636,6 +1700,375 @@ func (c *Client) OpenChannelWithPush(ctx context.Context, pubkeyHex string, loca
 		return "", err
 	}
 
+	return channelPointString(resp), nil
+}
+
+func (c *Client) DeriveNextKey(ctx context.Context, family int32) (DerivedKey, error) {
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return DerivedKey{}, err
+	}
+	defer conn.Close()
+
+	client := walletrpc.NewWalletKitClient(conn)
+	key, err := client.DeriveNextKey(ctx, &walletrpc.KeyReq{KeyFamily: family})
+	if err != nil {
+		return DerivedKey{}, err
+	}
+	if key == nil {
+		return DerivedKey{}, errors.New("empty derived key")
+	}
+
+	loc := key.GetKeyLoc()
+	out := DerivedKey{
+		PublicKey: hex.EncodeToString(key.GetRawKeyBytes()),
+	}
+	if loc != nil {
+		out.Family = loc.GetKeyFamily()
+		out.Index = loc.GetKeyIndex()
+	}
+	return out, nil
+}
+
+func (c *Client) SendOutputScript(ctx context.Context, params SendOutputScriptParams) (OutputScriptSendResult, error) {
+	if params.AmountSat <= 0 {
+		return OutputScriptSendResult{}, errors.New("amount must be positive")
+	}
+	scriptHex := strings.TrimSpace(params.OutputScriptHex)
+	if scriptHex == "" {
+		return OutputScriptSendResult{}, errors.New("output script required")
+	}
+	outputScript, err := hex.DecodeString(scriptHex)
+	if err != nil || len(outputScript) == 0 {
+		return OutputScriptSendResult{}, errors.New("invalid output script")
+	}
+
+	satPerVByte := params.SatPerVbyte
+	if satPerVByte <= 0 {
+		satPerVByte = 1
+	}
+	satPerKw := satPerVByte * 250
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return OutputScriptSendResult{}, err
+	}
+	defer conn.Close()
+
+	client := walletrpc.NewWalletKitClient(conn)
+	resp, err := client.SendOutputs(ctx, &walletrpc.SendOutputsRequest{
+		SatPerKw: satPerKw,
+		Outputs: []*signrpc.TxOut{
+			{
+				Value:    params.AmountSat,
+				PkScript: outputScript,
+			},
+		},
+		Label:            strings.TrimSpace(params.Label),
+		MinConfs:         params.MinConfs,
+		SpendUnconfirmed: params.SpendUnconfirmed,
+	})
+	if err != nil {
+		return OutputScriptSendResult{}, err
+	}
+	if resp == nil || len(resp.GetRawTx()) == 0 {
+		return OutputScriptSendResult{}, errors.New("empty send outputs transaction")
+	}
+
+	rawTx := resp.GetRawTx()
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+		return OutputScriptSendResult{}, err
+	}
+
+	vout := -1
+	for idx, out := range tx.TxOut {
+		if out == nil {
+			continue
+		}
+		if out.Value != params.AmountSat {
+			continue
+		}
+		if !bytes.Equal(out.PkScript, outputScript) {
+			continue
+		}
+		vout = idx
+		break
+	}
+	if vout < 0 {
+		return OutputScriptSendResult{}, errors.New("output not found in send outputs transaction")
+	}
+
+	return OutputScriptSendResult{
+		TxID:     tx.TxHash().String(),
+		Vout:     uint32(vout),
+		RawTxHex: hex.EncodeToString(rawTx),
+	}, nil
+}
+
+func (c *Client) ComputeInputScript(ctx context.Context, params ComputeInputScriptParams) (ComputedInputScript, error) {
+	txHex := strings.TrimSpace(params.RawTxHex)
+	if txHex == "" {
+		return ComputedInputScript{}, errors.New("raw tx required")
+	}
+	rawTx, err := hex.DecodeString(txHex)
+	if err != nil || len(rawTx) == 0 {
+		return ComputedInputScript{}, errors.New("invalid raw tx")
+	}
+	if params.OutputSat <= 0 {
+		return ComputedInputScript{}, errors.New("output sat must be positive")
+	}
+
+	outputScriptHex := strings.TrimSpace(params.OutputScriptHex)
+	if outputScriptHex == "" {
+		return ComputedInputScript{}, errors.New("output script required")
+	}
+	outputScript, err := hex.DecodeString(outputScriptHex)
+	if err != nil || len(outputScript) == 0 {
+		return ComputedInputScript{}, errors.New("invalid output script")
+	}
+
+	keyRaw, err := hex.DecodeString(strings.TrimSpace(params.Key.PublicKey))
+	if err != nil || len(keyRaw) == 0 {
+		return ComputedInputScript{}, errors.New("invalid signing key")
+	}
+
+	desc := &signrpc.SignDescriptor{
+		KeyDesc: &signrpc.KeyDescriptor{
+			RawKeyBytes: keyRaw,
+			KeyLoc: &signrpc.KeyLocator{
+				KeyFamily: params.Key.Family,
+				KeyIndex:  params.Key.Index,
+			},
+		},
+		Output: &signrpc.TxOut{
+			Value:    params.OutputSat,
+			PkScript: outputScript,
+		},
+		Sighash:    params.SighashType,
+		InputIndex: int32(params.InputIndex),
+		SignMethod: params.SignMethod,
+	}
+	if desc.Sighash == 0 {
+		desc.Sighash = 1
+	}
+
+	if witnessScriptHex := strings.TrimSpace(params.WitnessScriptHex); witnessScriptHex != "" {
+		witnessScript, err := hex.DecodeString(witnessScriptHex)
+		if err != nil {
+			return ComputedInputScript{}, errors.New("invalid witness script")
+		}
+		desc.WitnessScript = witnessScript
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return ComputedInputScript{}, err
+	}
+	defer conn.Close()
+
+	client := signrpc.NewSignerClient(conn)
+	resp, err := client.ComputeInputScript(ctx, &signrpc.SignReq{
+		RawTxBytes: rawTx,
+		SignDescs: []*signrpc.SignDescriptor{
+			desc,
+		},
+	})
+	if err != nil {
+		return ComputedInputScript{}, err
+	}
+	if resp == nil || len(resp.GetInputScripts()) == 0 || resp.GetInputScripts()[0] == nil {
+		return ComputedInputScript{}, errors.New("empty computed input script")
+	}
+
+	computed := resp.GetInputScripts()[0]
+	out := ComputedInputScript{
+		Witness:   make([][]byte, 0, len(computed.GetWitness())),
+		SigScript: append([]byte(nil), computed.GetSigScript()...),
+	}
+	for _, item := range computed.GetWitness() {
+		out.Witness = append(out.Witness, append([]byte(nil), item...))
+	}
+
+	return out, nil
+}
+
+func (c *Client) PublishTransaction(ctx context.Context, txHex string, label string) error {
+	raw, err := hex.DecodeString(strings.TrimSpace(txHex))
+	if err != nil {
+		return errors.New("invalid tx hex")
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	client := walletrpc.NewWalletKitClient(conn)
+	resp, err := client.PublishTransaction(ctx, &walletrpc.Transaction{
+		TxHex: raw,
+		Label: strings.TrimSpace(label),
+	})
+	if err != nil {
+		return err
+	}
+	if resp != nil && strings.TrimSpace(resp.GetPublishError()) != "" {
+		return errors.New(strings.TrimSpace(resp.GetPublishError()))
+	}
+	return nil
+}
+
+func (c *Client) RegisterChanPointShim(ctx context.Context, params ChanPointShimParams) error {
+	if params.CapacitySat <= 0 {
+		return errors.New("capacity must be positive")
+	}
+	if len(params.PendingChanID) == 0 {
+		return errors.New("pending channel id required")
+	}
+	txid := strings.TrimSpace(params.FundingTxID)
+	if txid == "" {
+		return errors.New("funding tx id required")
+	}
+
+	localRaw, err := hex.DecodeString(strings.TrimSpace(params.LocalKey.PublicKey))
+	if err != nil || len(localRaw) == 0 {
+		return errors.New("invalid local key")
+	}
+	remoteRaw, err := hex.DecodeString(strings.TrimSpace(params.RemoteKeyHex))
+	if err != nil || len(remoteRaw) == 0 {
+		return errors.New("invalid remote key")
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	_, err = client.FundingStateStep(ctx, &lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_ShimRegister{
+			ShimRegister: &lnrpc.FundingShim{
+				Shim: &lnrpc.FundingShim_ChanPointShim{
+					ChanPointShim: &lnrpc.ChanPointShim{
+						Amt: params.CapacitySat,
+						ChanPoint: &lnrpc.ChannelPoint{
+							FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: txid},
+							OutputIndex: params.FundingVout,
+						},
+						LocalKey: &lnrpc.KeyDescriptor{
+							RawKeyBytes: localRaw,
+							KeyLoc: &lnrpc.KeyLocator{
+								KeyFamily: params.LocalKey.Family,
+								KeyIndex:  params.LocalKey.Index,
+							},
+						},
+						RemoteKey:     remoteRaw,
+						PendingChanId: params.PendingChanID,
+						Musig2:        params.Musig2,
+					},
+				},
+			},
+		},
+	})
+	return err
+}
+
+func (c *Client) CancelFundingShim(ctx context.Context, pendingChanID []byte) error {
+	if len(pendingChanID) == 0 {
+		return errors.New("pending channel id required")
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	_, err = client.FundingStateStep(ctx, &lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_ShimCancel{
+			ShimCancel: &lnrpc.FundingShimCancel{
+				PendingChanId: pendingChanID,
+			},
+		},
+	})
+	return err
+}
+
+func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWithShimParams) (string, error) {
+	pubkeyHex := strings.TrimSpace(params.PubkeyHex)
+	if pubkeyHex == "" {
+		return "", errors.New("pubkey required")
+	}
+	if params.CapacitySat <= 0 {
+		return "", errors.New("capacity must be positive")
+	}
+	pubkey, err := hex.DecodeString(pubkeyHex)
+	if err != nil {
+		return "", errors.New("invalid pubkey hex")
+	}
+	remoteRaw, err := hex.DecodeString(strings.TrimSpace(params.ChanPointShimArgs.RemoteKeyHex))
+	if err != nil || len(remoteRaw) == 0 {
+		return "", errors.New("invalid remote key")
+	}
+	localRaw, err := hex.DecodeString(strings.TrimSpace(params.ChanPointShimArgs.LocalKey.PublicKey))
+	if err != nil || len(localRaw) == 0 {
+		return "", errors.New("invalid local key")
+	}
+	if len(params.ChanPointShimArgs.PendingChanID) == 0 {
+		return "", errors.New("pending channel id required")
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	req := &lnrpc.OpenChannelRequest{
+		NodePubkey:         pubkey,
+		LocalFundingAmount: params.CapacitySat,
+		PushSat:            params.PushSat,
+		Private:            params.Private,
+		CommitmentType:     params.CommitmentType,
+		ZeroConf:           params.ZeroConf,
+		ScidAlias:          params.ScidAlias,
+		FundingShim: &lnrpc.FundingShim{
+			Shim: &lnrpc.FundingShim_ChanPointShim{
+				ChanPointShim: &lnrpc.ChanPointShim{
+					Amt: params.ChanPointShimArgs.CapacitySat,
+					ChanPoint: &lnrpc.ChannelPoint{
+						FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: strings.TrimSpace(params.ChanPointShimArgs.FundingTxID)},
+						OutputIndex: params.ChanPointShimArgs.FundingVout,
+					},
+					LocalKey: &lnrpc.KeyDescriptor{
+						RawKeyBytes: localRaw,
+						KeyLoc: &lnrpc.KeyLocator{
+							KeyFamily: params.ChanPointShimArgs.LocalKey.Family,
+							KeyIndex:  params.ChanPointShimArgs.LocalKey.Index,
+						},
+					},
+					RemoteKey:     remoteRaw,
+					PendingChanId: params.ChanPointShimArgs.PendingChanID,
+					Musig2:        params.ChanPointShimArgs.Musig2,
+				},
+			},
+		},
+	}
+	if params.SatPerVbyte > 0 {
+		req.SatPerVbyte = uint64(params.SatPerVbyte)
+	}
+	if strings.TrimSpace(params.CloseAddress) != "" {
+		req.CloseAddress = strings.TrimSpace(params.CloseAddress)
+	}
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.OpenChannelSync(ctx, req)
+	if err != nil {
+		return "", err
+	}
 	return channelPointString(resp), nil
 }
 

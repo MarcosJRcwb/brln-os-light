@@ -2033,6 +2033,7 @@ func (s *Server) handleLNOpenChannel(w http.ResponseWriter, r *http.Request) {
 		PeerAddress     string `json:"peer_address"`
 		Pubkey          string `json:"pubkey"`
 		LocalFundingSat int64  `json:"local_funding_sat"`
+		PushSat         int64  `json:"push_sat"`
 		CloseAddress    string `json:"close_address"`
 		Private         bool   `json:"private"`
 		SatPerVbyte     int64  `json:"sat_per_vbyte"`
@@ -2051,6 +2052,14 @@ func (s *Server) handleLNOpenChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LocalFundingSat <= 0 {
 		writeError(w, http.StatusBadRequest, "local_funding_sat must be positive")
+		return
+	}
+	if req.PushSat < 0 {
+		writeError(w, http.StatusBadRequest, "push_sat must be zero or positive")
+		return
+	}
+	if req.PushSat > req.LocalFundingSat {
+		writeError(w, http.StatusBadRequest, "push_sat cannot exceed local_funding_sat")
 		return
 	}
 	if req.SatPerVbyte < 0 {
@@ -2079,7 +2088,7 @@ func (s *Server) handleLNOpenChannel(w http.ResponseWriter, r *http.Request) {
 	openCtx, openCancel := context.WithTimeout(r.Context(), lndOpenChannelTimeout)
 	defer openCancel()
 
-	channelPoint, err := s.lnd.OpenChannel(openCtx, pubkey, req.LocalFundingSat, req.CloseAddress, req.Private, req.SatPerVbyte)
+	channelPoint, err := s.lnd.OpenChannelWithPush(openCtx, pubkey, req.LocalFundingSat, req.PushSat, req.CloseAddress, req.Private, req.SatPerVbyte)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, lndDetailedErrorMessage(err))
 		return
