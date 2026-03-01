@@ -2475,6 +2475,9 @@ export default function LightningOps() {
 
   const canRecoverBalancedSession = (session: BalancedOpenSession) => {
     if (balancedOpenSessionExecutionMode(session) !== 'dual_funded_v1') return false
+    const orphanRecoveryTxid = balancedOpenMetadataString(session, 'orphan_recovery_txid')
+    const orphanLocalSweepTxid = balancedOpenMetadataString(session, 'orphan_local_sweep_txid')
+    if (orphanRecoveryTxid && !orphanLocalSweepTxid) return true
     if (balancedOpenHasOrphanFundingCandidate(session)) return true
     if (session.state === 'recovery_required' || session.state === 'canceled') return true
     if (session.state !== 'recovered') return false

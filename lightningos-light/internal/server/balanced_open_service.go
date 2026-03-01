@@ -211,6 +211,8 @@ type balancedOpenMetadata struct {
 	OrphanInitiatorSigHex  string                     `json:"orphan_initiator_sig,omitempty"`
 	OrphanAccepterSigHex   string                     `json:"orphan_accepter_sig,omitempty"`
 	OrphanRecoveryTxID     string                     `json:"orphan_recovery_txid,omitempty"`
+	OrphanLocalSweepTxID   string                     `json:"orphan_local_sweep_txid,omitempty"`
+	OrphanLocalSweepAddr   string                     `json:"orphan_local_sweep_address,omitempty"`
 	LastExecutionErr       string                     `json:"last_execution_err,omitempty"`
 	LastExecutionErrorUnix int64                      `json:"last_execution_error_unix,omitempty"`
 }
@@ -1386,6 +1388,11 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 	}
 	if orphanRecoverable && strings.TrimSpace(meta.OrphanRecoveryTxID) != "" {
+		if strings.TrimSpace(meta.OrphanLocalSweepTxID) == "" {
+			if swept, sweepErr := s.sweepLocalOrphanRecoveredOutput(ctx, session, meta, satPerVbyte); sweepErr == nil {
+				return swept, nil
+			}
+		}
 		return session, nil
 	}
 	if session.State == balancedOpenStateActive && !orphanRecoverable {
@@ -2064,6 +2071,17 @@ func (s *BalancedOpenService) recoverOrphanFundingOutput(ctx context.Context, se
 		return BalancedOpenSession{}, err
 	}
 
+	latestMeta, err := decodeBalancedOpenMetadata(updated.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if strings.TrimSpace(latestMeta.OrphanLocalSweepTxID) != "" {
+		return updated, nil
+	}
+	if swept, sweepErr := s.sweepLocalOrphanRecoveredOutput(ctx, updated, latestMeta, feeRate); sweepErr == nil {
+		return swept, nil
+	}
+
 	return updated, nil
 }
 
@@ -2092,6 +2110,77 @@ func (s *BalancedOpenService) sendOrphanRecoveryMessage(ctx context.Context, ses
 		}
 	}
 	return s.sendProtocolMessage(ctx, session.PeerPubkey, msg)
+}
+
+func (s *BalancedOpenService) sweepLocalOrphanRecoveredOutput(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata, satPerVbyte int64) (BalancedOpenSession, error) {
+	orphanTxID := strings.ToLower(strings.TrimSpace(meta.OrphanRecoveryTxID))
+	if !isBalancedOpenTxID(orphanTxID) {
+		return BalancedOpenSession{}, errors.New("missing orphan recovery tx id")
+	}
+	if strings.TrimSpace(meta.OrphanLocalSweepTxID) != "" {
+		return session, nil
+	}
+
+	localTransit, ok := balancedOpenLocalTransitForRole(session.Role, meta)
+	if !ok {
+		return BalancedOpenSession{}, errors.New("missing local transit details")
+	}
+
+	feeRate := satPerVbyte
+	if feeRate <= 0 {
+		feeRate = meta.OrphanRecoveryFeeRate
+	}
+	if feeRate <= 0 {
+		feeRate = 1
+	}
+
+	plan, err := buildBalancedOrphanRecoveryPlan(session, meta, meta.OrphanRecoveryFeeRate)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	localVout, localSat, ok := balancedOpenOrphanOutputForRole(session.Role, plan)
+	if !ok {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidRole
+	}
+	localTransit.TxID = orphanTxID
+	localTransit.Vout = localVout
+	localTransit.OutputSat = localSat
+
+	sweepTxID, sweepAddr, err := s.publishBalancedTransitRecovery(ctx, session, localTransit, feeRate)
+	if err != nil {
+		if isBalancedOpenOutpointUnavailableError(err) {
+			spendingTxid, foundSpender, lookupErr := s.lnd.FindSpendingTransactionByOutpoint(ctx, orphanTxID, localVout)
+			if lookupErr == nil && foundSpender && strings.TrimSpace(spendingTxid) != "" {
+				patch := map[string]any{
+					"orphan_local_sweep_txid":    strings.ToLower(strings.TrimSpace(spendingTxid)),
+					"orphan_local_sweep_address": "",
+					"last_execution_err":         "",
+					"last_execution_error_unix":  int64(0),
+				}
+				return s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "orphan_local_sweep_already_spent", map[string]any{
+					"role":                 session.Role,
+					"orphan_recovery_txid": orphanTxID,
+					"orphan_output_vout":   localVout,
+					"sweep_txid":           strings.ToLower(strings.TrimSpace(spendingTxid)),
+				}, patch)
+			}
+		}
+		return BalancedOpenSession{}, err
+	}
+
+	patch := map[string]any{
+		"orphan_local_sweep_txid":    strings.ToLower(strings.TrimSpace(sweepTxID)),
+		"orphan_local_sweep_address": strings.TrimSpace(sweepAddr),
+		"last_execution_err":         "",
+		"last_execution_error_unix":  int64(0),
+	}
+	return s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "orphan_local_sweep_broadcasted", map[string]any{
+		"role":                 session.Role,
+		"orphan_recovery_txid": orphanTxID,
+		"orphan_output_vout":   localVout,
+		"sweep_txid":           strings.ToLower(strings.TrimSpace(sweepTxID)),
+		"sweep_address":        strings.TrimSpace(sweepAddr),
+	}, patch)
 }
 
 func (s *BalancedOpenService) transitionSession(ctx context.Context, sessionID string, nextState string, lastError string, eventType string, detail any) (BalancedOpenSession, error) {
@@ -2376,6 +2465,12 @@ func balancedEncodeMetadata(meta balancedOpenMetadata) map[string]any {
 	}
 	if txid := strings.ToLower(strings.TrimSpace(meta.OrphanRecoveryTxID)); txid != "" {
 		out["orphan_recovery_txid"] = txid
+	}
+	if txid := strings.ToLower(strings.TrimSpace(meta.OrphanLocalSweepTxID)); txid != "" {
+		out["orphan_local_sweep_txid"] = txid
+	}
+	if addr := strings.TrimSpace(meta.OrphanLocalSweepAddr); addr != "" {
+		out["orphan_local_sweep_address"] = addr
 	}
 	if errText := strings.TrimSpace(meta.LastExecutionErr); errText != "" {
 		out["last_execution_err"] = errText
@@ -3254,6 +3349,17 @@ func balancedBuildOrphanRecoveryWitness(meta balancedOpenMetadata, witnessScript
 		secondSig,
 		witnessScript,
 	}, nil
+}
+
+func balancedOpenOrphanOutputForRole(role string, plan balancedOrphanRecoveryPlan) (uint32, int64, bool) {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		return 0, plan.InitiatorOutputSat, true
+	case balancedOpenRoleAccepter:
+		return 1, plan.AccepterOutputSat, true
+	default:
+		return 0, 0, false
+	}
 }
 
 func balancedPendingChanIDHexFromMultisig(localKey string, remoteKey string) (string, error) {
