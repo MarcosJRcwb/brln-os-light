@@ -508,10 +508,16 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 	if err := validateBalancedDualExecuteArtifacts(session, meta); err != nil {
 		return BalancedOpenSession{}, err
 	}
-	budget, err := s.ensureBalancedOnchainBudget(ctx, 0, balancedOpenAnchorSafetySat)
+	localFundingSat := session.CapacitySat
+	pushSat := session.CapacitySat / 2
+
+	// LND anchor reserve checks are sensitive to local_funding_amount even in
+	// externally funded shim flows. Pre-check with the same amount to fail early.
+	budget, err := s.ensureBalancedOnchainBudget(ctx, localFundingSat, balancedOpenAnchorSafetySat)
 	if err != nil {
 		_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "anchor_reserve_precheck_failed", map[string]any{
 			"execution_mode":          balancedOpenExecutionModeDual,
+			"local_funding_sat":       localFundingSat,
 			"estimated_spendable_sat": budget.EstimatedSpendableSat,
 			"total_sat":               budget.TotalSat,
 			"locked_sat":              budget.LockedSat,
@@ -529,8 +535,6 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		return BalancedOpenSession{}, err
 	}
 
-	localFundingSat := session.CapacitySat
-	pushSat := session.CapacitySat / 2
 	submitted, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateChannelProposed, "", "channel_open_submitted", map[string]any{
 		"execution_mode":            balancedOpenExecutionModeDual,
 		"capacity_sat":              session.CapacitySat,
