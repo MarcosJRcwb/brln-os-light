@@ -42,6 +42,7 @@ type PendingChannel = {
   blocks_til_maturity?: number
   limbo_balance?: number
   confirmations_until_active?: number
+  confirmation_height?: number
   private?: boolean
 }
 
@@ -2122,9 +2123,13 @@ export default function LightningOps() {
       fetchTorPeerChecker()
       fetchBalancedOpen()
     }, 30000)
+    const channelsTimer = window.setInterval(() => {
+      refreshChannels()
+    }, 10 * 60 * 1000)
     return () => {
       mounted = false
       window.clearInterval(timer)
+      window.clearInterval(channelsTimer)
     }
   }, [])
 
@@ -2380,7 +2385,7 @@ export default function LightningOps() {
   }
 
   const isBalancedOpenProposeEligible = (state: string) => {
-    return state === 'session_created' || state === 'proposal_sent' || state === 'proposal_received'
+    return state === 'session_created'
   }
 
   const canAcceptBalancedSession = (session: BalancedOpenSession) => {
@@ -2393,6 +2398,39 @@ export default function LightningOps() {
 
   const canProposeBalancedSession = (session: BalancedOpenSession) => {
     return session.role === 'initiator' && isBalancedOpenProposeEligible(session.state)
+  }
+
+  const balancedOpenSessionChannelPoint = (session: BalancedOpenSession) => {
+    const raw = session?.metadata?.channel_point
+    if (typeof raw !== 'string') return ''
+    return raw.trim()
+  }
+
+  const findPendingOpenForBalancedSession = (session: BalancedOpenSession) => {
+    const pointHint = balancedOpenSessionChannelPoint(session).toLowerCase()
+    const peer = (session.peer_pubkey || '').trim().toLowerCase()
+    const capacity = Number(session.capacity_sat || 0)
+    if (!pointHint && (!peer || capacity <= 0)) return null
+
+    for (const item of pendingChannels) {
+      if ((item.status || '').trim().toLowerCase() !== 'opening') continue
+      const point = (item.channel_point || '').trim().toLowerCase()
+      if (pointHint && point === pointHint) return item
+      if (!pointHint) {
+        const remote = (item.remote_pubkey || '').trim().toLowerCase()
+        if (remote === peer && Number(item.capacity_sat || 0) === capacity) return item
+      }
+    }
+    return null
+  }
+
+  const canCancelBalancedSession = (session: BalancedOpenSession) => {
+    if (isBalancedOpenTerminalState(session.state)) return false
+    if (session.state === 'pending_open_detected') {
+      const pending = findPendingOpenForBalancedSession(session)
+      if (pending && Number(pending.confirmation_height || 0) > 0) return false
+    }
+    return true
   }
 
   const formatBalancedDate = (value?: string) => {
@@ -4823,7 +4861,7 @@ export default function LightningOps() {
                         {t('lightningOps.balancedOpenActionExecute')}
                       </button>
                     )}
-                    {!isBalancedOpenTerminalState(session.state) && (
+                    {canCancelBalancedSession(session) && (
                       <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'cancel')} disabled={sessionBusy}>
                         {t('lightningOps.balancedOpenActionCancel')}
                       </button>

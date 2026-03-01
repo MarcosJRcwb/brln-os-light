@@ -1280,6 +1280,7 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 			RemoteBalanceSat:         ch.RemoteBalance,
 			Status:                   "opening",
 			ConfirmationsUntilActive: item.ConfirmationsUntilActive,
+			ConfirmationHeight:       item.ConfirmationHeight,
 			Private:                  ch.Private,
 		})
 	}
@@ -2060,6 +2061,7 @@ type PendingChannelInfo struct {
 	BlocksTilMaturity        int32  `json:"blocks_til_maturity,omitempty"`
 	LimboBalance             int64  `json:"limbo_balance,omitempty"`
 	ConfirmationsUntilActive uint32 `json:"confirmations_until_active,omitempty"`
+	ConfirmationHeight       uint32 `json:"confirmation_height,omitempty"`
 	Private                  bool   `json:"private"`
 }
 

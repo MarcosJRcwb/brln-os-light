@@ -32,8 +32,11 @@ type ReportSeriesItem = {
   forward_fee_revenue_sats: number
   rebalance_fee_cost_sats: number
   payment_fee_cost_sats?: number
+  keysend_received_sats?: number
+  keysend_received_count?: number
   total_fee_cost_sats?: number
   net_routing_profit_sats: number
+  net_with_keysend_sats?: number
   forward_count: number
   rebalance_count: number
   payment_count?: number
@@ -47,8 +50,11 @@ type ReportMetrics = {
   forward_fee_revenue_sats: number
   rebalance_fee_cost_sats: number
   payment_fee_cost_sats?: number
+  keysend_received_sats?: number
+  keysend_received_count?: number
   total_fee_cost_sats?: number
   net_routing_profit_sats: number
+  net_with_keysend_sats?: number
   forward_count: number
   rebalance_count: number
   payment_count?: number
@@ -102,6 +108,7 @@ const rangeOptions: RangeKey[] = ['d-1', 'date', 'month', '3m', '6m', '12m', 'al
 
 const COLORS = {
   net: '#34d399',
+  keysend: '#84cc16',
   netNegative: '#f87171',
   revenue: '#38bdf8',
   costRebalance: '#f59e0b',
@@ -289,8 +296,11 @@ export default function Reports() {
       forward_fee_revenue_sats: live.forward_fee_revenue_sats,
       rebalance_fee_cost_sats: live.rebalance_fee_cost_sats,
       payment_fee_cost_sats: live.payment_fee_cost_sats ?? 0,
+      keysend_received_sats: live.keysend_received_sats ?? 0,
+      keysend_received_count: live.keysend_received_count ?? 0,
       total_fee_cost_sats: live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0)),
       net_routing_profit_sats: live.net_routing_profit_sats,
+      net_with_keysend_sats: live.net_with_keysend_sats ?? ((live.net_routing_profit_sats ?? 0) + (live.keysend_received_sats ?? 0)),
       forward_count: live.forward_count,
       rebalance_count: live.rebalance_count,
       payment_count: live.payment_count ?? 0,
@@ -305,8 +315,11 @@ export default function Reports() {
       forward_fee_revenue_sats: live.forward_fee_revenue_sats,
       rebalance_fee_cost_sats: live.rebalance_fee_cost_sats,
       payment_fee_cost_sats: live.payment_fee_cost_sats ?? 0,
+      keysend_received_sats: live.keysend_received_sats ?? 0,
+      keysend_received_count: live.keysend_received_count ?? 0,
       total_fee_cost_sats: live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0)),
       net_routing_profit_sats: live.net_routing_profit_sats,
+      net_with_keysend_sats: live.net_with_keysend_sats ?? ((live.net_routing_profit_sats ?? 0) + (live.keysend_received_sats ?? 0)),
       forward_count: live.forward_count,
       rebalance_count: live.rebalance_count,
       payment_count: live.payment_count ?? 0,
@@ -428,7 +441,9 @@ export default function Reports() {
   const chartData = useMemo(() => {
     return series.map((item) => ({
       date: item.date,
-      net: item.net_routing_profit_sats,
+      net: item.net_with_keysend_sats ?? item.net_routing_profit_sats,
+      netRouting: item.net_routing_profit_sats,
+      keysend: item.keysend_received_sats ?? 0,
       revenue: item.forward_fee_revenue_sats,
       rebalanceCost: item.rebalance_fee_cost_sats ?? 0,
       paymentCost: item.payment_fee_cost_sats ?? 0,
@@ -444,16 +459,18 @@ export default function Reports() {
     const revenueValue = parseChartNumber(live.forward_fee_revenue_sats)
     const rebalanceCostValue = parseChartNumber(live.rebalance_fee_cost_sats ?? 0)
     const paymentCostValue = parseChartNumber(live.payment_fee_cost_sats ?? 0)
-    const costValue = parseChartNumber(live.total_fee_cost_sats ?? (rebalanceCostValue + paymentCostValue))
-    const netValue = parseChartNumber(live.net_routing_profit_sats)
+    const keysendValue = parseChartNumber(live.keysend_received_sats ?? 0)
+    const netValue = parseChartNumber(live.net_with_keysend_sats ?? ((live.net_routing_profit_sats ?? 0) + (live.keysend_received_sats ?? 0)))
     return [
       { name: t('reports.revenue'), revenue: revenueValue, rebalanceCost: 0, paymentCost: 0, net: 0 },
       { name: t('reports.cost'), revenue: 0, rebalanceCost: rebalanceCostValue, paymentCost: paymentCostValue, net: 0 },
+      { name: t('reports.keysendReceived'), revenue: 0, rebalanceCost: 0, paymentCost: 0, keysend: keysendValue, net: 0 },
       {
         name: t('reports.net'),
         revenue: 0,
         rebalanceCost: 0,
         paymentCost: 0,
+        keysend: 0,
         net: netValue,
         netColor: netValue < 0 ? COLORS.netNegative : COLORS.net
       }
@@ -471,6 +488,8 @@ export default function Reports() {
   const liveRebalanceCost = live?.rebalance_fee_cost_sats ?? 0
   const livePaymentCost = live?.payment_fee_cost_sats ?? 0
   const liveTotalCost = live?.total_fee_cost_sats ?? (liveRebalanceCost + livePaymentCost)
+  const liveKeysendReceived = live?.keysend_received_sats ?? 0
+  const liveNetWithKeysend = live?.net_with_keysend_sats ?? ((live?.net_routing_profit_sats ?? 0) + liveKeysendReceived)
 
   return (
     <section className="space-y-6">
@@ -494,7 +513,7 @@ export default function Reports() {
           {liveError && <p className="text-sm text-brass">{liveError}</p>}
           {!liveLoading && !liveError && live && (
             <div className="flex flex-1 flex-col gap-4">
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-4">
                 <div className="rounded-2xl bg-white/5 p-4">
                   <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.revenue')}</p>
                   <p className="text-lg font-semibold text-fog">{formatSats(live.forward_fee_revenue_sats)}</p>
@@ -509,11 +528,18 @@ export default function Reports() {
                   </div>
                 </div>
                 <div className="rounded-2xl bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.keysendReceived')}</p>
+                  <p className="text-lg font-semibold" style={{ color: COLORS.keysend }}>{formatSats(liveKeysendReceived)}</p>
+                </div>
+                <div className="rounded-2xl bg-white/5 p-4">
                   <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.net')}</p>
-                  <p className="text-lg font-semibold text-fog">{formatSats(live.net_routing_profit_sats)}</p>
+                  <p className="text-lg font-semibold text-fog">{formatSats(liveNetWithKeysend)}</p>
+                  <p className="text-xs text-fog/60">
+                    {t('reports.routingNet')} {formatSats(live.net_routing_profit_sats)}
+                  </p>
                 </div>
               </div>
-              <div className="grid gap-3 sm:grid-cols-3 text-sm text-fog/70">
+              <div className="grid gap-3 sm:grid-cols-4 text-sm text-fog/70">
                 <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
                   <span>{t('reports.forwardCount')}</span>
                   <span className="text-fog">{formatter.format(live.forward_count)}</span>
@@ -525,6 +551,10 @@ export default function Reports() {
                 <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
                   <span>{t('reports.paymentCount')}</span>
                   <span className="text-fog">{formatter.format(live.payment_count ?? 0)}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
+                  <span>{t('reports.keysendCount')}</span>
+                  <span className="text-fog">{formatter.format(live.keysend_received_count ?? 0)}</span>
                 </div>
               </div>
               <div className="min-h-[220px] flex-1">
@@ -545,6 +575,7 @@ export default function Reports() {
                     <Bar dataKey="revenue" stackId="live" name={t('reports.revenue')} fill={COLORS.revenue} radius={[8, 8, 8, 8]} />
                     <Bar dataKey="rebalanceCost" stackId="live" name={t('reports.rebalances')} fill={COLORS.costRebalance} radius={[8, 8, 8, 8]} />
                     <Bar dataKey="paymentCost" stackId="live" name={t('reports.payments')} fill={COLORS.costPayment} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="keysend" stackId="live" name={t('reports.keysendReceived')} fill={COLORS.keysend} radius={[8, 8, 8, 8]} />
                     <Bar dataKey="net" stackId="live" name={t('reports.net')} fill={COLORS.net} radius={[8, 8, 8, 8]}>
                       {liveChartData.map((entry) => (
                         <Cell key={entry.name} fill={entry.netColor ?? COLORS.net} />
@@ -593,7 +624,9 @@ export default function Reports() {
                 <p className="text-fog">{t('reports.cost')} {formatSats(summary.totals.total_fee_cost_sats ?? ((summary.totals.rebalance_fee_cost_sats ?? 0) + (summary.totals.payment_fee_cost_sats ?? 0)))}</p>
                 <p className="text-fog/80">{t('reports.rebalances')} {formatSats(summary.totals.rebalance_fee_cost_sats ?? 0)}</p>
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.totals.payment_fee_cost_sats ?? 0)}</p>
-                <p className="text-fog">{t('reports.net')} {formatSats(summary.totals.net_routing_profit_sats)}</p>
+                <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.totals.keysend_received_sats ?? 0)}</p>
+                <p className="text-fog/80">{t('reports.routingNet')} {formatSats(summary.totals.net_routing_profit_sats)}</p>
+                <p className="text-fog">{t('reports.net')} {formatSats(summary.totals.net_with_keysend_sats ?? ((summary.totals.net_routing_profit_sats ?? 0) + (summary.totals.keysend_received_sats ?? 0)))}</p>
               </div>
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.averagesPerDay')}</p>
@@ -601,13 +634,16 @@ export default function Reports() {
                 <p className="text-fog">{t('reports.cost')} {formatSats(summary.averages.total_fee_cost_sats ?? ((summary.averages.rebalance_fee_cost_sats ?? 0) + (summary.averages.payment_fee_cost_sats ?? 0)))}</p>
                 <p className="text-fog/80">{t('reports.rebalances')} {formatSats(summary.averages.rebalance_fee_cost_sats ?? 0)}</p>
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.averages.payment_fee_cost_sats ?? 0)}</p>
-                <p className="text-fog">{t('reports.net')} {formatSats(summary.averages.net_routing_profit_sats)}</p>
+                <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.averages.keysend_received_sats ?? 0)}</p>
+                <p className="text-fog/80">{t('reports.routingNet')} {formatSats(summary.averages.net_routing_profit_sats)}</p>
+                <p className="text-fog">{t('reports.net')} {formatSats(summary.averages.net_with_keysend_sats ?? ((summary.averages.net_routing_profit_sats ?? 0) + (summary.averages.keysend_received_sats ?? 0)))}</p>
               </div>
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.activity')}</p>
                 <p className="text-fog">{t('reports.forwards')} {formatter.format(summary.totals.forward_count)}</p>
                 <p className="text-fog">{t('reports.rebalances')} {formatter.format(summary.totals.rebalance_count)}</p>
                 <p className="text-fog">{t('reports.payments')} {formatter.format(summary.totals.payment_count ?? 0)}</p>
+                <p className="text-fog">{t('reports.keysendCount')} {formatter.format(summary.totals.keysend_received_count ?? 0)}</p>
                 <p className="text-fog">{t('reports.routedVolume')} {formatSats(summary.totals.routed_volume_sats)}</p>
                 {summaryMovementTarget > 0 ? (
                   <p className="mt-1 flex items-center gap-2 text-fog">
@@ -710,7 +746,7 @@ export default function Reports() {
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="section-card space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold">{t('reports.netRoutingProfit')}</h3>
+            <h3 className="text-lg font-semibold">{t('reports.netWithKeysend')}</h3>
             <span className="text-xs text-fog/60">{t('reports.daily')}</span>
           </div>
           {chartData.length === 0 && !seriesLoading && !seriesError ? (
@@ -728,6 +764,7 @@ export default function Reports() {
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
                   <XAxis dataKey="date" tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatDateLabel} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
+                  <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                   <Tooltip
                     cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
                     contentStyle={tooltipContentStyle}
@@ -736,7 +773,8 @@ export default function Reports() {
                     formatter={(value) => formatSats(Number(value))}
                     labelFormatter={formatDateLabel}
                   />
-                  <Area type="monotone" dataKey="net" stroke={COLORS.net} fill="url(#netGradient)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="net" name={t('reports.net')} stroke={COLORS.net} fill="url(#netGradient)" strokeWidth={2} />
+                  <Line type="monotone" dataKey="keysend" name={t('reports.keysendReceived')} stroke={COLORS.keysend} strokeWidth={2} dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
