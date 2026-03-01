@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,21 +30,20 @@ import (
 )
 
 const (
-	balancedOpenDefaultListLimit   = 50
-	balancedOpenMaxListLimit       = 500
-	balancedOpenDefaultEventList   = 100
-	balancedOpenMaxEventList       = 500
-	balancedOpenMinCapacitySat     = 20000
-	balancedOpenMinDualCapacitySat = 40000
-	balancedOpenProtocolVersion    = 1
-	balancedOpenCustomMsgType      = uint32(42069)
-	balancedOpenReconcileEvery     = 20 * time.Second
-	balancedOpenExecutionModePush  = "push_sat_v1"
-	balancedOpenExecutionModeDual  = "dual_funded_v1"
-	balancedOpenMultiSigKeyFamily  = int32(0)
-	balancedOpenTransitKeyFamily   = int32(805)
-	balancedOpenFundingVBytes      = int64(190)
-	balancedOpenAnchorSafetySat    = int64(10000)
+	balancedOpenDefaultListLimit  = 50
+	balancedOpenMaxListLimit      = 500
+	balancedOpenDefaultEventList  = 100
+	balancedOpenMaxEventList      = 500
+	balancedOpenMinCapacitySat    = 20000
+	balancedOpenProtocolVersion   = 1
+	balancedOpenCustomMsgType     = uint32(42069)
+	balancedOpenReconcileEvery    = 20 * time.Second
+	balancedOpenExecutionModePush = "push_sat_v1"
+	balancedOpenExecutionModeDual = "dual_funded_v1"
+	balancedOpenMultiSigKeyFamily = int32(0)
+	balancedOpenTransitKeyFamily  = int32(805)
+	balancedOpenFundingVBytes     = int64(190)
+	balancedOpenAnchorSafetySat   = int64(10000)
 )
 
 const (
@@ -487,6 +487,11 @@ func (s *BalancedOpenService) executeSessionPush(ctx context.Context, session Ba
 }
 
 func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata) (BalancedOpenSession, error) {
+	derivedPendingID, derivedPendingErr := balancedPendingChanIDHexFromMultisig(meta.InitiatorMultisigKey.PublicKey, meta.AccepterMultisigKey.PublicKey)
+	if derivedPendingErr == nil && isBalancedPendingChanIDHex(derivedPendingID) {
+		meta.PendingChanID = derivedPendingID
+	}
+
 	if err := validateBalancedDualExecuteArtifacts(session, meta); err != nil {
 		return BalancedOpenSession{}, err
 	}
@@ -511,8 +516,8 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		return BalancedOpenSession{}, err
 	}
 
-	localFundingSat := session.CapacitySat / 2
-	pushSat := int64(0)
+	localFundingSat := session.CapacitySat
+	pushSat := session.CapacitySat / 2
 	submitted, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateChannelProposed, "", "channel_open_submitted", map[string]any{
 		"execution_mode":            balancedOpenExecutionModeDual,
 		"capacity_sat":              session.CapacitySat,
@@ -633,6 +638,24 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 			"last_execution_error_unix": time.Now().UTC().Unix(),
 		})
 		return BalancedOpenSession{}, err
+	}
+	expectedPoint := balancedOpenCanonicalChannelPoint(plan.FundingTxID, plan.FundingVout)
+	actualPoint := balancedOpenCanonicalChannelPointFromString(channelPoint)
+	if expectedPoint != "" && actualPoint != "" && expectedPoint != actualPoint {
+		_ = s.lnd.CancelFundingShim(ctx, pendingID)
+		errMsg := fmt.Sprintf("channel point mismatch: expected %s got %s", expectedPoint, actualPoint)
+		_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, errMsg, "channel_point_mismatch", map[string]any{
+			"execution_mode":         balancedOpenExecutionModeDual,
+			"expected_channel_point": expectedPoint,
+			"actual_channel_point":   actualPoint,
+			"funding_tx_id":          plan.FundingTxID,
+			"funding_tx_vout":        plan.FundingVout,
+		}, map[string]any{
+			"last_execution_err":        errMsg,
+			"last_execution_error_unix": time.Now().UTC().Unix(),
+			"channel_point":             channelPoint,
+		})
+		return BalancedOpenSession{}, errors.New(errMsg)
 	}
 
 	if err := s.lnd.PublishTransaction(ctx, finalTxHex, fmt.Sprintf("balanced-open-%s", submitted.SessionID)); err != nil {
@@ -1499,9 +1522,6 @@ func (s *BalancedOpenService) upsertSessionFromProposal(ctx context.Context, sen
 		if !isBalancedOpenScriptHex(msg.TransitOutputPk) {
 			return BalancedOpenSession{}, errors.New("proposal missing transit output script")
 		}
-		if !isBalancedPendingChanIDHex(msg.PendingChanIDHex) {
-			return BalancedOpenSession{}, errors.New("proposal missing pending channel id")
-		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
@@ -1521,7 +1541,9 @@ func (s *BalancedOpenService) upsertSessionFromProposal(ctx context.Context, sen
 		},
 	}
 	if mode == balancedOpenExecutionModeDual {
-		metaPatch["pending_chan_id"] = strings.ToLower(strings.TrimSpace(msg.PendingChanIDHex))
+		if isBalancedPendingChanIDHex(msg.PendingChanIDHex) {
+			metaPatch["pending_chan_id"] = strings.ToLower(strings.TrimSpace(msg.PendingChanIDHex))
+		}
 		metaPatch["initiator_multisig_key"] = map[string]any{
 			"public_key": strings.ToLower(strings.TrimSpace(msg.MultisigPubkey)),
 			"family":     balancedOpenMultiSigKeyFamily,
@@ -1667,17 +1689,19 @@ func (s *BalancedOpenService) markAcceptedFromPeer(ctx context.Context, sender s
 		if len(msg.TransitInputStack) == 0 {
 			return BalancedOpenSession{}, errors.New("accept missing funding input witness")
 		}
-		if !isBalancedPendingChanIDHex(msg.PendingChanIDHex) {
-			return BalancedOpenSession{}, errors.New("accept missing pending channel id")
+		derivedPendingID, err := balancedPendingChanIDHexFromMultisig(meta.InitiatorMultisigKey.PublicKey, msg.MultisigPubkey)
+		if err != nil {
+			return BalancedOpenSession{}, fmt.Errorf("accept missing valid pending channel id context: %w", err)
 		}
-
-		pendingID := strings.ToLower(strings.TrimSpace(msg.PendingChanIDHex))
-		if existing := strings.ToLower(strings.TrimSpace(meta.PendingChanID)); existing != "" && existing != pendingID {
-			return BalancedOpenSession{}, errors.New("accept pending channel id mismatch")
+		if isBalancedPendingChanIDHex(msg.PendingChanIDHex) {
+			pendingID := strings.ToLower(strings.TrimSpace(msg.PendingChanIDHex))
+			if pendingID != derivedPendingID {
+				return BalancedOpenSession{}, errors.New("accept pending channel id mismatch")
+			}
 		}
 
 		meta.ExecutionMode = balancedOpenExecutionModeDual
-		meta.PendingChanID = pendingID
+		meta.PendingChanID = derivedPendingID
 		meta.AccepterMultisigKey = balancedOpenKeyDescriptor{
 			PublicKey: strings.ToLower(strings.TrimSpace(msg.MultisigPubkey)),
 			Family:    balancedOpenMultiSigKeyFamily,
@@ -2088,7 +2112,6 @@ func balancedOpenLocalTransitForRole(role string, meta balancedOpenMetadata) (ba
 
 func (s *BalancedOpenService) ensureInitiatorDualArtifacts(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata) (balancedOpenMetadata, bool, error) {
 	if normalizeBalancedExecutionMode(meta.ExecutionMode) == balancedOpenExecutionModeDual &&
-		isBalancedPendingChanIDHex(meta.PendingChanID) &&
 		isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) &&
 		hasBalancedTransit(meta.InitiatorTransit, true) {
 		return meta, false, nil
@@ -2128,13 +2151,7 @@ func (s *BalancedOpenService) ensureInitiatorDualArtifacts(ctx context.Context, 
 		return meta, false, err
 	}
 
-	pendingID, err := newBalancedOpenPendingChanIDHex()
-	if err != nil {
-		return meta, false, err
-	}
-
 	meta.ExecutionMode = balancedOpenExecutionModeDual
-	meta.PendingChanID = pendingID
 	meta.InitiatorMultisigKey = balancedOpenKeyDescriptor{
 		PublicKey: strings.ToLower(strings.TrimSpace(multisigKey.PublicKey)),
 		Family:    multisigKey.Family,
@@ -2223,12 +2240,12 @@ func (s *BalancedOpenService) ensureAccepterDualArtifacts(ctx context.Context, s
 		created = true
 	}
 
-	if !isBalancedPendingChanIDHex(meta.PendingChanID) {
-		pendingID, err := newBalancedOpenPendingChanIDHex()
-		if err != nil {
-			return meta, nil, created, err
-		}
-		meta.PendingChanID = pendingID
+	derivedPendingID, err := balancedPendingChanIDHexFromMultisig(meta.InitiatorMultisigKey.PublicKey, meta.AccepterMultisigKey.PublicKey)
+	if err != nil {
+		return meta, nil, created, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(meta.PendingChanID), strings.TrimSpace(derivedPendingID)) {
+		meta.PendingChanID = derivedPendingID
 		created = true
 	}
 
@@ -2601,13 +2618,42 @@ func isBalancedOpenOutpointUnavailableError(err error) bool {
 }
 
 func validateBalancedCapacityByMode(capacitySat int64, mode string) error {
+	_ = mode
 	if capacitySat < balancedOpenMinCapacitySat || capacitySat%2 != 0 {
 		return ErrBalancedOpenInvalidCapacity
 	}
-	if normalizeBalancedExecutionMode(mode) == balancedOpenExecutionModeDual && capacitySat < balancedOpenMinDualCapacitySat {
-		return fmt.Errorf("%w: dual-funded requires at least %d sats total capacity (%d sats per side)", ErrBalancedOpenInvalidCapacity, balancedOpenMinDualCapacitySat, balancedOpenMinCapacitySat)
-	}
 	return nil
+}
+
+func balancedOpenCanonicalChannelPoint(txid string, vout uint32) string {
+	cleanTxid := strings.ToLower(strings.TrimSpace(txid))
+	if !isBalancedOpenTxID(cleanTxid) {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", cleanTxid, vout)
+}
+
+func balancedOpenCanonicalChannelPointFromString(value string) string {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	idx, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 32)
+	if err != nil {
+		return ""
+	}
+	return balancedOpenCanonicalChannelPoint(parts[0], uint32(idx))
+}
+
+func balancedPendingChanIDHexFromMultisig(localKey string, remoteKey string) (string, error) {
+	witnessScript, err := balancedFundingWitnessScript(localKey, remoteKey)
+	if err != nil {
+		return "", err
+	}
+
+	hash := sha256.Sum256(witnessScript)
+
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func isBalancedOpenTxID(txid string) bool {
