@@ -460,19 +460,18 @@ export default function Reports() {
     const rebalanceCostValue = parseChartNumber(live.rebalance_fee_cost_sats ?? 0)
     const paymentCostValue = parseChartNumber(live.payment_fee_cost_sats ?? 0)
     const keysendValue = parseChartNumber(live.keysend_received_sats ?? 0)
-    const netValue = parseChartNumber(live.net_with_keysend_sats ?? ((live.net_routing_profit_sats ?? 0) + (live.keysend_received_sats ?? 0)))
+    const netRoutingValue = parseChartNumber(live.net_routing_profit_sats ?? 0)
     return [
-      { name: t('reports.revenue'), revenue: revenueValue, rebalanceCost: 0, paymentCost: 0, net: 0 },
-      { name: t('reports.cost'), revenue: 0, rebalanceCost: rebalanceCostValue, paymentCost: paymentCostValue, net: 0 },
-      { name: t('reports.keysendReceived'), revenue: 0, rebalanceCost: 0, paymentCost: 0, keysend: keysendValue, net: 0 },
+      { name: t('reports.revenue'), revenue: revenueValue, rebalanceCost: 0, paymentCost: 0, netRouting: 0, keysendInNet: 0, netRoutingColor: undefined },
+      { name: t('reports.cost'), revenue: 0, rebalanceCost: rebalanceCostValue, paymentCost: paymentCostValue, netRouting: 0, keysendInNet: 0, netRoutingColor: undefined },
       {
         name: t('reports.net'),
         revenue: 0,
         rebalanceCost: 0,
         paymentCost: 0,
-        keysend: 0,
-        net: netValue,
-        netColor: netValue < 0 ? COLORS.netNegative : COLORS.net
+        keysendInNet: keysendValue,
+        netRouting: netRoutingValue,
+        netRoutingColor: netRoutingValue < 0 ? COLORS.netNegative : COLORS.net
       }
     ]
   }, [live, t])
@@ -532,10 +531,10 @@ export default function Reports() {
                   <p className="text-lg font-semibold" style={{ color: COLORS.keysend }}>{formatSats(liveKeysendReceived)}</p>
                 </div>
                 <div className="rounded-2xl bg-white/5 p-4">
-                  <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.net')}</p>
-                  <p className="text-lg font-semibold text-fog">{formatSats(liveNetWithKeysend)}</p>
+                  <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.routingNet')}</p>
+                  <p className="text-lg font-semibold text-fog">{formatSats(live.net_routing_profit_sats)}</p>
                   <p className="text-xs text-fog/60">
-                    {t('reports.routingNet')} {formatSats(live.net_routing_profit_sats)}
+                    {t('reports.netWithKeysend')} {formatSats(liveNetWithKeysend)}
                   </p>
                 </div>
               </div>
@@ -572,15 +571,15 @@ export default function Reports() {
                       formatter={(value) => formatSats(Number(value))}
                     />
                     <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
-                    <Bar dataKey="revenue" stackId="live" name={t('reports.revenue')} fill={COLORS.revenue} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="rebalanceCost" stackId="live" name={t('reports.rebalances')} fill={COLORS.costRebalance} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="paymentCost" stackId="live" name={t('reports.payments')} fill={COLORS.costPayment} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="keysend" stackId="live" name={t('reports.keysendReceived')} fill={COLORS.keysend} radius={[8, 8, 8, 8]} />
-                    <Bar dataKey="net" stackId="live" name={t('reports.net')} fill={COLORS.net} radius={[8, 8, 8, 8]}>
+                    <Bar dataKey="revenue" stackId="revenue" name={t('reports.revenue')} fill={COLORS.revenue} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="rebalanceCost" stackId="cost" name={t('reports.rebalances')} fill={COLORS.costRebalance} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="paymentCost" stackId="cost" name={t('reports.payments')} fill={COLORS.costPayment} radius={[8, 8, 8, 8]} />
+                    <Bar dataKey="netRouting" stackId="net" name={t('reports.routingNet')} fill={COLORS.net} radius={[8, 8, 8, 8]}>
                       {liveChartData.map((entry) => (
-                        <Cell key={entry.name} fill={entry.netColor ?? COLORS.net} />
+                        <Cell key={entry.name} fill={entry.netRoutingColor ?? COLORS.net} />
                       ))}
                     </Bar>
+                    <Bar dataKey="keysendInNet" stackId="net" name={t('reports.keysendReceived')} fill={COLORS.keysend} radius={[8, 8, 8, 8]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -625,8 +624,8 @@ export default function Reports() {
                 <p className="text-fog/80">{t('reports.rebalances')} {formatSats(summary.totals.rebalance_fee_cost_sats ?? 0)}</p>
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.totals.payment_fee_cost_sats ?? 0)}</p>
                 <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.totals.keysend_received_sats ?? 0)}</p>
-                <p className="text-fog/80">{t('reports.routingNet')} {formatSats(summary.totals.net_routing_profit_sats)}</p>
-                <p className="text-fog">{t('reports.net')} {formatSats(summary.totals.net_with_keysend_sats ?? ((summary.totals.net_routing_profit_sats ?? 0) + (summary.totals.keysend_received_sats ?? 0)))}</p>
+                <p className="text-fog">{t('reports.routingNet')} {formatSats(summary.totals.net_routing_profit_sats)}</p>
+                <p className="text-fog/80">{t('reports.netWithKeysend')} {formatSats(summary.totals.net_with_keysend_sats ?? ((summary.totals.net_routing_profit_sats ?? 0) + (summary.totals.keysend_received_sats ?? 0)))}</p>
               </div>
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.averagesPerDay')}</p>
@@ -635,8 +634,8 @@ export default function Reports() {
                 <p className="text-fog/80">{t('reports.rebalances')} {formatSats(summary.averages.rebalance_fee_cost_sats ?? 0)}</p>
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.averages.payment_fee_cost_sats ?? 0)}</p>
                 <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.averages.keysend_received_sats ?? 0)}</p>
-                <p className="text-fog/80">{t('reports.routingNet')} {formatSats(summary.averages.net_routing_profit_sats)}</p>
-                <p className="text-fog">{t('reports.net')} {formatSats(summary.averages.net_with_keysend_sats ?? ((summary.averages.net_routing_profit_sats ?? 0) + (summary.averages.keysend_received_sats ?? 0)))}</p>
+                <p className="text-fog">{t('reports.routingNet')} {formatSats(summary.averages.net_routing_profit_sats)}</p>
+                <p className="text-fog/80">{t('reports.netWithKeysend')} {formatSats(summary.averages.net_with_keysend_sats ?? ((summary.averages.net_routing_profit_sats ?? 0) + (summary.averages.keysend_received_sats ?? 0)))}</p>
               </div>
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.activity')}</p>
