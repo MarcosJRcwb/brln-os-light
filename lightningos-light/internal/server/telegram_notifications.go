@@ -1070,6 +1070,11 @@ func telegramActivityMirrorMessage(evt Notification) string {
 	if emoji := telegramNotificationTypeEmoji(evt.Type); emoji != "" {
 		prefix = emoji + " " + prefix
 	}
+	if evt.Type == "onchain" {
+		if state := telegramOnchainStateLabel(evt.Status); state != "" {
+			prefix = fmt.Sprintf("%s (%s)", prefix, state)
+		}
+	}
 
 	main := fmt.Sprintf("%s %s sats", prefix, formatIntWithSign(evt.AmountSat))
 	if route := telegramNotificationRoute(evt); route != "" {
@@ -1260,6 +1265,17 @@ func splitTelegramRoute(value string) (string, string, bool) {
 
 func telegramRouteArrowEmoji() string {
 	return "→"
+}
+
+func telegramOnchainStateLabel(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "PENDING":
+		return "Pending"
+	case "CONFIRMED":
+		return "Confirmed"
+	default:
+		return ""
+	}
 }
 
 func telegramTrimMemo(value string, max int) string {
