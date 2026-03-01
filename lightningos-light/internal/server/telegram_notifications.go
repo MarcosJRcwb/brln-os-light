@@ -1080,6 +1080,9 @@ func telegramActivityMirrorMessage(evt Notification) string {
 	if route := telegramNotificationRoute(evt); route != "" {
 		main += " - " + route
 	}
+	if detail := telegramNotificationChannelDetail(evt); detail != "" {
+		main += " | " + detail
+	}
 	if evt.Type == "keysend" {
 		if memoDetail := telegramNotificationMemoDetail(evt); memoDetail != "" {
 			main += " | " + memoDetail
@@ -1094,6 +1097,19 @@ func telegramActivityMirrorMessage(evt Notification) string {
 		return strings.TrimSpace(msg[:3897]) + "..."
 	}
 	return msg
+}
+
+func telegramNotificationChannelDetail(evt Notification) string {
+	if evt.Type != "channel" {
+		return ""
+	}
+	if evt.Action != "opening" {
+		return ""
+	}
+	if strings.ToUpper(strings.TrimSpace(evt.Status)) != "BALANCED_START" {
+		return ""
+	}
+	return strings.TrimSpace(evt.Memo)
 }
 
 func telegramNotificationTypeEmoji(value string) string {

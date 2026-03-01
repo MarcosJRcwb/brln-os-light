@@ -98,9 +98,10 @@ const (
 )
 
 type BalancedOpenService struct {
-	db     *pgxpool.Pool
-	lnd    *lndclient.Client
-	logger *log.Logger
+	db       *pgxpool.Pool
+	lnd      *lndclient.Client
+	logger   *log.Logger
+	notifier *Notifier
 
 	mu           sync.Mutex
 	started      bool
@@ -225,11 +226,12 @@ type balancedOpenEventScanner interface {
 	Scan(dest ...any) error
 }
 
-func NewBalancedOpenService(db *pgxpool.Pool, lnd *lndclient.Client, logger *log.Logger) *BalancedOpenService {
+func NewBalancedOpenService(db *pgxpool.Pool, lnd *lndclient.Client, logger *log.Logger, notifier *Notifier) *BalancedOpenService {
 	return &BalancedOpenService{
-		db:     db,
-		lnd:    lnd,
-		logger: logger,
+		db:       db,
+		lnd:      lnd,
+		logger:   logger,
+		notifier: notifier,
 	}
 }
 
@@ -886,6 +888,7 @@ func (s *BalancedOpenService) ProposeSession(ctx context.Context, sessionID stri
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
+	s.notifyBalancedOpenStart(ctx, updated, meta, msg.FromPubkey)
 	return updated, nil
 }
 
@@ -1696,6 +1699,10 @@ returning
 
 	if err := tx.Commit(ctx); err != nil {
 		return BalancedOpenSession{}, err
+	}
+	metaState, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err == nil {
+		s.notifyBalancedOpenStart(ctx, session, metaState, sender)
 	}
 	return session, nil
 }
@@ -3477,6 +3484,88 @@ func matchBalancedOpenActiveChannel(session BalancedOpenSession, channelPointHin
 	}
 
 	return lndclient.ChannelInfo{}, false
+}
+
+func (s *BalancedOpenService) notifyBalancedOpenStart(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata, openerPubkey string) {
+	if s == nil || s.notifier == nil {
+		return
+	}
+
+	mode := normalizeBalancedExecutionMode(meta.ExecutionMode)
+	if mode == "" {
+		mode = balancedOpenExecutionModeDual
+	}
+	perSideSat := session.CapacitySat / 2
+	localOnchainSat, peerOnchainSat := balancedOpenOnchainFundingByRole(session.Role, meta)
+	if localOnchainSat <= 0 {
+		localOnchainSat = perSideSat
+	}
+	if peerOnchainSat <= 0 {
+		peerOnchainSat = perSideSat
+	}
+
+	normalizedOpener := strings.ToLower(strings.TrimSpace(openerPubkey))
+	if !isValidPubkeyHex(normalizedOpener) {
+		if self, err := s.lnd.SelfPubkey(ctx); err == nil && isValidPubkeyHex(self) {
+			normalizedOpener = strings.ToLower(strings.TrimSpace(self))
+		}
+	}
+
+	openerAlias := ""
+	if strings.EqualFold(normalizedOpener, session.PeerPubkey) {
+		openerAlias = strings.TrimSpace(s.notifier.lookupNodeAlias(session.PeerPubkey))
+	} else {
+		openerAlias = strings.TrimSpace(getNodeAlias(ctx, s.lnd))
+	}
+	if openerAlias == "" {
+		openerAlias = shortPubKey(normalizedOpener)
+	}
+	if openerAlias == "" {
+		openerAlias = "unknown"
+	}
+
+	peerAlias := strings.TrimSpace(s.notifier.lookupNodeAlias(session.PeerPubkey))
+	memo := fmt.Sprintf(
+		"Balanced open start | opener %s | mode %s | target %d sats/side | local on-chain %d sats | peer on-chain %d sats | fee rate %d sat/vB",
+		openerAlias,
+		mode,
+		perSideSat,
+		localOnchainSat,
+		peerOnchainSat,
+		session.FeeRateSatVb,
+	)
+
+	evt := Notification{
+		OccurredAt:   time.Now().UTC(),
+		Type:         "channel",
+		Action:       "opening",
+		Direction:    "neutral",
+		Status:       "BALANCED_START",
+		AmountSat:    session.CapacitySat,
+		PeerPubkey:   session.PeerPubkey,
+		PeerAlias:    peerAlias,
+		ChannelPoint: strings.TrimSpace(meta.ChannelPoint),
+		Memo:         memo,
+	}
+	if evt.PeerAlias == "" && evt.PeerPubkey != "" {
+		evt.PeerAlias = shortPubKey(evt.PeerPubkey)
+	}
+
+	eventKey := fmt.Sprintf("channel:balanced_open_start:%s:%s", strings.TrimSpace(session.SessionID), strings.TrimSpace(session.Role))
+	nctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, _ = s.notifier.upsertNotification(nctx, eventKey, evt)
+	cancel()
+}
+
+func balancedOpenOnchainFundingByRole(role string, meta balancedOpenMetadata) (int64, int64) {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		return meta.InitiatorTransit.OutputSat, meta.AccepterTransit.OutputSat
+	case balancedOpenRoleAccepter:
+		return meta.AccepterTransit.OutputSat, meta.InitiatorTransit.OutputSat
+	default:
+		return 0, 0
+	}
 }
 
 func (s *BalancedOpenService) sendProtocolMessage(ctx context.Context, peerPubkey string, msg balancedOpenProtocolMessage) error {
