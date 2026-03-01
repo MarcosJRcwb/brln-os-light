@@ -2426,6 +2426,43 @@ export default function LightningOps() {
     return raw.trim()
   }
 
+  const balancedOpenMetadataNumber = (session: BalancedOpenSession, key: string) => {
+    const raw = session?.metadata?.[key]
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+    if (typeof raw === 'string') {
+      const parsed = Number(raw)
+      if (Number.isFinite(parsed)) return parsed
+    }
+    return NaN
+  }
+
+  const balancedOpenCanonicalPoint = (txid: string, vout: number) => {
+    const id = (txid || '').trim().toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(id)) return ''
+    if (!Number.isInteger(vout) || vout < 0) return ''
+    return `${id}:${vout}`
+  }
+
+  const balancedOpenHasOrphanFundingCandidate = (session: BalancedOpenSession) => {
+    if (balancedOpenSessionExecutionMode(session) !== 'dual_funded_v1') return false
+
+    const fundingTxid = balancedOpenMetadataString(session, 'funding_tx_id')
+    const fundingVout = balancedOpenMetadataNumber(session, 'funding_tx_vout')
+    const expectedPoint = balancedOpenCanonicalPoint(fundingTxid, fundingVout)
+    if (!expectedPoint) return false
+
+    const channelPoint = balancedOpenSessionChannelPoint(session)
+    const parts = channelPoint.split(':')
+    if (parts.length !== 2) return false
+    const actualPoint = balancedOpenCanonicalPoint(parts[0], Number(parts[1]))
+    if (!actualPoint) return false
+
+    const orphanRecoveryTxid = balancedOpenMetadataString(session, 'orphan_recovery_txid')
+    if (orphanRecoveryTxid) return false
+
+    return expectedPoint !== actualPoint
+  }
+
   const balancedOpenRecoveryKeysForRole = (role: string) => {
     if (role === 'initiator') {
       return { txidKey: 'initiator_recovery_txid', unavailableKey: 'initiator_recovery_unavailable_outpoint' }
@@ -2438,6 +2475,7 @@ export default function LightningOps() {
 
   const canRecoverBalancedSession = (session: BalancedOpenSession) => {
     if (balancedOpenSessionExecutionMode(session) !== 'dual_funded_v1') return false
+    if (balancedOpenHasOrphanFundingCandidate(session)) return true
     if (session.state === 'recovery_required' || session.state === 'canceled') return true
     if (session.state !== 'recovered') return false
 
