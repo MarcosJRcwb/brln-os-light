@@ -2422,9 +2422,32 @@ export default function LightningOps() {
     return raw.trim().toLowerCase()
   }
 
+  const balancedOpenMetadataString = (session: BalancedOpenSession, key: string) => {
+    const raw = session?.metadata?.[key]
+    if (typeof raw !== 'string') return ''
+    return raw.trim()
+  }
+
+  const balancedOpenRecoveryKeysForRole = (role: string) => {
+    if (role === 'initiator') {
+      return { txidKey: 'initiator_recovery_txid', unavailableKey: 'initiator_recovery_unavailable_outpoint' }
+    }
+    if (role === 'accepter') {
+      return { txidKey: 'accepter_recovery_txid', unavailableKey: 'accepter_recovery_unavailable_outpoint' }
+    }
+    return { txidKey: '', unavailableKey: '' }
+  }
+
   const canRecoverBalancedSession = (session: BalancedOpenSession) => {
-    const recoverableState = session.state === 'recovery_required' || session.state === 'canceled'
-    return recoverableState && balancedOpenSessionExecutionMode(session) === 'dual_funded_v1'
+    if (balancedOpenSessionExecutionMode(session) !== 'dual_funded_v1') return false
+    if (session.state === 'recovery_required' || session.state === 'canceled') return true
+    if (session.state !== 'recovered') return false
+
+    const keys = balancedOpenRecoveryKeysForRole(session.role)
+    if (!keys.txidKey || !keys.unavailableKey) return false
+    const hasRecoveryTxid = balancedOpenMetadataString(session, keys.txidKey) !== ''
+    const unavailableOutpoint = balancedOpenMetadataString(session, keys.unavailableKey)
+    return unavailableOutpoint !== '' && !hasRecoveryTxid
   }
 
   const balancedOpenSessionChannelPoint = (session: BalancedOpenSession) => {

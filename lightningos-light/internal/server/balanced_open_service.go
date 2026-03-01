@@ -1329,21 +1329,30 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
-	if session.State == balancedOpenStateRecovered {
-		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
-	}
-	if session.State == balancedOpenStateActive {
-		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
-	}
-	if session.State != balancedOpenStateRecoveryRequired && session.State != balancedOpenStateCanceled {
-		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
-	}
 
 	meta, err := decodeBalancedOpenMetadata(session.Metadata)
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
 	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	txidKey, addressKey, unavailableKey, ok := balancedOpenRecoveryKeysForRole(session.Role)
+	if !ok {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidRole
+	}
+	metaMap, _ := decodeBalancedOpenMetadataMap(session.Metadata)
+	recoveredRetry := session.State == balancedOpenStateRecovered &&
+		balancedOpenMetadataString(metaMap, unavailableKey) != "" &&
+		balancedOpenMetadataString(metaMap, txidKey) == ""
+
+	if session.State == balancedOpenStateRecovered && !recoveredRetry {
+		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
+	}
+	if session.State == balancedOpenStateActive {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if session.State != balancedOpenStateRecoveryRequired && session.State != balancedOpenStateCanceled && !recoveredRetry {
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
 	}
 
@@ -1377,11 +1386,8 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 					"last_execution_err":        "",
 					"last_execution_error_unix": int64(0),
 				}
-				if session.Role == balancedOpenRoleInitiator {
-					patch["initiator_recovery_txid"] = spendingTxid
-				} else {
-					patch["accepter_recovery_txid"] = spendingTxid
-				}
+				patch[txidKey] = spendingTxid
+				patch[unavailableKey] = ""
 				updated, txErr := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_outpoint_already_spent", map[string]any{
 					"role":            session.Role,
 					"transit_tx_id":   localTransit.TxID,
@@ -1403,13 +1409,9 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 		"last_execution_err":        "",
 		"last_execution_error_unix": int64(0),
 	}
-	if session.Role == balancedOpenRoleInitiator {
-		patch["initiator_recovery_txid"] = txid
-		patch["initiator_recovery_address"] = address
-	} else {
-		patch["accepter_recovery_txid"] = txid
-		patch["accepter_recovery_address"] = address
-	}
+	patch[txidKey] = txid
+	patch[addressKey] = address
+	patch[unavailableKey] = ""
 
 	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_recovered", map[string]any{
 		"role":             session.Role,
@@ -1738,7 +1740,8 @@ func (s *BalancedOpenService) transitionSessionWithMetadata(ctx context.Context,
 		return BalancedOpenSession{}, err
 	}
 	if isBalancedOpenTerminalState(current.State) {
-		if !(current.State == balancedOpenStateCanceled && nextState == balancedOpenStateRecovered) {
+		if !(current.State == balancedOpenStateCanceled && nextState == balancedOpenStateRecovered) &&
+			!(current.State == balancedOpenStateRecovered && nextState == balancedOpenStateRecovered) {
 			return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 		}
 	}
@@ -1911,6 +1914,43 @@ func decodeBalancedOpenMetadata(raw json.RawMessage) (balancedOpenMetadata, erro
 	}
 	meta.ExecutionMode = normalizeBalancedExecutionMode(meta.ExecutionMode)
 	return meta, nil
+}
+
+func decodeBalancedOpenMetadataMap(raw json.RawMessage) (map[string]any, error) {
+	out := map[string]any{}
+	if len(raw) == 0 {
+		return out, nil
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func balancedOpenMetadataString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	value, ok := meta[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func balancedOpenRecoveryKeysForRole(role string) (txidKey string, addressKey string, unavailableKey string, ok bool) {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		return "initiator_recovery_txid", "initiator_recovery_address", "initiator_recovery_unavailable_outpoint", true
+	case balancedOpenRoleAccepter:
+		return "accepter_recovery_txid", "accepter_recovery_address", "accepter_recovery_unavailable_outpoint", true
+	default:
+		return "", "", "", false
+	}
 }
 
 func balancedEncodeMetadata(meta balancedOpenMetadata) map[string]any {
