@@ -1168,9 +1168,9 @@ func telegramNotificationRoute(evt Notification) string {
 			if right == "" {
 				right = "?"
 			}
-			return fmt.Sprintf("Out %s %s In %s", left, telegramRouteArrowEmoji(), right)
+			return fmt.Sprintf("In %s %s Out %s", left, telegramRouteArrowEmoji(), right)
 		}
-		return fmt.Sprintf("Out %s", route)
+		return fmt.Sprintf("In %s", route)
 	}
 	route = strings.ReplaceAll(route, "->", " "+telegramRouteArrowEmoji()+" ")
 	route = strings.Join(strings.Fields(route), " ")
