@@ -63,6 +63,7 @@ type ChanPointShimParams struct {
 type OpenChannelWithShimParams struct {
 	PubkeyHex         string
 	CapacitySat       int64
+	LocalFundingSat   int64
 	PushSat           int64
 	CloseAddress      string
 	Private           bool
@@ -211,6 +212,15 @@ type BalanceSummary struct {
 	LightningLocalSat          int64
 	LightningUnsettledLocalSat int64
 	Warnings                   []string
+}
+
+type WalletBalanceDetails struct {
+	TotalSat              int64
+	ConfirmedSat          int64
+	UnconfirmedSat        int64
+	LockedSat             int64
+	ReservedAnchorSat     int64
+	EstimatedSpendableSat int64
 }
 
 type ChannelPolicy struct {
@@ -401,6 +411,37 @@ func (c *Client) GetBalances(ctx context.Context) (BalanceSummary, error) {
 		return summary, firstErr
 	}
 	return summary, nil
+}
+
+func (c *Client) GetWalletBalanceDetails(ctx context.Context) (WalletBalanceDetails, error) {
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return WalletBalanceDetails{}, err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.WalletBalance(ctx, &lnrpc.WalletBalanceRequest{})
+	if err != nil {
+		return WalletBalanceDetails{}, err
+	}
+	if resp == nil {
+		return WalletBalanceDetails{}, errors.New("wallet balance unavailable")
+	}
+
+	estimated := resp.GetTotalBalance() - resp.GetLockedBalance() - resp.GetReservedBalanceAnchorChan()
+	if estimated < 0 {
+		estimated = 0
+	}
+
+	return WalletBalanceDetails{
+		TotalSat:              resp.GetTotalBalance(),
+		ConfirmedSat:          resp.GetConfirmedBalance(),
+		UnconfirmedSat:        resp.GetUnconfirmedBalance(),
+		LockedSat:             resp.GetLockedBalance(),
+		ReservedAnchorSat:     resp.GetReservedBalanceAnchorChan(),
+		EstimatedSpendableSat: estimated,
+	}, nil
 }
 
 func (c *Client) DecodeInvoice(ctx context.Context, payReq string) (DecodedInvoice, error) {
@@ -821,6 +862,63 @@ func (c *Client) SendCoins(ctx context.Context, address string, amountSat int64,
 		return "", nil
 	}
 	return resp.Txid, nil
+}
+
+func (c *Client) SweepOutpoint(ctx context.Context, txid string, vout uint32, satPerVbyte int64) (string, string, error) {
+	trimmedTxid := strings.ToLower(strings.TrimSpace(txid))
+	if len(trimmedTxid) != 64 {
+		return "", "", errors.New("invalid txid")
+	}
+	if _, err := hex.DecodeString(trimmedTxid); err != nil {
+		return "", "", errors.New("invalid txid")
+	}
+	if satPerVbyte < 0 {
+		return "", "", errors.New("sat_per_vbyte must be zero or positive")
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return "", "", err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+
+	addrResp, err := client.NewAddress(ctx, &lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_WITNESS_PUBKEY_HASH,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	address := strings.TrimSpace(addrResp.GetAddress())
+	if address == "" {
+		return "", "", errors.New("failed to derive recovery address")
+	}
+
+	req := &lnrpc.SendCoinsRequest{
+		Addr:    address,
+		SendAll: true,
+		Outpoints: []*lnrpc.OutPoint{
+			{
+				TxidStr:     trimmedTxid,
+				OutputIndex: vout,
+			},
+		},
+		SpendUnconfirmed: true,
+		MinConfs:         0,
+	}
+	if satPerVbyte > 0 {
+		req.SatPerVbyte = uint64(satPerVbyte)
+	}
+
+	resp, err := client.SendCoins(ctx, req)
+	if err != nil {
+		return "", address, err
+	}
+	if resp == nil {
+		return "", address, nil
+	}
+	return strings.TrimSpace(resp.GetTxid()), address, nil
 }
 
 func (c *Client) ListRecent(ctx context.Context, limit int) ([]RecentActivity, error) {
@@ -2004,6 +2102,19 @@ func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWith
 	if params.CapacitySat <= 0 {
 		return "", errors.New("capacity must be positive")
 	}
+	localFundingSat := params.LocalFundingSat
+	if localFundingSat <= 0 {
+		localFundingSat = params.CapacitySat
+	}
+	if localFundingSat > params.CapacitySat {
+		return "", errors.New("local funding cannot exceed capacity")
+	}
+	if params.PushSat < 0 {
+		return "", errors.New("push amount cannot be negative")
+	}
+	if params.PushSat > localFundingSat {
+		return "", errors.New("push amount cannot exceed local funding")
+	}
 	pubkey, err := hex.DecodeString(pubkeyHex)
 	if err != nil {
 		return "", errors.New("invalid pubkey hex")
@@ -2028,7 +2139,7 @@ func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWith
 
 	req := &lnrpc.OpenChannelRequest{
 		NodePubkey:         pubkey,
-		LocalFundingAmount: params.CapacitySat,
+		LocalFundingAmount: localFundingSat,
 		PushSat:            params.PushSat,
 		Private:            params.Private,
 		CommitmentType:     params.CommitmentType,

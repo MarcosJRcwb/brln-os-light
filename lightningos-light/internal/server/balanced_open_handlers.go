@@ -297,7 +297,8 @@ func (s *Server) handleBalancedOpenSessionProposePost(w http.ResponseWriter, r *
 			writeError(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, ErrBalancedOpenInvalidAction),
 			errors.Is(err, ErrBalancedOpenInvalidState),
-			errors.Is(err, ErrBalancedOpenInvalidRole):
+			errors.Is(err, ErrBalancedOpenInvalidRole),
+			errors.Is(err, ErrBalancedOpenInsufficientOnchainSafety):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, ErrBalancedOpenTerminalState):
 			writeError(w, http.StatusConflict, err.Error())
@@ -336,7 +337,8 @@ func (s *Server) handleBalancedOpenSessionAcceptPost(w http.ResponseWriter, r *h
 			writeError(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, ErrBalancedOpenInvalidAction),
 			errors.Is(err, ErrBalancedOpenInvalidState),
-			errors.Is(err, ErrBalancedOpenInvalidRole):
+			errors.Is(err, ErrBalancedOpenInvalidRole),
+			errors.Is(err, ErrBalancedOpenInsufficientOnchainSafety):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, ErrBalancedOpenTerminalState):
 			writeError(w, http.StatusConflict, err.Error())
@@ -375,7 +377,57 @@ func (s *Server) handleBalancedOpenSessionExecutePost(w http.ResponseWriter, r *
 			writeError(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, ErrBalancedOpenInvalidAction),
 			errors.Is(err, ErrBalancedOpenInvalidState),
-			errors.Is(err, ErrBalancedOpenInvalidRole):
+			errors.Is(err, ErrBalancedOpenInvalidRole),
+			errors.Is(err, ErrBalancedOpenInsufficientOnchainSafety):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrBalancedOpenTerminalState):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleBalancedOpenSessionRecoverPost(w http.ResponseWriter, r *http.Request) {
+	svc, errMsg := s.balancedOpenService()
+	if svc == nil {
+		if errMsg == "" {
+			errMsg = "balanced open unavailable"
+		}
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+
+	var req struct {
+		SatPerVbyte int64 `json:"sat_per_vbyte"`
+	}
+	if err := readJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+
+	session, err := svc.RecoverSessionTransit(ctx, sessionID, req.SatPerVbyte)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrBalancedOpenSessionNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrBalancedOpenInvalidAction),
+			errors.Is(err, ErrBalancedOpenInvalidState),
+			errors.Is(err, ErrBalancedOpenInvalidRole),
+			errors.Is(err, ErrBalancedOpenInvalidFeeRate),
+			errors.Is(err, ErrBalancedOpenInsufficientOnchainSafety):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, ErrBalancedOpenTerminalState):
 			writeError(w, http.StatusConflict, err.Error())

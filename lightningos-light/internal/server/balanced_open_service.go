@@ -40,6 +40,7 @@ const (
 	balancedOpenMultiSigKeyFamily = int32(0)
 	balancedOpenTransitKeyFamily  = int32(805)
 	balancedOpenFundingVBytes     = int64(190)
+	balancedOpenAnchorSafetySat   = int64(10000)
 )
 
 const (
@@ -71,16 +72,17 @@ const (
 )
 
 var (
-	ErrBalancedOpenDBUnavailable   = errors.New("balanced open db unavailable")
-	ErrBalancedOpenSessionNotFound = errors.New("balanced open session not found")
-	ErrBalancedOpenInvalidPeerKey  = errors.New("invalid peer pubkey")
-	ErrBalancedOpenInvalidCapacity = errors.New("invalid capacity")
-	ErrBalancedOpenInvalidFeeRate  = errors.New("invalid fee rate")
-	ErrBalancedOpenInvalidRole     = errors.New("invalid role")
-	ErrBalancedOpenInvalidState    = errors.New("invalid state")
-	ErrBalancedOpenTerminalState   = errors.New("session already in terminal state")
-	ErrBalancedOpenInvalidSession  = errors.New("invalid session")
-	ErrBalancedOpenInvalidAction   = errors.New("invalid session action")
+	ErrBalancedOpenDBUnavailable             = errors.New("balanced open db unavailable")
+	ErrBalancedOpenSessionNotFound           = errors.New("balanced open session not found")
+	ErrBalancedOpenInvalidPeerKey            = errors.New("invalid peer pubkey")
+	ErrBalancedOpenInvalidCapacity           = errors.New("invalid capacity")
+	ErrBalancedOpenInvalidFeeRate            = errors.New("invalid fee rate")
+	ErrBalancedOpenInvalidRole               = errors.New("invalid role")
+	ErrBalancedOpenInvalidState              = errors.New("invalid state")
+	ErrBalancedOpenTerminalState             = errors.New("session already in terminal state")
+	ErrBalancedOpenInvalidSession            = errors.New("invalid session")
+	ErrBalancedOpenInvalidAction             = errors.New("invalid session action")
+	ErrBalancedOpenInsufficientOnchainSafety = errors.New("insufficient on-chain spendable balance for anchor reserve")
 )
 
 type BalancedOpenService struct {
@@ -479,17 +481,33 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 	if err := validateBalancedDualExecuteArtifacts(session, meta); err != nil {
 		return BalancedOpenSession{}, err
 	}
+	budget, err := s.ensureBalancedOnchainBudget(ctx, 0, balancedOpenAnchorSafetySat)
+	if err != nil {
+		_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "anchor_reserve_precheck_failed", map[string]any{
+			"execution_mode":          balancedOpenExecutionModeDual,
+			"estimated_spendable_sat": budget.EstimatedSpendableSat,
+			"total_sat":               budget.TotalSat,
+			"locked_sat":              budget.LockedSat,
+			"reserved_anchor_sat":     budget.ReservedAnchorSat,
+			"required_remaining_sat":  balancedOpenAnchorSafetySat,
+		}, map[string]any{
+			"last_execution_err":        err.Error(),
+			"last_execution_error_unix": time.Now().UTC().Unix(),
+		})
+		return BalancedOpenSession{}, err
+	}
 
 	plan, err := buildBalancedDualFundingPlan(session, meta)
 	if err != nil {
 		return BalancedOpenSession{}, err
 	}
 
-	pushSat := session.CapacitySat / 2
+	localFundingSat := session.CapacitySat / 2
+	pushSat := int64(0)
 	submitted, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateChannelProposed, "", "channel_open_submitted", map[string]any{
 		"execution_mode":            balancedOpenExecutionModeDual,
 		"capacity_sat":              session.CapacitySat,
-		"local_funding_sat":         session.CapacitySat,
+		"local_funding_sat":         localFundingSat,
 		"local_onchain_funding_sat": meta.InitiatorTransit.OutputSat,
 		"peer_onchain_funding_sat":  meta.AccepterTransit.OutputSat,
 		"push_sat":                  pushSat,
@@ -579,11 +597,12 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 	}
 
 	channelPoint, err := s.lnd.OpenChannelWithShim(ctx, lndclient.OpenChannelWithShimParams{
-		PubkeyHex:    submitted.PeerPubkey,
-		CapacitySat:  submitted.CapacitySat,
-		PushSat:      pushSat,
-		CloseAddress: submitted.CloseAddress,
-		Private:      submitted.Private,
+		PubkeyHex:       submitted.PeerPubkey,
+		CapacitySat:     submitted.CapacitySat,
+		LocalFundingSat: localFundingSat,
+		PushSat:         pushSat,
+		CloseAddress:    submitted.CloseAddress,
+		Private:         submitted.Private,
 		ChanPointShimArgs: lndclient.ChanPointShimParams{
 			CapacitySat:   submitted.CapacitySat,
 			PendingChanID: pendingID,
@@ -640,7 +659,7 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		"funding_tx_id":             plan.FundingTxID,
 		"funding_tx_vout":           plan.FundingVout,
 		"funding_tx_hex":            finalTxHex,
-		"local_funding_sat":         submitted.CapacitySat,
+		"local_funding_sat":         localFundingSat,
 		"push_sat":                  pushSat,
 		"opened_at_unix":            time.Now().UTC().Unix(),
 		"last_execution_err":        "",
@@ -1281,6 +1300,87 @@ returning
 	return session, nil
 }
 
+func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, sessionID string, satPerVbyte int64) (BalancedOpenSession, error) {
+	if s == nil || s.db == nil {
+		return BalancedOpenSession{}, ErrBalancedOpenDBUnavailable
+	}
+	if satPerVbyte < 0 {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidFeeRate
+	}
+
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if session.State == balancedOpenStateRecovered {
+		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
+	}
+	if session.State == balancedOpenStateActive {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if session.State != balancedOpenStateRecoveryRequired {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+
+	localTransit, ok := balancedOpenLocalTransitForRole(session.Role, meta)
+	if !ok {
+		return BalancedOpenSession{}, errors.New("missing local transit details")
+	}
+
+	pending, err := s.lnd.ListPendingChannels(ctx)
+	if err == nil {
+		if pendingCh, found := matchBalancedOpenPendingChannel(session, balancedOpenSessionChannelPoint(session.Metadata), pending); found {
+			if strings.EqualFold(strings.TrimSpace(pendingCh.Status), "opening") {
+				return BalancedOpenSession{}, errors.New("cannot recover transit while channel is pending open")
+			}
+		}
+	}
+	active, err := s.lnd.ListChannels(ctx)
+	if err == nil {
+		if _, found := matchBalancedOpenActiveChannel(session, balancedOpenSessionChannelPoint(session.Metadata), active); found {
+			return BalancedOpenSession{}, errors.New("cannot recover transit while channel is active")
+		}
+	}
+
+	txid, address, err := s.lnd.SweepOutpoint(ctx, localTransit.TxID, localTransit.Vout, satPerVbyte)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+
+	patch := map[string]any{
+		"last_execution_err":        "",
+		"last_execution_error_unix": int64(0),
+	}
+	if session.Role == balancedOpenRoleInitiator {
+		patch["initiator_recovery_txid"] = txid
+		patch["initiator_recovery_address"] = address
+	} else {
+		patch["accepter_recovery_txid"] = txid
+		patch["accepter_recovery_address"] = address
+	}
+
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecovered, "", "transit_recovered", map[string]any{
+		"role":             session.Role,
+		"transit_tx_id":    localTransit.TxID,
+		"transit_tx_vout":  localTransit.Vout,
+		"recovery_txid":    txid,
+		"recovery_address": address,
+		"sat_per_vbyte":    satPerVbyte,
+	}, patch)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	return updated, nil
+}
+
 func (s *BalancedOpenService) handleIncomingCustomMessage(msg lndclient.CustomPeerMessage) {
 	if msg.Type != balancedOpenCustomMsgType {
 		return
@@ -1716,6 +1816,13 @@ type balancedDualFundingPlan struct {
 	AccepterInputIndex  int
 }
 
+type balancedOnchainBudget struct {
+	TotalSat              int64
+	LockedSat             int64
+	ReservedAnchorSat     int64
+	EstimatedSpendableSat int64
+}
+
 func normalizeBalancedExecutionMode(value string) string {
 	switch strings.TrimSpace(strings.ToLower(value)) {
 	case balancedOpenExecutionModeDual:
@@ -1725,6 +1832,27 @@ func normalizeBalancedExecutionMode(value string) string {
 	default:
 		return ""
 	}
+}
+
+func (s *BalancedOpenService) ensureBalancedOnchainBudget(ctx context.Context, spendingSat int64, minRemainingSat int64) (balancedOnchainBudget, error) {
+	details, err := s.lnd.GetWalletBalanceDetails(ctx)
+	if err != nil {
+		return balancedOnchainBudget{}, err
+	}
+
+	budget := balancedOnchainBudget{
+		TotalSat:              details.TotalSat,
+		LockedSat:             details.LockedSat,
+		ReservedAnchorSat:     details.ReservedAnchorSat,
+		EstimatedSpendableSat: details.EstimatedSpendableSat,
+	}
+
+	remaining := budget.EstimatedSpendableSat - spendingSat
+	if remaining < minRemainingSat {
+		return budget, fmt.Errorf("%w: spendable=%d sats, spending=%d sats, remaining=%d sats, required_remaining=%d sats", ErrBalancedOpenInsufficientOnchainSafety, budget.EstimatedSpendableSat, spendingSat, remaining, minRemainingSat)
+	}
+
+	return budget, nil
 }
 
 func decodeBalancedOpenMetadata(raw json.RawMessage) (balancedOpenMetadata, error) {
@@ -1855,6 +1983,23 @@ func hasBalancedTransit(transit balancedOpenTransitDetails, requireKey bool) boo
 	return true
 }
 
+func balancedOpenLocalTransitForRole(role string, meta balancedOpenMetadata) (balancedOpenTransitDetails, bool) {
+	switch strings.TrimSpace(role) {
+	case balancedOpenRoleInitiator:
+		if !hasBalancedTransit(meta.InitiatorTransit, true) {
+			return balancedOpenTransitDetails{}, false
+		}
+		return meta.InitiatorTransit, true
+	case balancedOpenRoleAccepter:
+		if !hasBalancedTransit(meta.AccepterTransit, true) {
+			return balancedOpenTransitDetails{}, false
+		}
+		return meta.AccepterTransit, true
+	default:
+		return balancedOpenTransitDetails{}, false
+	}
+}
+
 func (s *BalancedOpenService) ensureInitiatorDualArtifacts(ctx context.Context, session BalancedOpenSession, meta balancedOpenMetadata) (balancedOpenMetadata, bool, error) {
 	if normalizeBalancedExecutionMode(meta.ExecutionMode) == balancedOpenExecutionModeDual &&
 		isBalancedPendingChanIDHex(meta.PendingChanID) &&
@@ -1866,6 +2011,9 @@ func (s *BalancedOpenService) ensureInitiatorDualArtifacts(ctx context.Context, 
 	feeRate := balancedEffectiveFeeRate(session.FeeRateSatVb)
 	transitAmount, err := balancedTransitContribution(session.CapacitySat, feeRate)
 	if err != nil {
+		return meta, false, err
+	}
+	if _, err := s.ensureBalancedOnchainBudget(ctx, transitAmount, balancedOpenAnchorSafetySat); err != nil {
 		return meta, false, err
 	}
 
@@ -1938,6 +2086,9 @@ func (s *BalancedOpenService) ensureAccepterDualArtifacts(ctx context.Context, s
 		feeRate := balancedEffectiveFeeRate(session.FeeRateSatVb)
 		transitAmount, err := balancedTransitContribution(session.CapacitySat, feeRate)
 		if err != nil {
+			return meta, nil, false, err
+		}
+		if _, err := s.ensureBalancedOnchainBudget(ctx, transitAmount, balancedOpenAnchorSafetySat); err != nil {
 			return meta, nil, false, err
 		}
 

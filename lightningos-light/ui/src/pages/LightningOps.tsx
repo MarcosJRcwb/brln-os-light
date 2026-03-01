@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { acceptBalancedOpenSession, addLnWatchtower, boostPeers, cancelBalancedOpenSession, closeChannel, connectPeer, createBalancedOpenSession, disconnectPeer, executeBalancedOpenSession, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBalancedOpenSessionEvents, getBalancedOpenSessions, getBalancedOpenStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, proposeBalancedOpenSession, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
+import { acceptBalancedOpenSession, addLnWatchtower, boostPeers, cancelBalancedOpenSession, closeChannel, connectPeer, createBalancedOpenSession, disconnectPeer, executeBalancedOpenSession, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBalancedOpenSessionEvents, getBalancedOpenSessions, getBalancedOpenStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, proposeBalancedOpenSession, recoverBalancedOpenSession, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
 
 type Channel = {
   channel_point: string
@@ -2414,6 +2414,16 @@ export default function LightningOps() {
     return session.role === 'initiator' && isBalancedOpenProposeEligible(session.state)
   }
 
+  const balancedOpenSessionExecutionMode = (session: BalancedOpenSession) => {
+    const raw = session?.metadata?.execution_mode
+    if (typeof raw !== 'string') return ''
+    return raw.trim().toLowerCase()
+  }
+
+  const canRecoverBalancedSession = (session: BalancedOpenSession) => {
+    return session.state === 'recovery_required' && balancedOpenSessionExecutionMode(session) === 'dual_funded_v1'
+  }
+
   const balancedOpenSessionChannelPoint = (session: BalancedOpenSession) => {
     const raw = session?.metadata?.channel_point
     if (typeof raw !== 'string') return ''
@@ -2473,6 +2483,10 @@ export default function LightningOps() {
         return t('lightningOps.balancedOpenEventPendingDetected')
       case 'channel_active_detected':
         return t('lightningOps.balancedOpenEventActiveDetected')
+      case 'anchor_reserve_precheck_failed':
+        return t('lightningOps.balancedOpenEventAnchorPrecheckFailed')
+      case 'transit_recovered':
+        return t('lightningOps.balancedOpenEventTransitRecovered')
       case 'session_canceled':
       case 'session_canceled_remote':
         return t('lightningOps.balancedOpenEventCanceled')
@@ -3284,7 +3298,7 @@ export default function LightningOps() {
     }
   }
 
-  const handleBalancedOpenAction = async (session: BalancedOpenSession, action: 'propose' | 'accept' | 'execute' | 'cancel') => {
+  const handleBalancedOpenAction = async (session: BalancedOpenSession, action: 'propose' | 'accept' | 'execute' | 'recover' | 'cancel') => {
     if (balancedOpenActionBusyID) return
     const sessionID = String(session.session_id || '').trim()
     if (!sessionID) return
@@ -3303,6 +3317,12 @@ export default function LightningOps() {
         setBalancedOpenStatus(t('lightningOps.balancedOpenExecuting'))
         await executeBalancedOpenSession(sessionID)
         setBalancedOpenStatus(t('lightningOps.balancedOpenExecutionSubmitted'))
+      } else if (action === 'recover') {
+        const confirmed = window.confirm(t('lightningOps.balancedOpenRecoverConfirm'))
+        if (!confirmed) return
+        setBalancedOpenStatus(t('lightningOps.balancedOpenRecovering'))
+        await recoverBalancedOpenSession(sessionID, {})
+        setBalancedOpenStatus(t('lightningOps.balancedOpenRecovered'))
       } else if (action === 'cancel') {
         const confirmed = window.confirm(t('lightningOps.balancedOpenCancelConfirm'))
         if (!confirmed) return
@@ -4904,6 +4924,11 @@ export default function LightningOps() {
                     {canExecuteBalancedSession(session) && (
                       <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'execute')} disabled={sessionBusy}>
                         {t('lightningOps.balancedOpenActionExecute')}
+                      </button>
+                    )}
+                    {canRecoverBalancedSession(session) && (
+                      <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'recover')} disabled={sessionBusy}>
+                        {t('lightningOps.balancedOpenActionRecover')}
                       </button>
                     )}
                     {canCancelBalancedSession(session) && (

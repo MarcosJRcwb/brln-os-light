@@ -275,6 +275,11 @@ export const executeBalancedOpenSession = (sessionId: string) =>
     method: 'POST',
     body: JSON.stringify({}),
   })
+export const recoverBalancedOpenSession = (sessionId: string, payload?: { sat_per_vbyte?: number }) =>
+  request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/recover`, {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+  })
 export const cancelBalancedOpenSession = (sessionId: string, payload?: { reason?: string }) =>
   request(`/api/lnops/balanced-open/sessions/${encodeURIComponent(sessionId)}/cancel`, {
     method: 'POST',
