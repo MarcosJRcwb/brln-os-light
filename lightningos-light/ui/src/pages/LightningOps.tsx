@@ -681,6 +681,7 @@ export default function LightningOps() {
   const [balancedPeer, setBalancedPeer] = useState('')
   const [balancedCapacity, setBalancedCapacity] = useState('')
   const [balancedFeeRate, setBalancedFeeRate] = useState('')
+  const [balancedFeeStatus, setBalancedFeeStatus] = useState('')
   const [balancedCloseAddress, setBalancedCloseAddress] = useState('')
   const [balancedPrivate, setBalancedPrivate] = useState(false)
   const [balancedOpenStatus, setBalancedOpenStatus] = useState('')
@@ -2139,15 +2140,18 @@ export default function LightningOps() {
         setCloseFeeHint({ fastest, hour })
         setCloseFeeRate((prev) => (prev ? prev : fastest > 0 ? String(fastest) : prev))
         setBatchFeeRate((prev) => (prev ? prev : fastest > 0 ? String(fastest) : prev))
+        setBalancedFeeRate((prev) => (prev ? prev : fastest > 0 ? String(fastest) : prev))
         setOpenFeeStatus('')
         setCloseFeeStatus('')
         setBatchFeeStatus('')
+        setBalancedFeeStatus('')
       })
       .catch(() => {
         if (!mounted) return
         setOpenFeeStatus(t('lightningOps.feeSuggestionsUnavailable'))
         setCloseFeeStatus(t('lightningOps.feeSuggestionsUnavailable'))
         setBatchFeeStatus(t('lightningOps.feeSuggestionsUnavailable'))
+        setBalancedFeeStatus(t('lightningOps.feeSuggestionsUnavailable'))
       })
     return () => {
       mounted = false
@@ -4723,15 +4727,38 @@ export default function LightningOps() {
           />
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <input
-            className="input-field"
-            placeholder={t('lightningOps.feeRate')}
-            type="number"
-            min={0}
-            value={balancedFeeRate}
-            onChange={(e) => setBalancedFeeRate(e.target.value)}
-            disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
-          />
+          <div className="space-y-2">
+            <label className="text-sm text-fog/70">
+              {t('lightningOps.feeRate')}
+              <span className="ml-2 text-xs text-fog/50">
+                {t('lightningOps.feeHint', { fastest: openFeeHint?.fastest ?? '-', hour: openFeeHint?.hour ?? '-' })}
+              </span>
+            </label>
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                className="input-field flex-1 min-w-[140px]"
+                placeholder={t('common.auto')}
+                type="number"
+                min={1}
+                value={balancedFeeRate}
+                onChange={(e) => setBalancedFeeRate(e.target.value)}
+                disabled={!balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
+              />
+              <button
+                className="btn-secondary text-xs px-3 py-2"
+                type="button"
+                onClick={() => {
+                  if (openFeeHint?.fastest) {
+                    setBalancedFeeRate(String(openFeeHint.fastest))
+                  }
+                }}
+                disabled={!openFeeHint?.fastest || !balancedOpenInfo?.enabled || !balancedOpenInfo?.available}
+              >
+                {t('lightningOps.useFastest')}
+              </button>
+            </div>
+            {balancedFeeStatus && <p className="text-xs text-fog/50">{balancedFeeStatus}</p>}
+          </div>
           <input
             className="input-field"
             placeholder={t('lightningOps.closeAddressOptional')}
