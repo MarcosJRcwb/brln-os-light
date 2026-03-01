@@ -1395,9 +1395,7 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	}
 	active, err := s.lnd.ListChannels(ctx)
 	if err == nil {
-		if _, found := matchBalancedOpenActiveChannel(session, balancedOpenSessionChannelPoint(session.Metadata), active); found {
-			return BalancedOpenSession{}, errors.New("cannot recover transit while channel is active")
-		}
+		_, _ = matchBalancedOpenActiveChannel(session, balancedOpenSessionChannelPoint(session.Metadata), active)
 	}
 
 	txid, address, err := s.publishBalancedTransitRecovery(ctx, session, localTransit, satPerVbyte)
