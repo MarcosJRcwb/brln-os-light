@@ -2236,6 +2236,10 @@ func (c *Client) RegisterChanPointShim(ctx context.Context, params ChanPointShim
 	if txid == "" {
 		return errors.New("funding tx id required")
 	}
+	fundingTxidBytes, err := reversedTxidBytes(txid)
+	if err != nil {
+		return err
+	}
 
 	localRaw, err := hex.DecodeString(strings.TrimSpace(params.LocalKey.PublicKey))
 	if err != nil || len(localRaw) == 0 {
@@ -2260,7 +2264,7 @@ func (c *Client) RegisterChanPointShim(ctx context.Context, params ChanPointShim
 					ChanPointShim: &lnrpc.ChanPointShim{
 						Amt: params.CapacitySat,
 						ChanPoint: &lnrpc.ChannelPoint{
-							FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: txid},
+							FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{FundingTxidBytes: fundingTxidBytes},
 							OutputIndex: params.FundingVout,
 						},
 						LocalKey: &lnrpc.KeyDescriptor{
@@ -2339,6 +2343,10 @@ func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWith
 	if len(params.ChanPointShimArgs.PendingChanID) == 0 {
 		return "", errors.New("pending channel id required")
 	}
+	fundingTxidBytes, err := reversedTxidBytes(params.ChanPointShimArgs.FundingTxID)
+	if err != nil {
+		return "", err
+	}
 
 	conn, err := c.dial(ctx, true)
 	if err != nil {
@@ -2351,15 +2359,12 @@ func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWith
 		LocalFundingAmount: localFundingSat,
 		PushSat:            params.PushSat,
 		Private:            params.Private,
-		CommitmentType:     params.CommitmentType,
-		ZeroConf:           params.ZeroConf,
-		ScidAlias:          params.ScidAlias,
 		FundingShim: &lnrpc.FundingShim{
 			Shim: &lnrpc.FundingShim_ChanPointShim{
 				ChanPointShim: &lnrpc.ChanPointShim{
 					Amt: params.ChanPointShimArgs.CapacitySat,
 					ChanPoint: &lnrpc.ChannelPoint{
-						FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{FundingTxidStr: strings.TrimSpace(params.ChanPointShimArgs.FundingTxID)},
+						FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{FundingTxidBytes: fundingTxidBytes},
 						OutputIndex: params.ChanPointShimArgs.FundingVout,
 					},
 					LocalKey: &lnrpc.KeyDescriptor{
@@ -2376,6 +2381,15 @@ func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWith
 			},
 		},
 	}
+	if params.CommitmentType != 0 {
+		req.CommitmentType = params.CommitmentType
+	}
+	if params.ZeroConf {
+		req.ZeroConf = true
+	}
+	if params.ScidAlias {
+		req.ScidAlias = true
+	}
 	if params.SatPerVbyte > 0 {
 		req.SatPerVbyte = uint64(params.SatPerVbyte)
 	}
@@ -2384,11 +2398,39 @@ func (c *Client) OpenChannelWithShim(ctx context.Context, params OpenChannelWith
 	}
 
 	client := lnrpc.NewLightningClient(conn)
-	resp, err := client.OpenChannelSync(ctx, req)
+	stream, err := client.OpenChannel(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	return channelPointString(resp), nil
+	for {
+		update, recvErr := stream.Recv()
+		if recvErr != nil {
+			if errors.Is(recvErr, io.EOF) {
+				break
+			}
+			return "", recvErr
+		}
+		if update == nil {
+			continue
+		}
+		if pending := update.GetChanPending(); pending != nil {
+			txid := txidFromBytes(pending.GetTxid())
+			if txid == "" {
+				return "", errors.New("missing pending channel txid")
+			}
+			_ = stream.CloseSend()
+			return fmt.Sprintf("%s:%d", txid, pending.GetOutputIndex()), nil
+		}
+		if opened := update.GetChanOpen(); opened != nil {
+			point := channelPointString(opened.GetChannelPoint())
+			if point != "" {
+				_ = stream.CloseSend()
+				return point, nil
+			}
+		}
+	}
+
+	return "", errors.New("channel open pending update unavailable")
 }
 
 func (c *Client) BatchOpenChannel(ctx context.Context, channels []BatchOpenChannelParams, satPerVbyte int64) ([]BatchOpenChannelResult, error) {
@@ -2724,6 +2766,21 @@ func normalizeTxidHex(value string) (string, error) {
 		return "", errors.New("invalid txid")
 	}
 	return trimmed, nil
+}
+
+func reversedTxidBytes(txid string) ([]byte, error) {
+	normalized, err := normalizeTxidHex(txid)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := hex.DecodeString(normalized)
+	if err != nil {
+		return nil, errors.New("invalid txid")
+	}
+	for i := 0; i < len(raw)/2; i++ {
+		raw[i], raw[len(raw)-1-i] = raw[len(raw)-1-i], raw[i]
+	}
+	return raw, nil
 }
 
 func parseChannelPoint(point string) (*lnrpc.ChannelPoint, error) {

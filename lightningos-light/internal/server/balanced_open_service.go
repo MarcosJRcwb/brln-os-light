@@ -672,8 +672,12 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		}, map[string]any{
 			"last_execution_err":        errMsg,
 			"last_execution_error_unix": time.Now().UTC().Unix(),
-			"channel_point":             channelPoint,
 		})
+		// Best-effort immediate recovery of local transit funds when a shim mismatch
+		// indicates LND opened a different channel point than the negotiated one.
+		recoverCtx, recoverCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		_, _ = s.RecoverSessionTransit(recoverCtx, submitted.SessionID, submitted.FeeRateSatVb)
+		recoverCancel()
 		return BalancedOpenSession{}, errors.New(errMsg)
 	}
 
@@ -773,6 +777,11 @@ func (s *BalancedOpenService) reconcileSessions(ctx context.Context) error {
 
 func (s *BalancedOpenService) tryPromoteSessionByChannelState(ctx context.Context, session BalancedOpenSession, pending []lndclient.PendingChannelInfo, active []lndclient.ChannelInfo) error {
 	channelPointHint := balancedOpenSessionChannelPoint(session.Metadata)
+	if channelPointHint == "" {
+		if meta, err := decodeBalancedOpenMetadata(session.Metadata); err == nil {
+			channelPointHint = balancedOpenCanonicalChannelPoint(meta.FundingTxID, meta.FundingTxVout)
+		}
+	}
 
 	if activeCh, ok := matchBalancedOpenActiveChannel(session, channelPointHint, active); ok {
 		if session.State != balancedOpenStateActive {
@@ -3459,8 +3468,11 @@ func matchBalancedOpenPendingChannel(session BalancedOpenSession, channelPointHi
 		if !strings.EqualFold(strings.TrimSpace(ch.Status), "opening") {
 			continue
 		}
-		if wantedPoint != "" && strings.EqualFold(strings.TrimSpace(ch.ChannelPoint), wantedPoint) {
-			return ch, true
+		if wantedPoint != "" {
+			if strings.EqualFold(strings.TrimSpace(ch.ChannelPoint), wantedPoint) {
+				return ch, true
+			}
+			continue
 		}
 		if wantedPeer != "" && strings.EqualFold(strings.TrimSpace(ch.RemotePubkey), wantedPeer) && ch.CapacitySat == session.CapacitySat {
 			return ch, true
@@ -3475,8 +3487,11 @@ func matchBalancedOpenActiveChannel(session BalancedOpenSession, channelPointHin
 	wantedPoint := strings.TrimSpace(channelPointHint)
 
 	for _, ch := range active {
-		if wantedPoint != "" && strings.EqualFold(strings.TrimSpace(ch.ChannelPoint), wantedPoint) {
-			return ch, true
+		if wantedPoint != "" {
+			if strings.EqualFold(strings.TrimSpace(ch.ChannelPoint), wantedPoint) {
+				return ch, true
+			}
+			continue
 		}
 		if wantedPeer != "" && strings.EqualFold(strings.TrimSpace(ch.RemotePubkey), wantedPeer) && ch.CapacitySat == session.CapacitySat {
 			return ch, true
