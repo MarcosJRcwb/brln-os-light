@@ -4313,7 +4313,7 @@ export default function LightningOps() {
                         )}
                         <a
                           href={rebalanceLink}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/15 text-fog/70 transition hover:border-sky-300/70 hover:text-sky-100"
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/15 text-fog/70 transition hover:border-sky-300/70 hover:text-sky-100"
                           title={t('lightningOps.openInRebalanceCenter')}
                           aria-label={t('lightningOps.openInRebalanceCenter')}
                         >

@@ -177,8 +177,11 @@ const readHashChannelPoint = (routeKey: string) => {
 const buildHashWithChannelPoint = (routeKey: string, channelPoint: string) =>
   `#${routeKey}?${CHANNEL_HASH_PARAM}=${encodeURIComponent(channelPoint)}`
 
-const channelRowID = (channelPoint: string) =>
-  `rebalance-channel-${channelPoint.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+const desktopChannelRowID = (channelPoint: string) =>
+  `rebalance-channel-desktop-${channelPoint.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+
+const mobileChannelCardID = (channelPoint: string) =>
+  `rebalance-channel-mobile-${channelPoint.replace(/[^a-zA-Z0-9_-]/g, '_')}`
 
 export default function RebalanceCenter() {
   const { t, i18n } = useTranslation()
@@ -381,7 +384,14 @@ export default function RebalanceCenter() {
     if (!targetChannelPoint) return
     const targetExists = sortedChannels.some((channel) => channel.channel_point === targetChannelPoint)
     if (!targetExists) return
-    const targetElement = document.getElementById(channelRowID(targetChannelPoint))
+    const prefersDesktop = window.matchMedia('(min-width: 768px)').matches
+    const preferredID = prefersDesktop
+      ? desktopChannelRowID(targetChannelPoint)
+      : mobileChannelCardID(targetChannelPoint)
+    const fallbackID = prefersDesktop
+      ? mobileChannelCardID(targetChannelPoint)
+      : desktopChannelRowID(targetChannelPoint)
+    const targetElement = document.getElementById(preferredID) || document.getElementById(fallbackID)
     if (!targetElement) return
     targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
     setFocusedChannelPoint(targetChannelPoint)
@@ -1429,6 +1439,7 @@ export default function RebalanceCenter() {
                 : ch.eligible_as_source
                   ? 'bg-emerald-500/10'
                   : ''
+            const isFocused = focusedChannelPoint === ch.channel_point
             const lightningOpsLink = ch.channel_point
               ? buildHashWithChannelPoint(LIGHTNING_OPS_ROUTE_KEY, ch.channel_point)
               : `#${LIGHTNING_OPS_ROUTE_KEY}`
@@ -1436,7 +1447,8 @@ export default function RebalanceCenter() {
             return (
               <article
                 key={`mobile-${ch.channel_point || String(ch.channel_id)}`}
-                className={`rounded-2xl border border-white/10 bg-ink/50 p-3 ${highlight}`}
+                id={mobileChannelCardID(ch.channel_point)}
+                className={`rounded-2xl border border-white/10 bg-ink/50 p-3 ${highlight} ${isFocused ? 'ring-1 ring-sky-300/70 bg-sky-500/10' : ''}`}
               >
                 <a
                   className="text-sm font-semibold text-fog hover:text-white hover:underline underline-offset-2"
@@ -1641,7 +1653,7 @@ export default function RebalanceCenter() {
                 return (
                   <tr
                     key={ch.channel_point || String(ch.channel_id)}
-                    id={channelRowID(ch.channel_point)}
+                    id={desktopChannelRowID(ch.channel_point)}
                     className={`border-t border-white/5 group ${highlight} ${isFocused ? 'bg-sky-500/20' : ''}`}
                   >
                     <td className="py-3" title={scoreTitle}>
