@@ -39,6 +39,7 @@ export default function Wallet() {
   const [sendFeeHint, setSendFeeHint] = useState<{ fastest?: number; hour?: number } | null>(null)
   const [sendFeeStatus, setSendFeeStatus] = useState('')
   const [sendStatus, setSendStatus] = useState('')
+  const [sendTxid, setSendTxid] = useState('')
   const [sendRunning, setSendRunning] = useState(false)
   const [amount, setAmount] = useState('')
   const [memo, setMemo] = useState('')
@@ -349,12 +350,14 @@ export default function Wallet() {
   const handleToggleSend = () => {
     setSendOpen((prev) => !prev)
     setSendStatus('')
+    setSendTxid('')
   }
 
   const handleSendOnchain = async () => {
     const target = sendAddress.trim()
     const amountSat = Number(sendAmount || 0)
     const feeRate = Number(sendFeeRate || 0)
+    setSendTxid('')
     if (!target) {
       setSendStatus(t('wallet.destinationRequired'))
       return
@@ -372,12 +375,13 @@ export default function Wallet() {
         ...(sendSweepAll ? { sweep_all: true } : { amount_sat: amountSat })
       }
       const res = await sendOnchain(payload)
-      const txid = res?.txid ? ` Txid: ${res.txid}` : ''
-      setSendStatus(t('wallet.onchainBroadcast', { txid }))
+      setSendStatus(t('wallet.onchainBroadcast', { txid: '' }))
+      setSendTxid(String(res?.txid || '').trim())
       setSendAddress('')
       setSendAmount('')
       setSendSweepAll(false)
     } catch (err: any) {
+      setSendTxid('')
       setSendStatus(err?.message || t('wallet.onchainSendFailed'))
     } finally {
       setSendRunning(false)
@@ -588,7 +592,24 @@ export default function Wallet() {
                 >
                   {sendRunning ? t('wallet.sending') : t('wallet.sendOnchain')}
                 </button>
-                {sendStatus && <p className="text-xs text-brass break-words">{sendStatus}</p>}
+                {sendStatus && (
+                  <p className="text-xs text-brass break-words">
+                    {sendStatus}
+                    {sendTxid && (
+                      <>
+                        {' '}Txid:{' '}
+                        <a
+                          className="hover:underline underline-offset-2 break-all"
+                          href={`https://mempool.space/tx/${sendTxid}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {sendTxid}
+                        </a>
+                      </>
+                    )}
+                  </p>
+                )}
               </div>
             )}
           </div>
