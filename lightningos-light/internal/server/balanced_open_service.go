@@ -3540,7 +3540,7 @@ func (s *BalancedOpenService) notifyBalancedOpenStart(ctx context.Context, sessi
 	}
 
 	peerAlias := strings.TrimSpace(s.notifier.lookupNodeAlias(session.PeerPubkey))
-	memo := fmt.Sprintf(
+	baseMemo := fmt.Sprintf(
 		"Balanced open start | opener %s | mode %s | target %d sats/side | local on-chain %d sats | peer on-chain %d sats | fee rate %d sat/vB",
 		openerAlias,
 		mode,
@@ -3549,6 +3549,13 @@ func (s *BalancedOpenService) notifyBalancedOpenStart(ctx context.Context, sessi
 		peerOnchainSat,
 		session.FeeRateSatVb,
 	)
+	memo := baseMemo
+	if session.Role == balancedOpenRoleAccepter {
+		memo = fmt.Sprintf(
+			"\u26a0\ufe0f ACTION REQUIRED: open the Balanced Open Channels card in the app and choose Accept or Cancel this proposal | %s",
+			baseMemo,
+		)
+	}
 
 	evt := Notification{
 		OccurredAt:   time.Now().UTC(),
