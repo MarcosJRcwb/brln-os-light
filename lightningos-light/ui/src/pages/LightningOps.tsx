@@ -2380,6 +2380,7 @@ export default function LightningOps() {
         return t('lightningOps.waitingCloseResultRebroadcastOk')
       case 'closing_txid_detected':
         return t('lightningOps.waitingCloseResultTxidDetected')
+      case 'recovery_submitted_no_txid':
       case 'rebroadcast_submitted_no_txid':
         return t('lightningOps.waitingCloseResultRebroadcastNoTxid')
       default:

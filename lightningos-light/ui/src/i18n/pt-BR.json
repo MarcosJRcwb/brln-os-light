@@ -1424,7 +1424,7 @@
     "waitingCloseResultRecoverFailed": "falha ao tentar rebroadcast",
     "waitingCloseResultRebroadcastOk": "rebroadcast executado",
     "waitingCloseResultTxidDetected": "closing_txid detectado",
-    "waitingCloseResultRebroadcastNoTxid": "rebroadcast enviado, aguardando txid",
+    "waitingCloseResultRebroadcastNoTxid": "recuperacao enviada, aguardando txid",
     "subtitle": "Gerencie peers, canais e fees de roteamento.",
     "syncLabel": "Sync",
     "temporaryPeer": "Peer temporário (sem auto-reconnect)",

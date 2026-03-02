@@ -2498,6 +2498,38 @@ func (c *Client) BatchOpenChannel(ctx context.Context, channels []BatchOpenChann
 }
 
 func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bool, satPerVbyte int64) (string, error) {
+	maxFeePerVbyte := int64(0)
+	if !force && satPerVbyte > 0 {
+		maxFeePerVbyte = deriveCloseMaxFeePerVbyte(satPerVbyte)
+	}
+
+	closingTxid, err := c.closeChannelOnce(ctx, channelPoint, force, satPerVbyte, false, maxFeePerVbyte)
+	if err != nil && !force && isCloseFeeProposalExceedsMaxError(err) {
+		boostedMaxFee := boostedCloseMaxFeePerVbyte(maxFeePerVbyte)
+		if boostedMaxFee > maxFeePerVbyte {
+			closingTxid, err = c.closeChannelOnce(ctx, channelPoint, force, satPerVbyte, false, boostedMaxFee)
+		}
+	}
+	if err != nil && isChannelClosingInProgressError(err) {
+		err = nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	if closingTxid == "" {
+		closingTxid = c.lookupPendingClosingTxid(ctx, channelPoint)
+	}
+	if closingTxid == "" {
+		recoveredTxid, _, recoverErr := c.RecoverWaitingCloseTx(ctx, channelPoint)
+		if recoverErr == nil {
+			closingTxid = strings.TrimSpace(recoveredTxid)
+		}
+	}
+	return closingTxid, nil
+}
+
+func (c *Client) closeChannelOnce(ctx context.Context, channelPoint string, force bool, satPerVbyte int64, noWait bool, maxFeePerVbyte int64) (string, error) {
 	cp, err := parseChannelPoint(channelPoint)
 	if err != nil {
 		return "", err
@@ -2513,10 +2545,13 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 	req := &lnrpc.CloseChannelRequest{
 		ChannelPoint: cp,
 		Force:        force,
-		NoWait:       true,
+		NoWait:       noWait,
 	}
 	if !force && satPerVbyte > 0 {
 		req.SatPerVbyte = uint64(satPerVbyte)
+	}
+	if !force && maxFeePerVbyte > 0 {
+		req.MaxFeePerVbyte = uint64(maxFeePerVbyte)
 	}
 	stream, err := client.CloseChannel(ctx, req)
 	if err != nil {
@@ -2551,15 +2586,7 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 			}
 		}
 	}
-	if closingTxid == "" {
-		closingTxid = c.lookupPendingClosingTxid(ctx, channelPoint)
-	}
-	if closingTxid == "" {
-		recoveredTxid, _, recoverErr := c.RecoverWaitingCloseTx(ctx, channelPoint)
-		if recoverErr == nil {
-			closingTxid = strings.TrimSpace(recoveredTxid)
-		}
-	}
+
 	return closingTxid, nil
 }
 
@@ -2624,7 +2651,20 @@ func (c *Client) RecoverWaitingCloseTx(ctx context.Context, channelPoint string)
 
 	txHex := strings.TrimSpace(entry.GetClosingTxHex())
 	if txHex == "" {
-		return "", false, nil
+		retriedTxid, retryErr := c.closeChannelOnce(ctx, channelPoint, false, 0, true, 0)
+		if retryErr != nil && !isChannelClosingInProgressError(retryErr) {
+			if txid := c.lookupPendingClosingTxid(ctx, channelPoint); txid != "" {
+				return txid, true, nil
+			}
+			return "", true, retryErr
+		}
+		if txid := strings.TrimSpace(retriedTxid); txid != "" {
+			return txid, true, nil
+		}
+		if txid := c.lookupPendingClosingTxid(ctx, channelPoint); txid != "" {
+			return txid, true, nil
+		}
+		return "", true, nil
 	}
 
 	publishErr := c.PublishTransaction(ctx, txHex, "channel-close-recover")
@@ -2770,6 +2810,48 @@ func isTimeoutError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "context deadline exceeded")
+}
+
+func deriveCloseMaxFeePerVbyte(satPerVbyte int64) int64 {
+	if satPerVbyte <= 0 {
+		return 0
+	}
+	maxFee := int64(math.Ceil(float64(satPerVbyte) * 1.35))
+	minFee := satPerVbyte + 2
+	if maxFee < minFee {
+		maxFee = minFee
+	}
+	return maxFee
+}
+
+func boostedCloseMaxFeePerVbyte(maxFeePerVbyte int64) int64 {
+	if maxFeePerVbyte <= 0 {
+		return 0
+	}
+	boosted := int64(math.Ceil(float64(maxFeePerVbyte) * 1.5))
+	if boosted <= maxFeePerVbyte {
+		boosted = maxFeePerVbyte + 5
+	}
+	return boosted
+}
+
+func isCloseFeeProposalExceedsMaxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "latest fee proposal exceeds max fee")
+}
+
+func isChannelClosingInProgressError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "already in the process of closure") ||
+		strings.Contains(value, "channel is being closed") ||
+		strings.Contains(value, "channel shutdown already initiated") ||
+		strings.Contains(value, "already pending channel close")
 }
 
 func isAlreadyPublishedTxError(err error) bool {

@@ -227,6 +227,22 @@ func lndDetailedErrorMessage(err error) string {
 	return msg
 }
 
+func lndCloseErrorMessage(err error) string {
+	msg := lndDetailedErrorMessage(err)
+	if !isCloseFeeProposalExceededError(err) {
+		return msg
+	}
+	return msg + ". Cooperative close fee negotiation failed. Retry with a higher sat/vB or leave fee empty (auto negotiation)."
+}
+
+func isCloseFeeProposalExceededError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "latest fee proposal exceeds max fee")
+}
+
 func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -1617,7 +1633,7 @@ func buildWaitingCloseRecoveryResponse(info waitingCloseRecoveryInfo) *waitingCl
 func shouldSuggestWaitingCloseForce(info waitingCloseRecoveryInfo) bool {
 	result := strings.TrimSpace(info.LastResult)
 	switch result {
-	case "recover_failed", "no_raw_tx_available", "rebroadcast_submitted_no_txid":
+	case "recover_failed", "no_raw_tx_available", "recovery_submitted_no_txid":
 		return info.Attempts >= 2
 	case "rebroadcast_ok", "closing_txid_detected":
 		return false
@@ -2307,7 +2323,8 @@ func (s *Server) handleLNCloseChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	if req.SatPerVbyte < 0 {
 		writeError(w, http.StatusBadRequest, "sat_per_vbyte must be zero or positive")
@@ -2321,7 +2338,7 @@ func (s *Server) handleLNCloseChannel(w http.ResponseWriter, r *http.Request) {
 
 	closingTxid, err := s.lnd.CloseChannel(ctx, req.ChannelPoint, req.Force, satPerVbyte)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, lndDetailedErrorMessage(err))
+		writeError(w, http.StatusInternalServerError, lndCloseErrorMessage(err))
 		return
 	}
 

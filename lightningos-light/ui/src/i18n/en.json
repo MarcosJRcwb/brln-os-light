@@ -1424,7 +1424,7 @@
     "waitingCloseResultRecoverFailed": "rebroadcast attempt failed",
     "waitingCloseResultRebroadcastOk": "rebroadcast succeeded",
     "waitingCloseResultTxidDetected": "closing txid detected",
-    "waitingCloseResultRebroadcastNoTxid": "rebroadcast sent, waiting for txid",
+    "waitingCloseResultRebroadcastNoTxid": "recovery sent, waiting for txid",
     "subtitle": "Manage peers, channels, and routing fees.",
     "syncLabel": "Sync",
     "temporaryPeer": "Temporary peer (no auto-reconnect)",

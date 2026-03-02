@@ -1459,7 +1459,7 @@ func (n *Notifier) runPendingChannels() {
 					}
 					n.updateWaitingCloseRecoveryResult(channelPoint, result, "", recoveredTxid)
 				} else if attempted {
-					n.updateWaitingCloseRecoveryResult(channelPoint, "rebroadcast_submitted_no_txid", "", "")
+					n.updateWaitingCloseRecoveryResult(channelPoint, "recovery_submitted_no_txid", "", "")
 				} else {
 					n.updateWaitingCloseRecoveryResult(channelPoint, "no_raw_tx_available", "", "")
 				}
