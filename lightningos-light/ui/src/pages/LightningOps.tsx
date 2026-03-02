@@ -17,6 +17,7 @@ type Channel = {
   remote_balance_sat: number
   unsettled_balance_sat?: number
   pending_htlc_count?: number
+  pending_htlcs?: ChannelPendingHtlc[]
   base_fee_msat?: number
   fee_rate_ppm?: number
   inbound_fee_rate_ppm?: number
@@ -28,6 +29,14 @@ type Channel = {
   forward_fee_7d_sat?: number
   rebal_fee_7d_sat?: number
   profit_fee_7d_sat?: number
+}
+
+type ChannelPendingHtlc = {
+  incoming: boolean
+  amount_sat: number
+  expiration_height: number
+  htlc_index?: number
+  locked_in?: boolean
 }
 
 type PendingChannel = {
@@ -563,6 +572,7 @@ export default function LightningOps() {
   const [pendingOpenCount, setPendingOpenCount] = useState(0)
   const [pendingCloseCount, setPendingCloseCount] = useState(0)
   const [pendingChannels, setPendingChannels] = useState<PendingChannel[]>([])
+  const [channelBlockHeight, setChannelBlockHeight] = useState(0)
   const [status, setStatus] = useState('')
   const [filter, setFilter] = useState<'all' | 'active' | 'inactive'>('all')
   const [profitFilter, setProfitFilter] = useState<'all' | 'profitable' | 'neutral' | 'deficit'>('all')
@@ -573,6 +583,7 @@ export default function LightningOps() {
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('asc')
   const [showPrivate, setShowPrivate] = useState(true)
   const [focusedChannelPoint, setFocusedChannelPoint] = useState('')
+  const [pendingHtlcOpenChannelPoint, setPendingHtlcOpenChannelPoint] = useState('')
 
   const [peerAddress, setPeerAddress] = useState('')
   const [peerTemporary, setPeerTemporary] = useState(false)
@@ -1696,6 +1707,7 @@ export default function LightningOps() {
     const list = Array.isArray(res?.channels) ? res.channels : []
     const pending = Array.isArray(res?.pending_channels) ? res.pending_channels : []
     setChannels(list)
+    setChannelBlockHeight(Number(res?.current_block_height || 0))
     setActiveCount(res?.active_count ?? 0)
     setInactiveCount(res?.inactive_count ?? 0)
     setPendingOpenCount(res?.pending_open_count ?? 0)
@@ -4257,6 +4269,9 @@ export default function LightningOps() {
                 const pendingHtlcCount = typeof ch.pending_htlc_count === 'number' && Number.isFinite(ch.pending_htlc_count)
                   ? Math.max(0, Math.round(ch.pending_htlc_count))
                   : 0
+                const pendingHtlcs = Array.isArray(ch.pending_htlcs) ? ch.pending_htlcs : []
+                const hasPendingHtlcs = pendingHtlcs.length > 0
+                const pendingHtlcOpen = pendingHtlcOpenChannelPoint === ch.channel_point
                 const isFCRisk = !ch.active && unsettledBalanceSat > 0
                 const marginPpm7d = typeof ch.out_ppm7d === 'number' && typeof ch.rebal_ppm7d === 'number'
                   ? ch.out_ppm7d - ch.rebal_ppm7d
@@ -4409,7 +4424,17 @@ export default function LightningOps() {
                           <span className="w-12 text-left text-fog/70">{remotePctLabel}</span>
                         </div>
                       </div>
-                      <div className={`rounded-xl p-2.5 ${isFCRisk ? 'border border-rose-400/45 bg-rose-500/10' : 'border border-white/10 bg-ink/70'}`}>
+                      <button
+                        type="button"
+                        className={`rounded-xl p-2.5 text-left transition ${isFCRisk ? 'border border-rose-400/45 bg-rose-500/10 hover:border-rose-300/70' : 'border border-white/10 bg-ink/70 hover:border-white/25'} ${hasPendingHtlcs ? '' : 'cursor-default'}`}
+                        onClick={() => {
+                          if (!hasPendingHtlcs) return
+                          setPendingHtlcOpenChannelPoint((current) => current === ch.channel_point ? '' : ch.channel_point)
+                        }}
+                        disabled={!hasPendingHtlcs}
+                        aria-expanded={pendingHtlcOpen}
+                        aria-label={t('lightningOps.pendingHtlcDetailsToggle')}
+                      >
                         <p className={`text-[10px] uppercase tracking-wide ${isFCRisk ? 'text-rose-200' : 'text-fog/60'}`}>{t('lightningOps.pendingHtlcsTitle')}</p>
                         <div className="mt-1 grid grid-cols-1 gap-y-0.5 text-[11px]">
                           <p className={unsettledBalanceSat > 0 ? (isFCRisk ? 'text-rose-300' : 'text-brass') : 'text-fog'}>
@@ -4418,8 +4443,13 @@ export default function LightningOps() {
                           <p className={pendingHtlcCount > 0 ? (isFCRisk ? 'text-rose-300' : 'text-brass') : 'text-fog'}>
                             {t('lightningOps.pendingHtlcCountLabel', { count: pendingHtlcCount })}
                           </p>
+                          {hasPendingHtlcs && (
+                            <p className={isFCRisk ? 'text-rose-200/80' : 'text-fog/60'}>
+                              {pendingHtlcOpen ? t('lightningOps.pendingHtlcDetailsHide') : t('lightningOps.pendingHtlcDetailsShow')}
+                            </p>
+                          )}
                         </div>
-                      </div>
+                      </button>
                       <div className="rounded-xl border border-white/10 bg-ink/70 p-2.5">
                         <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('lightningOps.economic7d')}</p>
                         <div className="mt-1 grid grid-cols-1 gap-y-0.5 text-[11px] sm:grid-cols-3 sm:gap-x-3 sm:gap-y-0">
@@ -4449,6 +4479,49 @@ export default function LightningOps() {
                         </div>
                       </div>
                     </div>
+                    {pendingHtlcOpen && hasPendingHtlcs && (
+                      <div className={`mt-2 rounded-xl p-2.5 ${isFCRisk ? 'border border-rose-400/45 bg-rose-500/10' : 'border border-white/10 bg-ink/70'}`}>
+                        <p className={`text-[10px] uppercase tracking-wide ${isFCRisk ? 'text-rose-200' : 'text-fog/60'}`}>{t('lightningOps.pendingHtlcDetailsTitle')}</p>
+                        <div className="mt-2 overflow-x-auto">
+                          <table className="w-full min-w-[420px] text-[11px]">
+                            <thead>
+                              <tr className={isFCRisk ? 'text-rose-200/80' : 'text-fog/60'}>
+                                <th className="py-1 pr-3 text-left">{t('lightningOps.pendingHtlcDirection')}</th>
+                                <th className="py-1 pr-3 text-left">{t('lightningOps.pendingHtlcAmount')}</th>
+                                <th className="py-1 text-left">{t('lightningOps.pendingHtlcExpiry')}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pendingHtlcs.map((htlc, idx) => {
+                                const expirationHeight = Number(htlc?.expiration_height || 0)
+                                const amountSat = Math.max(0, Math.round(Number(htlc?.amount_sat || 0)))
+                                const blocksToExpiry = channelBlockHeight > 0 && expirationHeight > 0
+                                  ? Math.max(0, expirationHeight - channelBlockHeight)
+                                  : null
+                                const expiryEta = blocksToExpiry === null ? '' : formatMaturityDuration(estimateMaturitySeconds(blocksToExpiry))
+                                const rowKey = `${htlc?.htlc_index ?? 'idx'}-${expirationHeight}-${idx}`
+                                return (
+                                  <tr key={rowKey} className={`align-top ${isFCRisk ? 'text-rose-100' : 'text-fog'}`}>
+                                    <td className="py-1 pr-3 whitespace-nowrap">
+                                      {htlc?.incoming ? t('lightningOps.pendingHtlcIncoming') : t('lightningOps.pendingHtlcOutgoing')}
+                                    </td>
+                                    <td className="py-1 pr-3 whitespace-nowrap">{amountSat} sats</td>
+                                    <td className="py-1">
+                                      <div>{t('lightningOps.pendingHtlcExpiryHeight', { value: expirationHeight })}</div>
+                                      {blocksToExpiry !== null && (
+                                        <div className={isFCRisk ? 'text-rose-200/80' : 'text-fog/60'}>
+                                          {t('lightningOps.pendingHtlcExpiryBlocks', { count: blocksToExpiry })} · {t('lightningOps.pendingHtlcExpiryEta', { time: expiryEta })}
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-3 grid gap-3 lg:grid-cols-6 text-xs text-fog/70">
                       <div>
                         {t('lightningOps.outRate')}:{' '}

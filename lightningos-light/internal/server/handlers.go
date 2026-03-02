@@ -1414,6 +1414,11 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), lndRPCTimeout)
 	defer cancel()
 
+	currentBlockHeight := int64(0)
+	if status, statusErr := s.lnd.GetStatus(ctx); statusErr == nil {
+		currentBlockHeight = status.BlockHeight
+	}
+
 	channels, err := s.lnd.ListChannels(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, lndDetailedErrorMessage(err))
@@ -1607,12 +1612,13 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"active_count":        active,
-		"inactive_count":      inactive,
-		"pending_open_count":  pendingOpen,
-		"pending_close_count": pendingClose,
-		"channels":            channels,
-		"pending_channels":    pendingResp,
+		"active_count":         active,
+		"inactive_count":       inactive,
+		"pending_open_count":   pendingOpen,
+		"pending_close_count":  pendingClose,
+		"current_block_height": currentBlockHeight,
+		"channels":             channels,
+		"pending_channels":     pendingResp,
 	})
 }
 

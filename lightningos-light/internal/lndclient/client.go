@@ -1491,6 +1491,26 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 			}
 		}
 
+		pendingHtlcs := make([]ChannelPendingHtlcInfo, 0, len(ch.PendingHtlcs))
+		for _, htlc := range ch.PendingHtlcs {
+			if htlc == nil {
+				continue
+			}
+			pendingHtlcs = append(pendingHtlcs, ChannelPendingHtlcInfo{
+				Incoming:         htlc.Incoming,
+				AmountSat:        htlc.Amount,
+				ExpirationHeight: htlc.ExpirationHeight,
+				HtlcIndex:        htlc.HtlcIndex,
+				LockedIn:         htlc.LockedIn,
+			})
+		}
+		sort.Slice(pendingHtlcs, func(i, j int) bool {
+			if pendingHtlcs[i].ExpirationHeight == pendingHtlcs[j].ExpirationHeight {
+				return pendingHtlcs[i].HtlcIndex < pendingHtlcs[j].HtlcIndex
+			}
+			return pendingHtlcs[i].ExpirationHeight < pendingHtlcs[j].ExpirationHeight
+		})
+
 		channels = append(channels, ChannelInfo{
 			ChannelPoint:        ch.ChannelPoint,
 			ChannelID:           ch.ChanId,
@@ -1507,6 +1527,7 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 			LocalChanReserveSat: localReserveSat,
 			UnsettledBalanceSat: ch.UnsettledBalance,
 			PendingHtlcCount:    len(ch.PendingHtlcs),
+			PendingHtlcs:        pendingHtlcs,
 			BaseFeeMsat:         baseFeeMsat,
 			FeeRatePpm:          feeRatePpm,
 			InboundFeeRatePpm:   inboundFeeRatePpm,
@@ -3051,33 +3072,42 @@ type Status struct {
 	LightningSat     int64
 }
 
+type ChannelPendingHtlcInfo struct {
+	Incoming         bool   `json:"incoming"`
+	AmountSat        int64  `json:"amount_sat"`
+	ExpirationHeight uint32 `json:"expiration_height"`
+	HtlcIndex        uint64 `json:"htlc_index,omitempty"`
+	LockedIn         bool   `json:"locked_in,omitempty"`
+}
+
 type ChannelInfo struct {
-	ChannelPoint        string `json:"channel_point"`
-	ChannelID           uint64 `json:"channel_id"`
-	RemotePubkey        string `json:"remote_pubkey"`
-	PeerAlias           string `json:"peer_alias"`
-	Initiator           bool   `json:"initiator"`
-	Active              bool   `json:"active"`
-	ChanStatusFlags     string `json:"chan_status_flags,omitempty"`
-	LocalDisabled       bool   `json:"local_disabled,omitempty"`
-	Private             bool   `json:"private"`
-	CapacitySat         int64  `json:"capacity_sat"`
-	LocalBalanceSat     int64  `json:"local_balance_sat"`
-	RemoteBalanceSat    int64  `json:"remote_balance_sat"`
-	LocalChanReserveSat int64  `json:"local_chan_reserve_sat,omitempty"`
-	UnsettledBalanceSat int64  `json:"unsettled_balance_sat,omitempty"`
-	PendingHtlcCount    int    `json:"pending_htlc_count,omitempty"`
-	BaseFeeMsat         *int64 `json:"base_fee_msat,omitempty"`
-	FeeRatePpm          *int64 `json:"fee_rate_ppm,omitempty"`
-	InboundFeeRatePpm   *int64 `json:"inbound_fee_rate_ppm,omitempty"`
-	PeerFeeRatePpm      *int64 `json:"peer_fee_rate_ppm,omitempty"`
-	PeerBaseMsat        *int64 `json:"peer_base_msat,omitempty"`
-	ClassLabel          string `json:"class_label,omitempty"`
-	OutPpm7d            *int   `json:"out_ppm7d,omitempty"`
-	RebalPpm7d          *int   `json:"rebal_ppm7d,omitempty"`
-	ForwardFee7dSat     *int64 `json:"forward_fee_7d_sat,omitempty"`
-	RebalFee7dSat       *int64 `json:"rebal_fee_7d_sat,omitempty"`
-	ProfitFee7dSat      *int64 `json:"profit_fee_7d_sat,omitempty"`
+	ChannelPoint        string                   `json:"channel_point"`
+	ChannelID           uint64                   `json:"channel_id"`
+	RemotePubkey        string                   `json:"remote_pubkey"`
+	PeerAlias           string                   `json:"peer_alias"`
+	Initiator           bool                     `json:"initiator"`
+	Active              bool                     `json:"active"`
+	ChanStatusFlags     string                   `json:"chan_status_flags,omitempty"`
+	LocalDisabled       bool                     `json:"local_disabled,omitempty"`
+	Private             bool                     `json:"private"`
+	CapacitySat         int64                    `json:"capacity_sat"`
+	LocalBalanceSat     int64                    `json:"local_balance_sat"`
+	RemoteBalanceSat    int64                    `json:"remote_balance_sat"`
+	LocalChanReserveSat int64                    `json:"local_chan_reserve_sat,omitempty"`
+	UnsettledBalanceSat int64                    `json:"unsettled_balance_sat,omitempty"`
+	PendingHtlcCount    int                      `json:"pending_htlc_count,omitempty"`
+	PendingHtlcs        []ChannelPendingHtlcInfo `json:"pending_htlcs,omitempty"`
+	BaseFeeMsat         *int64                   `json:"base_fee_msat,omitempty"`
+	FeeRatePpm          *int64                   `json:"fee_rate_ppm,omitempty"`
+	InboundFeeRatePpm   *int64                   `json:"inbound_fee_rate_ppm,omitempty"`
+	PeerFeeRatePpm      *int64                   `json:"peer_fee_rate_ppm,omitempty"`
+	PeerBaseMsat        *int64                   `json:"peer_base_msat,omitempty"`
+	ClassLabel          string                   `json:"class_label,omitempty"`
+	OutPpm7d            *int                     `json:"out_ppm7d,omitempty"`
+	RebalPpm7d          *int                     `json:"rebal_ppm7d,omitempty"`
+	ForwardFee7dSat     *int64                   `json:"forward_fee_7d_sat,omitempty"`
+	RebalFee7dSat       *int64                   `json:"rebal_fee_7d_sat,omitempty"`
+	ProfitFee7dSat      *int64                   `json:"profit_fee_7d_sat,omitempty"`
 }
 
 type PeerInfo struct {
