@@ -44,6 +44,14 @@ type PendingChannel = {
   confirmations_until_active?: number
   confirmation_height?: number
   private?: boolean
+  waiting_close_recovery?: {
+    attempts?: number
+    last_attempt_at?: string
+    last_result?: string
+    last_error?: string
+    last_recovered_txid?: string
+    suggest_force_close?: boolean
+  }
 }
 
 type Peer = {
@@ -702,6 +710,8 @@ export default function LightningOps() {
   const [closeFeeStatus, setCloseFeeStatus] = useState('')
   const [closeStatus, setCloseStatus] = useState('')
   const [closingTxHints, setClosingTxHints] = useState<Record<string, string>>({})
+  const [pendingForceBusyByPoint, setPendingForceBusyByPoint] = useState<Record<string, boolean>>({})
+  const [pendingForceStatusByPoint, setPendingForceStatusByPoint] = useState<Record<string, string>>({})
 
   const [feeScopeAll, setFeeScopeAll] = useState(true)
   const [feeChannelPoint, setFeeChannelPoint] = useState('')
@@ -2359,6 +2369,31 @@ export default function LightningOps() {
     }
   }
 
+  const waitingCloseRecoveryResultLabel = (result?: string) => {
+    const normalized = String(result || '').trim()
+    switch (normalized) {
+      case 'no_raw_tx_available':
+        return t('lightningOps.waitingCloseResultNoRawTx')
+      case 'recover_failed':
+        return t('lightningOps.waitingCloseResultRecoverFailed')
+      case 'rebroadcast_ok':
+        return t('lightningOps.waitingCloseResultRebroadcastOk')
+      case 'closing_txid_detected':
+        return t('lightningOps.waitingCloseResultTxidDetected')
+      case 'rebroadcast_submitted_no_txid':
+        return t('lightningOps.waitingCloseResultRebroadcastNoTxid')
+      default:
+        return normalized || t('common.na')
+    }
+  }
+
+  const formatWaitingCloseRecoveryTime = (value?: string) => {
+    if (!value) return t('common.na')
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return t('common.unknownTime')
+    return parsed.toLocaleString()
+  }
+
   const balancedOpenStateLabel = (state: string) => {
     switch (state) {
       case 'session_created':
@@ -3478,6 +3513,36 @@ export default function LightningOps() {
     }
   }
 
+  const handleForceClosePending = async (channelPoint: string) => {
+    const point = (channelPoint || '').trim()
+    if (!point) return
+    const confirmed = window.confirm(t('lightningOps.forceCloseCardConfirm', { point }))
+    if (!confirmed) return
+
+    setPendingForceBusyByPoint((prev) => ({ ...prev, [point]: true }))
+    setPendingForceStatusByPoint((prev) => ({ ...prev, [point]: t('lightningOps.forceCloseCardRunning') }))
+    try {
+      const res: any = await closeChannel({
+        channel_point: point,
+        force: true
+      })
+      const closingTxid = String(res?.closing_txid || '').trim()
+      if (closingTxid) {
+        setClosingTxHints((prev) => ({ ...prev, [point]: closingTxid }))
+        setPendingForceStatusByPoint((prev) => ({ ...prev, [point]: t('lightningOps.forceCloseCardSubmittedTx', { txid: closingTxid }) }))
+      } else {
+        setPendingForceStatusByPoint((prev) => ({ ...prev, [point]: t('lightningOps.forceCloseCardSubmitted') }))
+      }
+      setClosePoint(point)
+      setCloseForce(true)
+      load()
+    } catch (err: any) {
+      setPendingForceStatusByPoint((prev) => ({ ...prev, [point]: err?.message || t('lightningOps.forceCloseCardFailed') }))
+    } finally {
+      setPendingForceBusyByPoint((prev) => ({ ...prev, [point]: false }))
+    }
+  }
+
   const runFeeUpdate = async (payload: {
     applyAll: boolean
     channelPoint?: string
@@ -4005,6 +4070,16 @@ export default function LightningOps() {
                       const maturitySeconds = estimateMaturitySeconds(ch.blocks_til_maturity)
                       const closingTxid = (ch.closing_txid || closingTxHints[ch.channel_point] || '').trim()
                       const closingTxLink = mempoolTxLink(closingTxid)
+                      const waitingCloseRecovery = ch.waiting_close_recovery
+                      const showWaitingCloseRecovery = ch.status === 'waiting_close' && !closingTxid
+                      const recoveryAttempts = Math.max(0, Number(waitingCloseRecovery?.attempts || 0))
+                      const recoveryResult = waitingCloseRecoveryResultLabel(waitingCloseRecovery?.last_result)
+                      const recoveryLastAttempt = formatWaitingCloseRecoveryTime(waitingCloseRecovery?.last_attempt_at)
+                      const recoveryLastError = String(waitingCloseRecovery?.last_error || '').trim()
+                      const recoveryTxid = String(waitingCloseRecovery?.last_recovered_txid || '').trim()
+                      const suggestForceClose = Boolean(waitingCloseRecovery?.suggest_force_close)
+                      const forceBusy = Boolean(pendingForceBusyByPoint[ch.channel_point])
+                      const forceStatus = pendingForceStatusByPoint[ch.channel_point] || ''
                       return (
                         <div key={ch.channel_point} className="rounded-xl border border-white/10 bg-ink/70 p-3">
                           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4066,6 +4141,37 @@ export default function LightningOps() {
                             ) : (
                               <p className="mt-2 text-[11px] text-fog/50 break-all">{t('lightningOps.closingTx', { txid: closingTxid })}</p>
                             )
+                          )}
+                          {showWaitingCloseRecovery && (
+                            <div className="mt-3 rounded-xl border border-amber-300/35 bg-amber-500/10 p-3 space-y-1">
+                              <p className="text-[11px] font-semibold text-amber-100">{t('lightningOps.waitingCloseNoTxTitle')}</p>
+                              <p className="text-[11px] text-amber-200/90">{t('lightningOps.waitingCloseAutoActions')}</p>
+                              <p className="text-[11px] text-fog/70">{t('lightningOps.waitingCloseAttempts', { count: recoveryAttempts })}</p>
+                              <p className="text-[11px] text-fog/70">{t('lightningOps.waitingCloseLastAttempt', { time: recoveryLastAttempt })}</p>
+                              <p className="text-[11px] text-fog/70">{t('lightningOps.waitingCloseLastResult', { result: recoveryResult })}</p>
+                              {recoveryLastError && (
+                                <p className="text-[11px] text-rose-200 break-words">{t('lightningOps.waitingCloseLastError', { error: recoveryLastError })}</p>
+                              )}
+                              {recoveryTxid && (
+                                <p className="text-[11px] text-fog/70 break-all">{t('lightningOps.waitingCloseRecoveredTx', { txid: recoveryTxid })}</p>
+                              )}
+                              <p className="text-[11px] text-amber-200/90">
+                                {suggestForceClose ? t('lightningOps.waitingCloseSuggestForce') : t('lightningOps.waitingCloseKeepMonitoring')}
+                              </p>
+                              {suggestForceClose && (
+                                <button
+                                  type="button"
+                                  className="btn-secondary text-xs px-3 py-1 mt-1"
+                                  onClick={() => handleForceClosePending(ch.channel_point)}
+                                  disabled={forceBusy}
+                                >
+                                  {forceBusy ? t('lightningOps.forceCloseCardRunning') : t('lightningOps.forceCloseNow')}
+                                </button>
+                              )}
+                              {forceStatus && (
+                                <p className="text-[11px] text-amber-100 break-words">{forceStatus}</p>
+                              )}
+                            </div>
                           )}
                         </div>
                       )

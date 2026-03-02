@@ -37,7 +37,6 @@ const (
 	lndRPCTimeout              = 15 * time.Second
 	lndConnectTimeout          = 30 * time.Second
 	lndOpenChannelTimeout      = 60 * time.Second
-	lndCloseChannelTimeout     = 60 * time.Second
 	lndBatchOpenChannelTimeout = 90 * time.Second
 	batchOpenMaxChannels       = 50
 	lndWarmupPeriod            = 90 * time.Second
@@ -53,6 +52,20 @@ type healthResponse struct {
 	Status    string        `json:"status"`
 	Issues    []healthIssue `json:"issues"`
 	Timestamp string        `json:"timestamp"`
+}
+
+type waitingCloseRecoveryResponse struct {
+	Attempts          int    `json:"attempts"`
+	LastAttemptAt     string `json:"last_attempt_at,omitempty"`
+	LastResult        string `json:"last_result,omitempty"`
+	LastError         string `json:"last_error,omitempty"`
+	LastRecoveredTxid string `json:"last_recovered_txid,omitempty"`
+	SuggestForceClose bool   `json:"suggest_force_close"`
+}
+
+type pendingChannelResponse struct {
+	lndclient.PendingChannelInfo
+	WaitingCloseRecovery *waitingCloseRecoveryResponse `json:"waiting_close_recovery,omitempty"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1395,6 +1408,16 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
 	if pendingErr != nil {
 		pending = nil
 	}
+	pendingResp := make([]pendingChannelResponse, 0, len(pending))
+	for _, item := range pending {
+		row := pendingChannelResponse{PendingChannelInfo: item}
+		if item.Status == "waiting_close" && strings.TrimSpace(item.ClosingTxid) == "" && s.notifier != nil {
+			if info, ok := s.notifier.getWaitingCloseRecoveryInfo(item.ChannelPoint); ok {
+				row.WaitingCloseRecovery = buildWaitingCloseRecoveryResponse(info)
+			}
+		}
+		pendingResp = append(pendingResp, row)
+	}
 
 	if s.db != nil {
 		dbCtx, dbCancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -1559,7 +1582,7 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
 
 	pendingOpen := 0
 	pendingClose := 0
-	for _, ch := range pending {
+	for _, ch := range pendingResp {
 		if ch.Status == "opening" {
 			pendingOpen++
 			continue
@@ -1573,8 +1596,34 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
 		"pending_open_count":  pendingOpen,
 		"pending_close_count": pendingClose,
 		"channels":            channels,
-		"pending_channels":    pending,
+		"pending_channels":    pendingResp,
 	})
+}
+
+func buildWaitingCloseRecoveryResponse(info waitingCloseRecoveryInfo) *waitingCloseRecoveryResponse {
+	resp := &waitingCloseRecoveryResponse{
+		Attempts:          info.Attempts,
+		LastResult:        strings.TrimSpace(info.LastResult),
+		LastError:         strings.TrimSpace(info.LastError),
+		LastRecoveredTxid: strings.TrimSpace(info.LastRecoveredTxid),
+	}
+	if !info.LastAttemptAt.IsZero() {
+		resp.LastAttemptAt = info.LastAttemptAt.UTC().Format(time.RFC3339)
+	}
+	resp.SuggestForceClose = shouldSuggestWaitingCloseForce(info)
+	return resp
+}
+
+func shouldSuggestWaitingCloseForce(info waitingCloseRecoveryInfo) bool {
+	result := strings.TrimSpace(info.LastResult)
+	switch result {
+	case "recover_failed", "no_raw_tx_available", "rebroadcast_submitted_no_txid":
+		return info.Attempts >= 2
+	case "rebroadcast_ok", "closing_txid_detected":
+		return false
+	default:
+		return info.Attempts >= 3
+	}
 }
 
 func (s *Server) handleLNPeers(w http.ResponseWriter, r *http.Request) {
@@ -2258,8 +2307,7 @@ func (s *Server) handleLNCloseChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), lndCloseChannelTimeout)
-	defer cancel()
+	ctx := r.Context()
 
 	if req.SatPerVbyte < 0 {
 		writeError(w, http.StatusBadRequest, "sat_per_vbyte must be zero or positive")

@@ -32,6 +32,7 @@ const (
 	paymentsPollInterval              = 15 * time.Second
 	forwardsPollInterval              = 30 * time.Second
 	pendingChannelsPollInterval       = 30 * time.Second
+	waitingCloseRecoveryRetryInterval = 5 * time.Minute
 	paymentsPendingMaxAge             = 48 * time.Hour
 	telegramActivityMirrorQueueSize   = 256
 	telegramActivityMirrorSendTimeout = 1 * time.Second
@@ -93,6 +94,14 @@ type pendingPaymentEntry struct {
 	LastSeen int64  `json:"last_seen"`
 }
 
+type waitingCloseRecoveryInfo struct {
+	Attempts          int
+	LastAttemptAt     time.Time
+	LastResult        string
+	LastError         string
+	LastRecoveredTxid string
+}
+
 type Notifier struct {
 	db     *pgxpool.Pool
 	lnd    *lndclient.Client
@@ -107,19 +116,21 @@ type Notifier struct {
 	lastCleanup                   time.Time
 	backupSent                    map[string]time.Time
 	pendingSent                   map[string]time.Time
+	waitingCloseRecoveries        map[string]waitingCloseRecoveryInfo
 	telegramMirrorQueue           chan Notification
 	telegramActivityMirrorEnabled atomic.Bool
 }
 
 func NewNotifier(db *pgxpool.Pool, lnd *lndclient.Client, logger *log.Logger) *Notifier {
 	return &Notifier{
-		db:                  db,
-		lnd:                 lnd,
-		logger:              logger,
-		subscribers:         map[chan Notification]struct{}{},
-		backupSent:          map[string]time.Time{},
-		pendingSent:         map[string]time.Time{},
-		telegramMirrorQueue: make(chan Notification, telegramActivityMirrorQueueSize),
+		db:                     db,
+		lnd:                    lnd,
+		logger:                 logger,
+		subscribers:            map[chan Notification]struct{}{},
+		backupSent:             map[string]time.Time{},
+		pendingSent:            map[string]time.Time{},
+		waitingCloseRecoveries: map[string]waitingCloseRecoveryInfo{},
+		telegramMirrorQueue:    make(chan Notification, telegramActivityMirrorQueueSize),
 	}
 }
 
@@ -1432,6 +1443,27 @@ func (n *Notifier) runPendingChannels() {
 				peerAlias = n.lookupNodeAlias(item.RemotePubkey)
 			}
 			n.triggerTelegramBackup(reason, channelPoint, peerAlias)
+			if item.Status == "waiting_close" && strings.TrimSpace(item.ClosingTxid) == "" && n.markWaitingCloseRecoveryAttempt(channelPoint) {
+				recoverCtx, recoverCancel := context.WithTimeout(context.Background(), 8*time.Second)
+				recoveredTxid, attempted, recoverErr := n.lnd.RecoverWaitingCloseTx(recoverCtx, channelPoint)
+				recoverCancel()
+				if recoverErr != nil {
+					n.updateWaitingCloseRecoveryResult(channelPoint, "recover_failed", recoverErr.Error(), "")
+					n.logger.Printf("notifications: waiting close recovery failed for %s: %v", channelPoint, recoverErr)
+				} else if strings.TrimSpace(recoveredTxid) != "" {
+					item.ClosingTxid = strings.TrimSpace(recoveredTxid)
+					result := "closing_txid_detected"
+					if attempted {
+						result = "rebroadcast_ok"
+						n.logger.Printf("notifications: waiting close recovery broadcasted for %s (%s)", channelPoint, recoveredTxid)
+					}
+					n.updateWaitingCloseRecoveryResult(channelPoint, result, "", recoveredTxid)
+				} else if attempted {
+					n.updateWaitingCloseRecoveryResult(channelPoint, "rebroadcast_submitted_no_txid", "", "")
+				} else {
+					n.updateWaitingCloseRecoveryResult(channelPoint, "no_raw_tx_available", "", "")
+				}
+			}
 			if isClosing {
 				n.notifyPendingChannelClosing(item, channelPoint)
 			}
@@ -1499,6 +1531,64 @@ func (n *Notifier) markPendingNotification(key string) bool {
 	}
 	n.pendingSent[trimmed] = time.Now().UTC()
 	return true
+}
+
+func (n *Notifier) markWaitingCloseRecoveryAttempt(channelPoint string) bool {
+	key := normalizeChannelPointKey(channelPoint)
+	if key == "" {
+		return false
+	}
+
+	n.pendingMu.Lock()
+	defer n.pendingMu.Unlock()
+
+	now := time.Now().UTC()
+	state := n.waitingCloseRecoveries[key]
+	if !state.LastAttemptAt.IsZero() {
+		if now.Sub(state.LastAttemptAt) < waitingCloseRecoveryRetryInterval {
+			return false
+		}
+	}
+	state.Attempts++
+	state.LastAttemptAt = now
+	n.waitingCloseRecoveries[key] = state
+	return true
+}
+
+func (n *Notifier) updateWaitingCloseRecoveryResult(channelPoint string, result string, errMsg string, recoveredTxid string) {
+	key := normalizeChannelPointKey(channelPoint)
+	if key == "" {
+		return
+	}
+
+	n.pendingMu.Lock()
+	defer n.pendingMu.Unlock()
+
+	state := n.waitingCloseRecoveries[key]
+	state.LastResult = strings.TrimSpace(result)
+	state.LastError = strings.TrimSpace(errMsg)
+	state.LastRecoveredTxid = strings.TrimSpace(recoveredTxid)
+	n.waitingCloseRecoveries[key] = state
+}
+
+func (n *Notifier) getWaitingCloseRecoveryInfo(channelPoint string) (waitingCloseRecoveryInfo, bool) {
+	key := normalizeChannelPointKey(channelPoint)
+	if key == "" {
+		return waitingCloseRecoveryInfo{}, false
+	}
+
+	n.pendingMu.Lock()
+	defer n.pendingMu.Unlock()
+
+	info, ok := n.waitingCloseRecoveries[key]
+	if !ok {
+		return waitingCloseRecoveryInfo{}, false
+	}
+	return info, true
+}
+
+func normalizeChannelPointKey(channelPoint string) string {
+	return strings.ToLower(strings.TrimSpace(channelPoint))
 }
 
 func (n *Notifier) channelEventToNotification(update *lnrpc.ChannelEventUpdate) (Notification, string) {

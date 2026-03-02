@@ -2513,6 +2513,7 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 	req := &lnrpc.CloseChannelRequest{
 		ChannelPoint: cp,
 		Force:        force,
+		NoWait:       true,
 	}
 	if !force && satPerVbyte > 0 {
 		req.SatPerVbyte = uint64(satPerVbyte)
@@ -2527,6 +2528,9 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 		update, recvErr := stream.Recv()
 		if recvErr != nil {
 			if errors.Is(recvErr, io.EOF) {
+				break
+			}
+			if isTimeoutError(recvErr) || errors.Is(recvErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				break
 			}
 			return "", recvErr
@@ -2549,6 +2553,12 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 	}
 	if closingTxid == "" {
 		closingTxid = c.lookupPendingClosingTxid(ctx, channelPoint)
+	}
+	if closingTxid == "" {
+		recoveredTxid, _, recoverErr := c.RecoverWaitingCloseTx(ctx, channelPoint)
+		if recoverErr == nil {
+			closingTxid = strings.TrimSpace(recoveredTxid)
+		}
 	}
 	return closingTxid, nil
 }
@@ -2597,6 +2607,71 @@ func (c *Client) lookupPendingClosingTxid(ctx context.Context, channelPoint stri
 		}
 	}
 	return ""
+}
+
+func (c *Client) RecoverWaitingCloseTx(ctx context.Context, channelPoint string) (string, bool, error) {
+	entry, err := c.lookupWaitingCloseEntry(ctx, channelPoint, true)
+	if err != nil {
+		return "", false, err
+	}
+	if entry == nil {
+		return "", false, nil
+	}
+
+	if txid := strings.TrimSpace(entry.GetClosingTxid()); txid != "" {
+		return txid, false, nil
+	}
+
+	txHex := strings.TrimSpace(entry.GetClosingTxHex())
+	if txHex == "" {
+		return "", false, nil
+	}
+
+	publishErr := c.PublishTransaction(ctx, txHex, "channel-close-recover")
+	if publishErr != nil && !isAlreadyPublishedTxError(publishErr) {
+		if txid := c.lookupPendingClosingTxid(ctx, channelPoint); txid != "" {
+			return txid, true, nil
+		}
+		return "", true, publishErr
+	}
+
+	if txid := c.lookupPendingClosingTxid(ctx, channelPoint); txid != "" {
+		return txid, true, nil
+	}
+	if txid := txidFromRawTxHex(txHex); txid != "" {
+		return txid, true, nil
+	}
+
+	return "", true, nil
+}
+
+func (c *Client) lookupWaitingCloseEntry(ctx context.Context, channelPoint string, includeRawTx bool) (*lnrpc.PendingChannelsResponse_WaitingCloseChannel, error) {
+	point := strings.ToLower(strings.TrimSpace(channelPoint))
+	if point == "" {
+		return nil, errors.New("channel_point required")
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.PendingChannels(ctx, &lnrpc.PendingChannelsRequest{IncludeRawTx: includeRawTx})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range resp.GetWaitingCloseChannels() {
+		if item == nil || item.GetChannel() == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.GetChannel().GetChannelPoint()), point) {
+			return item, nil
+		}
+	}
+	return nil, nil
 }
 
 func (c *Client) UpdateChannelFees(ctx context.Context, channelPoint string, applyAll bool, baseFeeMsat int64, feeRatePpm int64, timeLockDelta int64, inboundEnabled bool, inboundBaseMsat int64, inboundFeeRatePpm int64) error {
@@ -2697,6 +2772,19 @@ func isTimeoutError(err error) bool {
 	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "context deadline exceeded")
 }
 
+func isAlreadyPublishedTxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "already have transaction") ||
+		strings.Contains(value, "already in mempool") ||
+		strings.Contains(value, "txn-already-known") ||
+		strings.Contains(value, "already known") ||
+		strings.Contains(value, "transaction already in block chain") ||
+		strings.Contains(value, "already exists")
+}
+
 func isLocalChanDisabledFlags(flags string) bool {
 	trimmed := strings.TrimSpace(flags)
 	if trimmed == "" {
@@ -2755,6 +2843,23 @@ func txidFromBytes(raw []byte) string {
 		rev[len(raw)-1-i] = raw[i]
 	}
 	return hex.EncodeToString(rev)
+}
+
+func txidFromRawTxHex(txHex string) string {
+	trimmed := strings.TrimSpace(txHex)
+	if trimmed == "" {
+		return ""
+	}
+	raw, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return ""
+	}
+	tx := wire.NewMsgTx(wire.TxVersion)
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return ""
+	}
+	hash := tx.TxHash()
+	return strings.ToLower(strings.TrimSpace(hash.String()))
 }
 
 func normalizeTxidHex(value string) (string, error) {
