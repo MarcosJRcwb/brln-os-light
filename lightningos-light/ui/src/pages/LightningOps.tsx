@@ -3509,6 +3509,13 @@ export default function LightningOps() {
     return `https://mempool.space/pt/tx/${parts[0]}#vout=${parts[1]}`
   }
 
+  const channelPointTxid = (channelPoint?: string) => {
+    const parts = String(channelPoint || '').trim().split(':')
+    if (parts.length !== 2) return ''
+    const txid = (parts[0] || '').trim()
+    return /^[0-9a-fA-F]{64}$/.test(txid) ? txid : ''
+  }
+
   const mempoolTxLink = (txid?: string) => {
     if (!txid) return ''
     return `https://mempool.space/tx/${txid}`
@@ -4031,6 +4038,8 @@ export default function LightningOps() {
                   <div className="mt-3 space-y-3">
                     {pendingOpen.map((ch) => {
                       const pointLink = mempoolLink(ch.channel_point)
+                      const openingTxid = channelPointTxid(ch.channel_point)
+                      const openingTxLink = mempoolTxLink(openingTxid)
                       return (
                         <div key={ch.channel_point} className="rounded-xl border border-white/10 bg-ink/70 p-3">
                           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4072,6 +4081,20 @@ export default function LightningOps() {
                               <div>{t('lightningOps.confirmationsLabel', { count: ch.confirmations_until_active })}</div>
                             )}
                           </div>
+                          {openingTxid && (
+                            openingTxLink ? (
+                              <a
+                                className="mt-2 block text-[11px] text-emerald-200 hover:text-emerald-100 break-all"
+                                href={openingTxLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                {t('lightningOps.fundingTx', { point: openingTxid })}
+                              </a>
+                            ) : (
+                              <p className="mt-2 text-[11px] text-fog/50 break-all">{t('lightningOps.fundingTx', { point: openingTxid })}</p>
+                            )
+                          )}
                           {ch.private !== undefined && (
                             <p className="mt-2 text-[11px] text-fog/50">
                               {ch.private ? t('lightningOps.privateChannel') : t('lightningOps.publicChannel')}
