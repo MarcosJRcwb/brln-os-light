@@ -102,9 +102,35 @@ type ReportsConfig = {
   run_timeout_sec?: number | null
 }
 
-type RangeKey = 'd-1' | 'date' | 'month' | '3m' | '6m' | '12m' | 'all'
+type BaseRangeKey = 'd-1' | 'date' | 'month' | '3m' | '6m' | '12m' | 'all'
+type QuickRangeKey = 'prev-month' | 'current-month' | 'prev-year' | 'current-year'
+type RangeKey = BaseRangeKey | QuickRangeKey
+type ChartGranularity = 'day' | 'week' | 'month'
 
-const rangeOptions: RangeKey[] = ['d-1', 'date', 'month', '3m', '6m', '12m', 'all']
+type DateWindow = {
+  from: string
+  to: string
+}
+
+type ChartDataPoint = {
+  date: string
+  startDate: string
+  endDate: string
+  label: string
+  net: number
+  netRouting: number
+  keysend: number
+  revenue: number
+  rebalanceCost: number
+  paymentCost: number
+  cost: number
+  onchain: number | null
+  lightning: number | null
+  total: number | null
+}
+
+const rangeOptions: RangeKey[] = ['d-1', 'date', 'month', '3m', '6m', '12m', 'all', 'prev-month', 'current-month', 'prev-year', 'current-year']
+const chartGranularityOptions: ChartGranularity[] = ['day', 'week', 'month']
 
 const COLORS = {
   net: '#34d399',
@@ -163,6 +189,7 @@ export default function Reports() {
   const [liveTimeout, setLiveTimeout] = useState('')
   const [liveLookback, setLiveLookback] = useState('')
   const [runTimeout, setRunTimeout] = useState('')
+  const [chartGranularity, setChartGranularity] = useState<ChartGranularity>('day')
 
   const formatter = useMemo(() => new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }), [locale])
   const compactFormatter = useMemo(() => new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 2 }), [locale])
@@ -174,6 +201,90 @@ export default function Reports() {
     const month = String(value.getMonth() + 1).padStart(2, '0')
     const day = String(value.getDate()).padStart(2, '0')
     return `${year}-${month}-${day}`
+  }
+  const parseInputDate = (value: string) => {
+    const parsed = new Date(`${value}T00:00:00`)
+    if (Number.isNaN(parsed.getTime())) {
+      return null
+    }
+    return parsed
+  }
+  const shiftDays = (value: Date, days: number) => {
+    const next = new Date(value)
+    next.setDate(next.getDate() + days)
+    return next
+  }
+  const startOfWeek = (value: Date) => {
+    const next = new Date(value)
+    const weekDay = next.getDay()
+    const offset = weekDay === 0 ? -6 : 1 - weekDay
+    next.setDate(next.getDate() + offset)
+    return new Date(next.getFullYear(), next.getMonth(), next.getDate())
+  }
+  const startOfMonth = (value: Date) => new Date(value.getFullYear(), value.getMonth(), 1)
+  const endOfMonth = (value: Date) => new Date(value.getFullYear(), value.getMonth() + 1, 0)
+  const startOfYear = (value: Date) => new Date(value.getFullYear(), 0, 1)
+  const endOfYear = (value: Date) => new Date(value.getFullYear(), 11, 31)
+  const clampEndDate = (start: Date, candidate: Date) => {
+    if (candidate.getTime() < start.getTime()) {
+      return start
+    }
+    return candidate
+  }
+
+  const quickRanges = useMemo<Record<QuickRangeKey, { label: string } & DateWindow>>(() => {
+    const today = new Date()
+    const yesterday = shiftDays(today, -1)
+    const currentMonthStart = startOfMonth(today)
+    const previousMonthStart = startOfMonth(new Date(today.getFullYear(), today.getMonth() - 1, 1))
+    const previousMonthEnd = endOfMonth(previousMonthStart)
+    const currentYearStart = startOfYear(today)
+    const previousYearStart = startOfYear(new Date(today.getFullYear() - 1, 0, 1))
+    const previousYearEnd = endOfYear(previousYearStart)
+    const monthLabel = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' })
+    const currentMonthEnd = clampEndDate(currentMonthStart, yesterday)
+    const currentYearEnd = clampEndDate(currentYearStart, yesterday)
+
+    return {
+      'prev-month': {
+        label: monthLabel.format(previousMonthStart),
+        from: formatInputDate(previousMonthStart),
+        to: formatInputDate(previousMonthEnd)
+      },
+      'current-month': {
+        label: monthLabel.format(currentMonthStart),
+        from: formatInputDate(currentMonthStart),
+        to: formatInputDate(currentMonthEnd)
+      },
+      'prev-year': {
+        label: String(previousYearStart.getFullYear()),
+        from: formatInputDate(previousYearStart),
+        to: formatInputDate(previousYearEnd)
+      },
+      'current-year': {
+        label: String(currentYearStart.getFullYear()),
+        from: formatInputDate(currentYearStart),
+        to: formatInputDate(currentYearEnd)
+      }
+    }
+  }, [locale])
+
+  const customRangeWindow = useMemo<DateWindow | null>(() => {
+    if (range === 'date') {
+      return { from: customDate, to: customDate }
+    }
+    if (range === 'prev-month' || range === 'current-month' || range === 'prev-year' || range === 'current-year') {
+      const selected = quickRanges[range]
+      return { from: selected.from, to: selected.to }
+    }
+    return null
+  }, [customDate, quickRanges, range])
+
+  const rangeLabel = (value: RangeKey) => {
+    if (value === 'prev-month' || value === 'current-month' || value === 'prev-year' || value === 'current-year') {
+      return quickRanges[value].label
+    }
+    return t(`reports.range.${value}`)
   }
   const isTodaySelection = (dateValue: string, serverToday?: string) => {
     if (serverToday && serverToday.trim()) {
@@ -199,11 +310,31 @@ export default function Reports() {
   }
 
   const formatDateLabel = (value: string) => {
-    const parsed = new Date(`${value}T00:00:00`)
-    if (Number.isNaN(parsed.getTime())) {
+    const parsed = parseInputDate(value)
+    if (!parsed) {
       return value
     }
     return parsed.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
+  }
+
+  const formatMonthLabel = (value: string) => {
+    const parsed = parseInputDate(value)
+    if (!parsed) {
+      return value
+    }
+    return parsed.toLocaleDateString(locale, { month: 'short', year: 'numeric' })
+  }
+
+  const formatRangeLabel = (startValue: string, endValue: string, granularity: ChartGranularity) => {
+    if (granularity === 'month') {
+      return formatMonthLabel(startValue)
+    }
+    if (granularity === 'week') {
+      const start = formatDateLabel(startValue)
+      const end = formatDateLabel(endValue)
+      return start === end ? start : `${start} - ${end}`
+    }
+    return formatDateLabel(startValue)
   }
 
   const formatDateLong = (value: string) => {
@@ -261,8 +392,12 @@ export default function Reports() {
     setSeriesLoading(true)
     setSeriesError('')
 
-    const rangeRequest = range === 'date' ? getReportsCustom(customDate, customDate) : getReportsRange(range)
-    const summaryRequest = range === 'date' ? getReportsSummaryCustom(customDate, customDate) : getReportsSummary(range)
+    const rangeRequest = customRangeWindow
+      ? getReportsCustom(customRangeWindow.from, customRangeWindow.to)
+      : getReportsRange(range as BaseRangeKey)
+    const summaryRequest = customRangeWindow
+      ? getReportsSummaryCustom(customRangeWindow.from, customRangeWindow.to)
+      : getReportsSummary(range as BaseRangeKey)
 
     Promise.all([rangeRequest, summaryRequest])
       .then(([rangeResp, summaryResp]) => {
@@ -286,7 +421,7 @@ export default function Reports() {
     return () => {
       active = false
     }
-  }, [customDate, movementLive?.date, range, t])
+  }, [customRangeWindow, movementLive?.date, range, t])
 
   useEffect(() => {
     const selectedToday = range === 'date' && isTodaySelection(customDate, movementLive?.date)
@@ -438,8 +573,8 @@ export default function Reports() {
     }
   }
 
-  const chartData = useMemo(() => {
-    return series.map((item) => ({
+  const rawChartData = useMemo(() => {
+    const mapped = series.map((item) => ({
       date: item.date,
       net: item.net_with_keysend_sats ?? item.net_routing_profit_sats,
       netRouting: item.net_routing_profit_sats,
@@ -452,7 +587,65 @@ export default function Reports() {
       lightning: item.lightning_balance_sats ?? null,
       total: item.total_balance_sats ?? null
     }))
+    return mapped.sort((a, b) => a.date.localeCompare(b.date))
   }, [series])
+
+  const chartData = useMemo<ChartDataPoint[]>(() => {
+    if (rawChartData.length === 0) {
+      return []
+    }
+    if (chartGranularity === 'day') {
+      return rawChartData.map((item) => ({
+        ...item,
+        startDate: item.date,
+        endDate: item.date,
+        label: formatRangeLabel(item.date, item.date, 'day')
+      }))
+    }
+
+    const grouped = new Map<string, ChartDataPoint>()
+    for (const item of rawChartData) {
+      const currentDate = parseInputDate(item.date)
+      if (!currentDate) {
+        continue
+      }
+
+      const bucketDate = chartGranularity === 'week' ? startOfWeek(currentDate) : startOfMonth(currentDate)
+      const bucketKey = formatInputDate(bucketDate)
+      const current = grouped.get(bucketKey)
+
+      if (!current) {
+        grouped.set(bucketKey, {
+          ...item,
+          date: bucketKey,
+          startDate: item.date,
+          endDate: item.date,
+          label: ''
+        })
+        continue
+      }
+
+      current.net += item.net
+      current.netRouting += item.netRouting
+      current.keysend += item.keysend
+      current.revenue += item.revenue
+      current.rebalanceCost += item.rebalanceCost
+      current.paymentCost += item.paymentCost
+      current.cost += item.cost
+      current.endDate = item.date
+      if (item.onchain !== null) current.onchain = item.onchain
+      if (item.lightning !== null) current.lightning = item.lightning
+      if (item.total !== null) current.total = item.total
+    }
+
+    return Array.from(grouped.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => ({
+        ...item,
+        date: key,
+        label: formatRangeLabel(item.startDate, item.endDate, chartGranularity)
+      }))
+  }, [chartGranularity, locale, rawChartData])
 
   const liveChartData = useMemo(() => {
     if (!live) return []
@@ -489,6 +682,20 @@ export default function Reports() {
   const liveTotalCost = live?.total_fee_cost_sats ?? (liveRebalanceCost + livePaymentCost)
   const liveKeysendReceived = live?.keysend_received_sats ?? 0
   const liveNetWithKeysend = live?.net_with_keysend_sats ?? ((live?.net_routing_profit_sats ?? 0) + liveKeysendReceived)
+  const renderGranularityToggle = () => (
+    <div className="inline-flex items-center gap-1 rounded-full bg-white/10 p-1">
+      {chartGranularityOptions.map((option) => (
+        <button
+          key={option}
+          type="button"
+          className={`rounded-full px-2.5 py-1 text-xs ${chartGranularity === option ? 'bg-white/20 text-fog' : 'text-fog/70 hover:text-fog'}`}
+          onClick={() => setChartGranularity(option)}
+        >
+          {t(`reports.granularity.${option}`)}
+        </button>
+      ))}
+    </div>
+  )
 
   return (
     <section className="space-y-6">
@@ -598,7 +805,7 @@ export default function Reports() {
                 className={range === key ? 'btn-primary' : 'btn-secondary'}
                 onClick={() => setRange(key)}
               >
-                {t(`reports.range.${key}`)}
+                {rangeLabel(key)}
               </button>
             ))}
           </div>
@@ -744,9 +951,9 @@ export default function Reports() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="section-card space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="text-lg font-semibold">{t('reports.netWithKeysend')}</h3>
-            <span className="text-xs text-fog/60">{t('reports.daily')}</span>
+            {renderGranularityToggle()}
           </div>
           {chartData.length === 0 && !seriesLoading && !seriesError ? (
             <p className="text-sm text-fog/60">{t('reports.noData')}</p>
@@ -761,7 +968,7 @@ export default function Reports() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatDateLabel} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
                   <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                   <Tooltip
@@ -770,7 +977,7 @@ export default function Reports() {
                     labelStyle={tooltipLabelStyle}
                     itemStyle={tooltipItemStyle}
                     formatter={(value) => formatSats(Number(value))}
-                    labelFormatter={formatDateLabel}
+                    labelFormatter={(value) => String(value)}
                   />
                   <Area type="monotone" dataKey="net" name={t('reports.net')} stroke={COLORS.net} fill="url(#netGradient)" strokeWidth={2} />
                   <Line type="monotone" dataKey="keysend" name={t('reports.keysendReceived')} stroke={COLORS.keysend} strokeWidth={2} dot={false} />
@@ -781,9 +988,9 @@ export default function Reports() {
         </div>
 
         <div className="section-card space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="text-lg font-semibold">{t('reports.revenueVsCost')}</h3>
-            <span className="text-xs text-fog/60">{t('reports.daily')}</span>
+            {renderGranularityToggle()}
           </div>
           {chartData.length === 0 && !seriesLoading && !seriesError ? (
             <p className="text-sm text-fog/60">{t('reports.noData')}</p>
@@ -792,7 +999,7 @@ export default function Reports() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatDateLabel} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
                   <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                   <Tooltip
@@ -801,7 +1008,7 @@ export default function Reports() {
                     labelStyle={tooltipLabelStyle}
                     itemStyle={tooltipItemStyle}
                     formatter={(value) => formatSats(Number(value))}
-                    labelFormatter={formatDateLabel}
+                    labelFormatter={(value) => String(value)}
                   />
                   <Line type="monotone" dataKey="revenue" name={t('reports.revenue')} stroke={COLORS.revenue} strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="cost" name={t('reports.cost')} stroke={COLORS.cost} strokeWidth={2} dot={false} />
@@ -813,9 +1020,12 @@ export default function Reports() {
       </div>
 
       <div className="section-card space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold">{t('reports.balances')}</h3>
-          <span className="text-xs text-fog/60">{t('reports.balancesSubtitle')}</span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-fog/60">{t('reports.balancesSubtitle')}</span>
+            {renderGranularityToggle()}
+          </div>
         </div>
         {!hasBalances && !seriesLoading && !seriesError ? (
           <p className="text-sm text-fog/60">{t('reports.balanceHistoryUnavailable')}</p>
@@ -824,7 +1034,7 @@ export default function Reports() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
-                <XAxis dataKey="date" tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatDateLabel} axisLine={false} tickLine={false} />
+                <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
                 <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                 <Tooltip
@@ -833,7 +1043,7 @@ export default function Reports() {
                   labelStyle={tooltipLabelStyle}
                   itemStyle={tooltipItemStyle}
                   formatter={(value) => formatSats(Number(value))}
-                  labelFormatter={formatDateLabel}
+                  labelFormatter={(value) => String(value)}
                 />
                 <Line type="monotone" dataKey="onchain" name={t('reports.onchain')} stroke={COLORS.onchain} strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="lightning" name={t('reports.lightning')} stroke={COLORS.lightning} strokeWidth={2} dot={false} />

@@ -647,6 +647,11 @@
     "dailyMovementUnavailable": "Daily movement unavailable",
     "forwardCount": "Forward count",
     "forwards": "Forwards",
+    "granularity": {
+      "day": "Daily",
+      "week": "Weekly",
+      "month": "Monthly"
+    },
     "historicalRange": "Historical range",
     "lastUpdated": "Last updated {{time}}.",
     "lightning": "Lightning",

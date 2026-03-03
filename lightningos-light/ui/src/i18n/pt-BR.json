@@ -647,6 +647,11 @@
     "dailyMovementUnavailable": "Meta diária indisponível",
     "forwardCount": "Contagem de Forward",
     "forwards": "Forwards",
+    "granularity": {
+      "day": "Diário",
+      "week": "Semanal",
+      "month": "Mensal"
+    },
     "historicalRange": "Intervalo histórico",
     "lastUpdated": "Última atualização {{time}}.",
     "lightning": "Lightning",
