@@ -795,8 +795,16 @@ func (s *Server) buildTelegramBalanceSummary(ctx context.Context) (string, error
 	if metrics, err := reportSummaryMetrics(ctx, svc, reports.RangeMonth, now, loc); err == nil {
 		monthLine = "🗓️ " + formatReportLine("Month", metrics)
 	}
+	prevMonthLine := "🗓️ Previous month: unavailable"
+	if label, metrics, ok := reportMonthWindowMetrics(ctx, svc, now, loc, previousMonthWindow); ok {
+		prevMonthLine = "🗓️ " + formatReportLine(label, metrics)
+	}
+	currentMonthLine := "🗓️ Current month: unavailable"
+	if label, metrics, ok := reportMonthWindowMetrics(ctx, svc, now, loc, currentMonthWindow); ok {
+		currentMonthLine = "🗓️ " + formatReportLine(label, metrics)
+	}
 
-	lines = append(lines, d1Line, liveLine, goalLine, monthLine)
+	lines = append(lines, d1Line, liveLine, goalLine, monthLine, prevMonthLine, currentMonthLine)
 	return strings.Join(lines, "\n"), nil
 }
 
@@ -900,6 +908,51 @@ func reportSummaryMetrics(ctx context.Context, svc *reports.Service, key string,
 		return reports.Metrics{}, err
 	}
 	return summary.Totals, nil
+}
+
+type monthWindowMode string
+
+const (
+	previousMonthWindow monthWindowMode = "previous"
+	currentMonthWindow  monthWindowMode = "current"
+)
+
+func reportMonthWindowMetrics(ctx context.Context, svc *reports.Service, now time.Time, loc *time.Location, mode monthWindowMode) (string, reports.Metrics, bool) {
+	if loc == nil {
+		loc = time.Local
+	}
+	from, to, label, ok := resolveMonthWindow(now, loc, mode)
+	if !ok {
+		return "", reports.Metrics{}, false
+	}
+	summaryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	summary, err := svc.CustomSummary(summaryCtx, from, to)
+	if err != nil {
+		return "", reports.Metrics{}, false
+	}
+	return label, summary.Totals, true
+}
+
+func resolveMonthWindow(now time.Time, loc *time.Location, mode monthWindowMode) (time.Time, time.Time, string, bool) {
+	localNow := now.In(loc)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+	yesterday := today.AddDate(0, 0, -1)
+	switch mode {
+	case previousMonthWindow:
+		monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc)
+		start := monthStart.AddDate(0, -1, 0)
+		end := monthStart.AddDate(0, 0, -1)
+		return start, end, "Previous month (" + start.Format("Jan 2006") + ")", true
+	case currentMonthWindow:
+		start := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc)
+		if yesterday.Before(start) {
+			return time.Time{}, time.Time{}, "", false
+		}
+		return start, yesterday, "Current month (" + start.Format("Jan 2006") + ")", true
+	default:
+		return time.Time{}, time.Time{}, "", false
+	}
 }
 
 func reportLiveMetrics(ctx context.Context, svc *reports.Service, now time.Time, loc *time.Location) (reports.Metrics, error) {

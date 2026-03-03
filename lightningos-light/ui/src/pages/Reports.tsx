@@ -129,7 +129,8 @@ type ChartDataPoint = {
   total: number | null
 }
 
-const rangeOptions: RangeKey[] = ['d-1', 'date', 'month', '3m', '6m', '12m', 'all', 'prev-month', 'current-month', 'prev-year', 'current-year']
+const primaryRangeOptions: RangeKey[] = ['d-1', 'date', 'month', '3m', '6m', '12m', 'all']
+const calendarRangeOptions: RangeKey[] = ['prev-month', 'current-month', 'prev-year', 'current-year']
 const chartGranularityOptions: ChartGranularity[] = ['day', 'week', 'month']
 
 const COLORS = {
@@ -798,7 +799,19 @@ export default function Reports() {
         <div className="section-card lg:col-span-2 space-y-4">
           <h3 className="text-lg font-semibold">{t('reports.historicalRange')}</h3>
           <div className="flex flex-wrap gap-2">
-            {rangeOptions.map((key) => (
+            {primaryRangeOptions.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={range === key ? 'btn-primary' : 'btn-secondary'}
+                onClick={() => setRange(key)}
+              >
+                {rangeLabel(key)}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {calendarRangeOptions.map((key) => (
               <button
                 key={key}
                 type="button"
