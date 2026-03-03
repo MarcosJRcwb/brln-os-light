@@ -29,6 +29,19 @@ const (
 	telegramGoalBarSegments        = 14
 )
 
+func telegramBalanceSummaryTimeout() time.Duration {
+	live := reportsLiveTimeout()
+	if live <= 0 {
+		live = 20 * time.Second
+	}
+	// Budget covers two live calls plus balance/summary reads.
+	budget := (2 * live) + (25 * time.Second)
+	if budget < 25*time.Second {
+		return 25 * time.Second
+	}
+	return budget
+}
+
 type telegramNotificationSettings struct {
 	ScbBackupEnabled         bool
 	ActivityMirrorEnabled    bool
@@ -397,7 +410,7 @@ func (s *Server) runTelegramSummaryLoop() {
 				interval = time.Duration(telegramSummaryIntervalDefault) * time.Minute
 			}
 			if settings.SummaryLastSentAt == nil || time.Since(*settings.SummaryLastSentAt) >= interval {
-				summaryCtx, summaryCancel := context.WithTimeout(context.Background(), 20*time.Second)
+				summaryCtx, summaryCancel := context.WithTimeout(context.Background(), telegramBalanceSummaryTimeout())
 				summary, summaryErr := s.buildTelegramBalanceSummary(summaryCtx)
 				summaryCancel()
 				if summaryErr != nil {
@@ -668,16 +681,19 @@ func (s *Server) handleTelegramBalancesCommand(cfg telegramBackupConfig) {
 	if s == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	summary, err := s.buildTelegramBalanceSummary(ctx)
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), telegramBalanceSummaryTimeout())
+	summary, err := s.buildTelegramBalanceSummary(buildCtx)
+	buildCancel()
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Printf("notifications: telegram /balances build failed: %v", err)
 		}
 		summary = "Unable to build balances summary."
 	}
-	if err := sendTelegramMessage(ctx, cfg.BotToken, cfg.ChatID, summary); err != nil {
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	err = sendTelegramMessage(sendCtx, cfg.BotToken, cfg.ChatID, summary)
+	sendCancel()
+	if err != nil {
 		if s.logger != nil {
 			s.logger.Printf("notifications: telegram /balances send failed: %v", err)
 		}
@@ -887,7 +903,7 @@ func reportSummaryMetrics(ctx context.Context, svc *reports.Service, key string,
 }
 
 func reportLiveMetrics(ctx context.Context, svc *reports.Service, now time.Time, loc *time.Location) (reports.Metrics, error) {
-	liveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	liveCtx, cancel := context.WithTimeout(ctx, reportsLiveTimeout())
 	defer cancel()
 	_, metrics, err := svc.Live(liveCtx, now, loc, reportsLiveLookbackHours())
 	if err != nil {
@@ -897,7 +913,7 @@ func reportLiveMetrics(ctx context.Context, svc *reports.Service, now time.Time,
 }
 
 func reportLiveMovement(ctx context.Context, svc *reports.Service, now time.Time, loc *time.Location) (reports.MovementLive, error) {
-	liveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	liveCtx, cancel := context.WithTimeout(ctx, reportsLiveTimeout())
 	defer cancel()
 	movement, err := svc.MovementLive(liveCtx, now, loc)
 	if err != nil {
