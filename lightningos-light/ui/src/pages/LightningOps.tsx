@@ -9,6 +9,8 @@ type Channel = {
   peer_alias: string
   initiator?: boolean
   active: boolean
+  inactive_since_unix?: number
+  inactive_duration_sec?: number
   chan_status_flags?: string
   local_disabled?: boolean
   private: boolean
@@ -1621,6 +1623,18 @@ export default function LightningOps() {
     const minutes = Math.floor((seconds % 3600) / 60)
     const remSeconds = seconds % 60
     return `${days}d ${hours}h ${minutes}m ${remSeconds}s`
+  }
+
+  const formatChannelDowntime = (totalSeconds?: number | null) => {
+    if (totalSeconds === null || totalSeconds === undefined) return ''
+    const seconds = Math.max(0, Math.floor(totalSeconds))
+    const days = Math.floor(seconds / 86400)
+    const hours = Math.floor((seconds % 86400) / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    if (days > 0) return `${days}d ${hours}h`
+    if (hours > 0) return `${hours}h ${minutes}m`
+    if (minutes > 0) return `${minutes}m`
+    return `${seconds}s`
   }
 
   const isLocalChanDisabled = (flags?: string) => {
@@ -4277,6 +4291,16 @@ export default function LightningOps() {
                   ? ch.out_ppm7d - ch.rebal_ppm7d
                   : undefined
                 const profitMeta = profitBadge(ch.profit_fee_7d_sat)
+                const opener = ch.initiator ? t('lightningOps.openerLocal') : t('lightningOps.openerRemote')
+                const inactiveSinceUnix = typeof ch.inactive_since_unix === 'number' && Number.isFinite(ch.inactive_since_unix)
+                  ? Math.max(0, Math.floor(ch.inactive_since_unix))
+                  : 0
+                const inactiveDurationSec = !ch.active && inactiveSinceUnix > 0
+                  ? Math.max(0, Math.floor((Date.now() / 1000) - inactiveSinceUnix))
+                  : 0
+                const inactiveForLabel = !ch.active && inactiveSinceUnix > 0
+                  ? t('lightningOps.inactiveFor', { time: formatChannelDowntime(inactiveDurationSec) })
+                  : ''
                 const isFocused = focusedChannelPoint === ch.channel_point
                 const rebalanceLink = ch.channel_point
                   ? buildHashWithChannelPoint(REBALANCE_ROUTE_KEY, ch.channel_point)
@@ -4304,13 +4328,16 @@ export default function LightningOps() {
                           <p className="text-sm text-fog/60">{ch.peer_alias || t('lightningOps.unknownPeer')}</p>
                         )}
                         <p className="text-xs text-fog/50 break-all">
-                          {t('lightningOps.pointCapacity', { point: ch.channel_point, capacity: ch.capacity_sat })}
+                          {t('lightningOps.pointCapacityWithOpener', { point: ch.channel_point, capacity: ch.capacity_sat, opener })}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className={`rounded-full px-3 py-1 text-xs ${ch.active ? 'bg-glow/20 text-glow' : isFCRisk ? 'bg-rose-500/25 text-rose-100' : 'bg-ember/20 text-ember'}`}>
                           {ch.active ? t('common.active') : t('common.inactive')}
                         </span>
+                        {!ch.active && inactiveForLabel && (
+                          <span className="text-[11px] text-fog/70">{inactiveForLabel}</span>
+                        )}
                         {isFCRisk && (
                           <span className="rounded-full px-2 py-1 text-[11px] border border-rose-300/70 bg-rose-500/20 text-rose-100">
                             {t('lightningOps.fcRiskLabel')}

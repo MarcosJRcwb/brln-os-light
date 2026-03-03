@@ -43,6 +43,8 @@ type Client struct {
 	infoCache       infoSnapshot
 	infoCacheAt     time.Time
 	infoCacheValid  bool
+	channelStateMu  sync.Mutex
+	channelInactive map[string]time.Time
 }
 
 type DerivedKey struct {
@@ -1445,8 +1447,14 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 		return nil, err
 	}
 
+	now := time.Now()
+	inactiveSinceByPoint := c.snapshotInactiveSince(resp.Channels, now)
+
 	channels := make([]ChannelInfo, 0, len(resp.Channels))
 	for _, ch := range resp.Channels {
+		if ch == nil {
+			continue
+		}
 		var baseFeeMsat *int64
 		var feeRatePpm *int64
 		var inboundFeeRatePpm *int64
@@ -1511,6 +1519,18 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 			return pendingHtlcs[i].ExpirationHeight < pendingHtlcs[j].ExpirationHeight
 		})
 
+		inactiveSinceUnix := int64(0)
+		inactiveDurationSec := int64(0)
+		if !ch.Active {
+			key := normalizeChannelPointKey(ch.ChannelPoint)
+			if since, ok := inactiveSinceByPoint[key]; ok && !since.IsZero() {
+				inactiveSinceUnix = since.Unix()
+				if now.After(since) {
+					inactiveDurationSec = int64(now.Sub(since).Seconds())
+				}
+			}
+		}
+
 		channels = append(channels, ChannelInfo{
 			ChannelPoint:        ch.ChannelPoint,
 			ChannelID:           ch.ChanId,
@@ -1518,6 +1538,8 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 			PeerAlias:           ch.PeerAlias,
 			Initiator:           ch.Initiator,
 			Active:              ch.Active,
+			InactiveSinceUnix:   inactiveSinceUnix,
+			InactiveDurationSec: inactiveDurationSec,
 			ChanStatusFlags:     ch.ChanStatusFlags,
 			LocalDisabled:       localDisabled,
 			Private:             ch.Private,
@@ -3087,6 +3109,8 @@ type ChannelInfo struct {
 	PeerAlias           string                   `json:"peer_alias"`
 	Initiator           bool                     `json:"initiator"`
 	Active              bool                     `json:"active"`
+	InactiveSinceUnix   int64                    `json:"inactive_since_unix,omitempty"`
+	InactiveDurationSec int64                    `json:"inactive_duration_sec,omitempty"`
 	ChanStatusFlags     string                   `json:"chan_status_flags,omitempty"`
 	LocalDisabled       bool                     `json:"local_disabled,omitempty"`
 	Private             bool                     `json:"private"`
@@ -3108,6 +3132,50 @@ type ChannelInfo struct {
 	ForwardFee7dSat     *int64                   `json:"forward_fee_7d_sat,omitempty"`
 	RebalFee7dSat       *int64                   `json:"rebal_fee_7d_sat,omitempty"`
 	ProfitFee7dSat      *int64                   `json:"profit_fee_7d_sat,omitempty"`
+}
+
+func normalizeChannelPointKey(point string) string {
+	return strings.ToLower(strings.TrimSpace(point))
+}
+
+func (c *Client) snapshotInactiveSince(channels []*lnrpc.Channel, now time.Time) map[string]time.Time {
+	c.channelStateMu.Lock()
+	defer c.channelStateMu.Unlock()
+
+	if c.channelInactive == nil {
+		c.channelInactive = make(map[string]time.Time)
+	}
+
+	seen := make(map[string]struct{}, len(channels))
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		key := normalizeChannelPointKey(ch.ChannelPoint)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		if ch.Active {
+			delete(c.channelInactive, key)
+			continue
+		}
+		if _, ok := c.channelInactive[key]; !ok {
+			c.channelInactive[key] = now
+		}
+	}
+
+	for key := range c.channelInactive {
+		if _, ok := seen[key]; !ok {
+			delete(c.channelInactive, key)
+		}
+	}
+
+	out := make(map[string]time.Time, len(c.channelInactive))
+	for key, ts := range c.channelInactive {
+		out[key] = ts
+	}
+	return out
 }
 
 type PeerInfo struct {
