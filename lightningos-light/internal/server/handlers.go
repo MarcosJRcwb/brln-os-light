@@ -1443,6 +1443,9 @@ func (s *Server) handleLNChannels(w http.ResponseWriter, r *http.Request) {
 	if s.db != nil {
 		dbCtx, dbCancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer dbCancel()
+		if err := s.applyPersistedChannelDowntime(dbCtx, channels); err != nil {
+			s.logger.Printf("channel downtime persistence sync failed: %v", err)
+		}
 		rows, err := s.db.Query(dbCtx, `
       select channel_id, class_label
       from autofee_state

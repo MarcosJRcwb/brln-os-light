@@ -148,6 +148,9 @@ func (s *Server) initNotifications() {
 	}
 
 	s.db = pool
+	if err := s.ensureChannelDowntimeSchema(ctx); err != nil {
+		s.logger.Printf("channel downtime persistence disabled: failed to init schema: %v", err)
+	}
 	s.notifier = NewNotifier(pool, s.lnd, s.logger)
 	s.notifierErr = ""
 	s.notifier.Start()
