@@ -1037,6 +1037,12 @@ func (n *Notifier) runInvoices() {
 
 			if pay, err := n.lookupPaymentByHash(ctx, hash); err == nil && pay != nil {
 				if n.isSelfPayment(ctx, pay.PaymentRequest, pay) {
+					if shouldSuppressExternalFailedRebalance(pay.Status.String(), memo) {
+						_ = n.removeRebalanceInvoice(ctx, hash)
+						_ = n.setCursor(ctx, "invoice_settle_index", strconv.FormatUint(settleIndex, 10))
+						cancel()
+						continue
+					}
 					rebalanceEvt := n.rebalanceEvent(ctx, pay, occurredAt)
 					if _, err := n.upsertNotification(ctx, fmt.Sprintf("payment:%s", hash), rebalanceEvt); err == nil {
 						_ = n.setCursor(ctx, "invoice_settle_index", strconv.FormatUint(settleIndex, 10))
@@ -1101,8 +1107,6 @@ func (n *Notifier) runPayments() {
 				isRebalance = true
 			}
 			cancel()
-			// Keep failed rebalance attempts as notifications so Autofee can use
-			// them as weak pressure signals without treating them as economic cost.
 		}
 		peerPubkey := ""
 		peerAlias := ""
@@ -1128,6 +1132,14 @@ func (n *Notifier) runPayments() {
 					}
 				}
 			}
+		}
+		if isRebalance && shouldSuppressExternalFailedRebalance(status, memo) {
+			// Ignore failed self-payments from external tools in notifications/telegram
+			// and clean any invoice record persisted before payment classification.
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = n.removeRebalanceInvoice(cleanupCtx, paymentHash)
+			cleanupCancel()
+			return
 		}
 		if peerAlias == "" && peerPubkey != "" {
 			peerAlias = n.lookupNodeAlias(peerPubkey)
@@ -2458,6 +2470,34 @@ func (n *Notifier) isSelfPayment(ctx context.Context, paymentRequest string, pay
 		return false
 	}
 	return strings.EqualFold(lastHop, pubkey)
+}
+
+func isManagedRebalanceMemo(memo string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(memo))
+	if !strings.HasPrefix(normalized, "rebalance:") {
+		return false
+	}
+	parts := strings.Split(normalized, ":")
+	if len(parts) != 4 {
+		return false
+	}
+	if _, err := strconv.ParseInt(parts[1], 10, 64); err != nil {
+		return false
+	}
+	if _, err := strconv.ParseUint(parts[2], 10, 64); err != nil {
+		return false
+	}
+	if _, err := strconv.ParseUint(parts[3], 10, 64); err != nil {
+		return false
+	}
+	return true
+}
+
+func shouldSuppressExternalFailedRebalance(status string, memo string) bool {
+	if strings.EqualFold(strings.TrimSpace(status), "SUCCEEDED") {
+		return false
+	}
+	return !isManagedRebalanceMemo(memo)
 }
 
 func nullableInt(value int64) any {
