@@ -93,37 +93,44 @@ type RebalanceConfig struct {
 }
 
 type RebalanceOverview struct {
-	AutoEnabled                 bool                  `json:"auto_enabled"`
-	LastScanAt                  string                `json:"last_scan_at,omitempty"`
-	LastScanStatus              string                `json:"last_scan_status,omitempty"`
-	LastScanDetail              string                `json:"last_scan_detail,omitempty"`
-	LastScanCandidates          int                   `json:"last_scan_candidates"`
-	LastScanRemainingBudgetSat  int64                 `json:"last_scan_remaining_budget_sat"`
-	LastScanReasons             map[string]int        `json:"last_scan_reasons,omitempty"`
-	LastScanTopScoreSat         int64                 `json:"last_scan_top_score_sat"`
-	LastScanProfitSkipped       int                   `json:"last_scan_profit_skipped"`
-	LastScanQueued              int                   `json:"last_scan_queued"`
-	LastScanSkipped             []RebalanceSkipDetail `json:"last_scan_skipped,omitempty"`
-	DailyBudgetSat              int64                 `json:"daily_budget_sat"`
-	DailySpentSat               int64                 `json:"daily_spent_sat"`
-	DailySpentAutoSat           int64                 `json:"daily_spent_auto_sat"`
-	DailySpentManualSat         int64                 `json:"daily_spent_manual_sat"`
-	LiveCostSat                 int64                 `json:"live_cost_sat"`
-	Effectiveness7d             float64               `json:"effectiveness_7d"`
-	ROI7d                       float64               `json:"roi_7d"`
-	SuccessAttempts24h          int64                 `json:"success_attempts_24h"`
-	SuccessAmount24hSat         int64                 `json:"success_amount_24h_sat"`
-	SuccessAvgAmount24hSat      int64                 `json:"success_avg_amount_24h_sat"`
-	SuccessBelowMinAttempts24h  int64                 `json:"success_below_min_attempts_24h"`
-	SuccessBelowMinAmount24hSat int64                 `json:"success_below_min_amount_24h_sat"`
-	SuccessBelowMinRate24h      float64               `json:"success_below_min_rate_24h"`
-	PaybackRevenueSat           int64                 `json:"payback_revenue_sat"`
-	PaybackRevenueRebalancedSat int64                 `json:"payback_revenue_rebalanced_sat"`
-	PaybackCostSat              int64                 `json:"payback_cost_sat"`
-	PaybackProgress             float64               `json:"payback_progress"`
-	PaybackProgressRebalanced   float64               `json:"payback_progress_rebalanced"`
-	EligibleSources             int                   `json:"eligible_sources"`
-	TargetsNeeding              int                   `json:"targets_needing"`
+	AutoEnabled                   bool                  `json:"auto_enabled"`
+	LastScanAt                    string                `json:"last_scan_at,omitempty"`
+	LastScanStatus                string                `json:"last_scan_status,omitempty"`
+	LastScanDetail                string                `json:"last_scan_detail,omitempty"`
+	LastScanCandidates            int                   `json:"last_scan_candidates"`
+	LastScanRemainingBudgetSat    int64                 `json:"last_scan_remaining_budget_sat"`
+	LastScanReasons               map[string]int        `json:"last_scan_reasons,omitempty"`
+	LastScanTopScoreSat           int64                 `json:"last_scan_top_score_sat"`
+	LastScanProfitSkipped         int                   `json:"last_scan_profit_skipped"`
+	LastScanQueued                int                   `json:"last_scan_queued"`
+	LastScanSkipped               []RebalanceSkipDetail `json:"last_scan_skipped,omitempty"`
+	DailyBudgetSat                int64                 `json:"daily_budget_sat"`
+	DailySpentSat                 int64                 `json:"daily_spent_sat"`
+	DailySpentAutoSat             int64                 `json:"daily_spent_auto_sat"`
+	DailySpentManualSat           int64                 `json:"daily_spent_manual_sat"`
+	LiveCostSat                   int64                 `json:"live_cost_sat"`
+	Effectiveness7d               float64               `json:"effectiveness_7d"`
+	ROI7d                         float64               `json:"roi_7d"`
+	SuccessAttempts24h            int64                 `json:"success_attempts_24h"`
+	SuccessAmount24hSat           int64                 `json:"success_amount_24h_sat"`
+	SuccessAvgAmount24hSat        int64                 `json:"success_avg_amount_24h_sat"`
+	SuccessBelowMinAttempts24h    int64                 `json:"success_below_min_attempts_24h"`
+	SuccessBelowMinAmount24hSat   int64                 `json:"success_below_min_amount_24h_sat"`
+	SuccessBelowMinRate24h        float64               `json:"success_below_min_rate_24h"`
+	PaybackRevenueSat             int64                 `json:"payback_revenue_sat"`
+	PaybackRevenueRebalancedSat   int64                 `json:"payback_revenue_rebalanced_sat"`
+	PaybackCostSat                int64                 `json:"payback_cost_sat"`
+	PaybackProgress               float64               `json:"payback_progress"`
+	PaybackProgressRebalanced     float64               `json:"payback_progress_rebalanced"`
+	EligibleSources               int                   `json:"eligible_sources"`
+	TargetsNeeding                int                   `json:"targets_needing"`
+	MppShadowJobs24h              int64                 `json:"mpp_shadow_jobs_24h"`
+	MppShadowPlanReady24h         int64                 `json:"mpp_shadow_plan_ready_24h"`
+	MppShadowPlannedSat24h        int64                 `json:"mpp_shadow_planned_sat_24h"`
+	MppShadowActualSentSat24h     int64                 `json:"mpp_shadow_actual_sent_sat_24h"`
+	MppShadowSuccessJobs24h       int64                 `json:"mpp_shadow_success_jobs_24h"`
+	MppShadowAvgPlannedShards24h  float64               `json:"mpp_shadow_avg_planned_shards_24h"`
+	MppShadowAvgActualAttempts24h float64               `json:"mpp_shadow_avg_actual_attempts_24h"`
 }
 
 type RebalanceSkipDetail struct {
@@ -256,6 +263,30 @@ type rebalanceAttemptTelemetry24h struct {
 	SuccessBelowMinAttempts  int64
 	SuccessBelowMinAmountSat int64
 	SuccessBelowMinRate      float64
+}
+
+type mppShadowShard struct {
+	SourceChannelID uint64
+	AmountSat       int64
+}
+
+type mppShadowPlan struct {
+	EligibleSources     int
+	PlannedSources      int
+	PlannedShards       int
+	PlannedTotalSat     int64
+	PlannedRemainderSat int64
+	Shards              []mppShadowShard
+}
+
+type mppShadowTelemetry24h struct {
+	Jobs              int64
+	PlanReadyJobs     int64
+	PlannedSat        int64
+	ActualSentSat     int64
+	SuccessJobs       int64
+	AvgPlannedShards  float64
+	AvgActualAttempts float64
 }
 
 type paybackTotals7d struct {
@@ -648,6 +679,114 @@ func effectiveStartAmountSat(cfg RebalanceConfig) int64 {
 		return v
 	}
 	return 0
+}
+
+func shouldRunMppExecute(cfg RebalanceConfig, jobSource string) bool {
+	if !cfg.MppEnabled {
+		return false
+	}
+	if cfg.MppAutoOnly && strings.TrimSpace(strings.ToLower(jobSource)) != "auto" {
+		return false
+	}
+	return true
+}
+
+func shouldRunMppShadow(cfg RebalanceConfig, jobSource string) bool {
+	return shouldRunMppExecute(cfg, jobSource)
+}
+
+func buildMppShadowPlan(targetAmountSat int64, sources []RebalanceChannel, cfg RebalanceConfig) mppShadowPlan {
+	plan := mppShadowPlan{}
+	if targetAmountSat <= 0 {
+		return plan
+	}
+
+	maxShards := cfg.MppMaxShards
+	if maxShards <= 0 {
+		maxShards = 1
+	}
+	minShardSat := cfg.MppMinShardSat
+	if minShardSat <= 0 {
+		minShardSat = 1
+	}
+
+	capacityLeft := make([]int64, len(sources))
+	for i := range sources {
+		cap := sources[i].MaxSourceSat
+		if cap < 0 {
+			cap = 0
+		}
+		capacityLeft[i] = cap
+		if cap >= minShardSat {
+			plan.EligibleSources++
+		}
+	}
+
+	remaining := targetAmountSat
+	for len(plan.Shards) < maxShards && remaining >= minShardSat {
+		shardsLeft := maxShards - len(plan.Shards)
+		desired := remaining / int64(shardsLeft)
+		if remaining%int64(shardsLeft) != 0 {
+			desired++
+		}
+		if desired < minShardSat {
+			desired = minShardSat
+		}
+		if desired > remaining {
+			desired = remaining
+		}
+
+		chosenIdx := -1
+		for i, cap := range capacityLeft {
+			if cap >= desired {
+				chosenIdx = i
+				break
+			}
+		}
+		if chosenIdx < 0 {
+			bestCap := int64(0)
+			for i, cap := range capacityLeft {
+				if cap >= minShardSat && cap > bestCap {
+					bestCap = cap
+					chosenIdx = i
+				}
+			}
+			if chosenIdx < 0 {
+				break
+			}
+			if desired > capacityLeft[chosenIdx] {
+				desired = capacityLeft[chosenIdx]
+			}
+			if desired < minShardSat {
+				break
+			}
+		}
+
+		if desired <= 0 || desired > capacityLeft[chosenIdx] {
+			break
+		}
+		capacityLeft[chosenIdx] -= desired
+		remaining -= desired
+		plan.Shards = append(plan.Shards, mppShadowShard{
+			SourceChannelID: sources[chosenIdx].ChannelID,
+			AmountSat:       desired,
+		})
+		plan.PlannedTotalSat += desired
+	}
+
+	sourceSet := map[uint64]struct{}{}
+	for _, shard := range plan.Shards {
+		if shard.AmountSat <= 0 {
+			continue
+		}
+		sourceSet[shard.SourceChannelID] = struct{}{}
+	}
+	plan.PlannedSources = len(sourceSet)
+	plan.PlannedShards = len(plan.Shards)
+	if remaining > 0 {
+		plan.PlannedRemainderSat = remaining
+	}
+	return plan
 }
 
 func effectiveConfigForTarget(cfg RebalanceConfig, setting channelSetting) RebalanceConfig {
@@ -1254,6 +1393,17 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		delete(s.jobCancel, jobID)
 		s.mu.Unlock()
 	}()
+	shadowRecorded := false
+	defer func() {
+		if !shadowRecorded {
+			return
+		}
+		shadowCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.finalizeMppShadowPlan(shadowCtx, jobID); err != nil && s.logger != nil {
+			s.logger.Printf("rebalance mpp shadow finalize failed: job=%d err=%v", jobID, err)
+		}
+	}()
 
 	if !s.acquireSem(ctx) {
 		s.finishJob(jobID, "failed", "no worker available")
@@ -1351,6 +1501,28 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 	}
 
 	sources := filterSources(channelSnapshots, targetChannelID)
+	if shouldRunMppShadow(feeCfg, jobSource) {
+		shadowPlan := buildMppShadowPlan(amount, sources, feeCfg)
+		if err := s.insertMppShadowPlan(ctx, jobID, targetChannelID, jobSource, feeCfg, amount, shadowPlan); err != nil {
+			if s.logger != nil {
+				s.logger.Printf("rebalance mpp shadow insert failed: job=%d err=%v", jobID, err)
+			}
+		} else {
+			shadowRecorded = true
+			if s.logger != nil {
+				s.logger.Printf(
+					"rebalance mpp shadow: job=%d source=%s planned_shards=%d planned_total=%d remainder=%d eligible_sources=%d planned_sources=%d",
+					jobID,
+					jobSource,
+					shadowPlan.PlannedShards,
+					shadowPlan.PlannedTotalSat,
+					shadowPlan.PlannedRemainderSat,
+					shadowPlan.EligibleSources,
+					shadowPlan.PlannedSources,
+				)
+			}
+		}
+	}
 	if len(sources) == 0 {
 		s.finishJob(jobID, "failed", "no eligible sources")
 		return
@@ -2341,6 +2513,141 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		}
 
 		return false, false
+	}
+
+	runMppPrepass := func() (bool, bool) {
+		if !shouldRunMppExecute(feeCfg, jobSource) {
+			return false, false
+		}
+		if remaining <= 0 {
+			return true, false
+		}
+
+		allowedSources := make([]RebalanceChannel, 0, len(sources))
+		sourceByID := make(map[uint64]RebalanceChannel, len(sources))
+		sourceRemaining := make(map[uint64]int64, len(sources))
+		for _, source := range sources {
+			if source.MaxSourceSat <= 0 {
+				continue
+			}
+			if jobSource == "auto" {
+				if stat, ok := pairStats[source.ChannelID]; ok {
+					if !stat.LastFailAt.IsZero() && time.Since(stat.LastFailAt) <= pairFailTTL && (stat.LastSuccessAt.IsZero() || stat.LastSuccessAt.Before(stat.LastFailAt)) {
+						continue
+					}
+				}
+			}
+			allowedSources = append(allowedSources, source)
+			sourceByID[source.ChannelID] = source
+			sourceRemaining[source.ChannelID] = source.MaxSourceSat
+		}
+		if len(allowedSources) == 0 {
+			return false, false
+		}
+
+		plan := buildMppShadowPlan(remaining, allowedSources, feeCfg)
+		if plan.PlannedShards <= 0 {
+			return false, false
+		}
+
+		roundTimeoutSec := feeCfg.MppRoundTimeoutSec
+		if roundTimeoutSec <= 0 {
+			roundTimeoutSec = 20
+		}
+		roundDeadline := time.Now().Add(time.Duration(roundTimeoutSec) * time.Second)
+		parallelism := feeCfg.MppParallelism
+		if parallelism <= 0 {
+			parallelism = 1
+		}
+
+		attemptedShards := 0
+		succeededShards := 0
+		batchCounter := 0
+		for _, shard := range plan.Shards {
+			if remaining <= 0 {
+				break
+			}
+			if ctx.Err() != nil {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					finishOnTimeout()
+				} else {
+					s.finishJob(jobID, "cancelled", "cancelled")
+				}
+				return false, true
+			}
+			if time.Now().After(roundDeadline) {
+				break
+			}
+
+			source, ok := sourceByID[shard.SourceChannelID]
+			if !ok {
+				continue
+			}
+			capLeft := sourceRemaining[source.ChannelID]
+			if capLeft <= 0 {
+				continue
+			}
+			amountTry := shard.AmountSat
+			if amountTry > remaining {
+				amountTry = remaining
+			}
+			if amountTry > capLeft {
+				amountTry = capLeft
+			}
+			if amountTry <= 0 {
+				continue
+			}
+			if minExecuteSat > 0 && amountTry < minExecuteSat {
+				continue
+			}
+
+			attemptedShards++
+			success, fatal, routeMax, timedOut, _, amountSent := attemptPayment(source, amountTry, 0, true)
+			if fatal {
+				return false, true
+			}
+			if timedOut {
+				break
+			}
+			if success {
+				succeededShards++
+				routeCap := int64(0)
+				sourceCap := sourceRemaining[source.ChannelID]
+				if applySuccess(amountSent, routeMax, &routeCap, &sourceCap) {
+					sourceRemaining[source.ChannelID] = sourceCap
+					if s.logger != nil {
+						s.logger.Printf("rebalance mpp execute: job=%d completed via mpp prepass shards=%d/%d", jobID, succeededShards, attemptedShards)
+					}
+					return true, false
+				}
+				sourceRemaining[source.ChannelID] = sourceCap
+			}
+
+			batchCounter++
+			if batchCounter >= parallelism {
+				batchCounter = 0
+				if time.Now().After(roundDeadline) {
+					break
+				}
+			}
+		}
+
+		if s.logger != nil {
+			s.logger.Printf(
+				"rebalance mpp execute: job=%d prepass attempted_shards=%d succeeded_shards=%d remaining=%d (fallback legacy)",
+				jobID,
+				attemptedShards,
+				succeededShards,
+				remaining,
+			)
+		}
+		return false, false
+	}
+
+	if finished, fatal := runMppPrepass(); fatal {
+		return
+	} else if finished {
+		return
 	}
 
 	passDelay := 5 * time.Second
@@ -3681,6 +3988,32 @@ create table if not exists rebalance_attempts (
   finished_at timestamptz
 );
 
+create table if not exists rebalance_mpp_shadow (
+  job_id bigint primary key references rebalance_jobs(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  target_channel_id bigint not null,
+  job_source text not null,
+  mpp_enabled boolean not null default false,
+  mpp_auto_only boolean not null default false,
+  max_shards integer not null default 0,
+  parallelism integer not null default 0,
+  min_shard_sat bigint not null default 0,
+  round_timeout_sec integer not null default 0,
+  target_amount_sat bigint not null default 0,
+  eligible_sources integer not null default 0,
+  planned_sources integer not null default 0,
+  planned_shards integer not null default 0,
+  planned_total_sat bigint not null default 0,
+  planned_remainder_sat bigint not null default 0,
+  actual_status text,
+  actual_attempts integer not null default 0,
+  actual_success_attempts integer not null default 0,
+  actual_sent_sat bigint not null default 0,
+  actual_fee_sat bigint not null default 0,
+  actual_any_success boolean not null default false
+);
+
 create table if not exists rebalance_pair_stats (
   source_channel_id bigint not null,
   target_channel_id bigint not null,
@@ -3713,6 +4046,8 @@ create index if not exists rebalance_jobs_status_idx on rebalance_jobs (status);
 create index if not exists rebalance_jobs_created_idx on rebalance_jobs (created_at desc);
 create index if not exists rebalance_attempts_job_idx on rebalance_attempts (job_id);
 create index if not exists rebalance_attempts_status_idx on rebalance_attempts (status);
+create index if not exists rebalance_mpp_shadow_created_idx on rebalance_mpp_shadow (created_at desc);
+create index if not exists rebalance_mpp_shadow_success_idx on rebalance_mpp_shadow (actual_any_success, created_at desc);
 create index if not exists rebalance_pair_stats_fail_idx on rebalance_pair_stats (last_fail_at desc);
 create index if not exists rebalance_pair_stats_success_idx on rebalance_pair_stats (last_success_at desc);
 create index if not exists notifications_channel_id_idx on notifications (channel_id);
@@ -4310,6 +4645,113 @@ where coalesce(finished_at, started_at) >= $1
 	return metrics, nil
 }
 
+func (s *RebalanceService) insertMppShadowPlan(ctx context.Context, jobID int64, targetChannelID uint64, jobSource string, cfg RebalanceConfig, targetAmountSat int64, plan mppShadowPlan) error {
+	if s.db == nil || jobID <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, `
+insert into rebalance_mpp_shadow (
+  job_id, target_channel_id, job_source,
+  mpp_enabled, mpp_auto_only, max_shards, parallelism, min_shard_sat, round_timeout_sec,
+  target_amount_sat, eligible_sources, planned_sources, planned_shards, planned_total_sat, planned_remainder_sat, updated_at
+) values (
+  $1,$2,$3,
+  $4,$5,$6,$7,$8,$9,
+  $10,$11,$12,$13,$14,$15,now()
+)
+on conflict (job_id) do update set
+  target_channel_id = excluded.target_channel_id,
+  job_source = excluded.job_source,
+  mpp_enabled = excluded.mpp_enabled,
+  mpp_auto_only = excluded.mpp_auto_only,
+  max_shards = excluded.max_shards,
+  parallelism = excluded.parallelism,
+  min_shard_sat = excluded.min_shard_sat,
+  round_timeout_sec = excluded.round_timeout_sec,
+  target_amount_sat = excluded.target_amount_sat,
+  eligible_sources = excluded.eligible_sources,
+  planned_sources = excluded.planned_sources,
+  planned_shards = excluded.planned_shards,
+  planned_total_sat = excluded.planned_total_sat,
+  planned_remainder_sat = excluded.planned_remainder_sat,
+  updated_at = now()
+`, jobID, int64(targetChannelID), jobSource,
+		cfg.MppEnabled, cfg.MppAutoOnly, cfg.MppMaxShards, cfg.MppParallelism, cfg.MppMinShardSat, cfg.MppRoundTimeoutSec,
+		targetAmountSat, plan.EligibleSources, plan.PlannedSources, plan.PlannedShards, plan.PlannedTotalSat, plan.PlannedRemainderSat)
+	return err
+}
+
+func (s *RebalanceService) finalizeMppShadowPlan(ctx context.Context, jobID int64) error {
+	if s.db == nil || jobID <= 0 {
+		return nil
+	}
+	var status string
+	if err := s.db.QueryRow(ctx, `select status from rebalance_jobs where id=$1`, jobID).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+
+	var attempts int64
+	var successAttempts int64
+	var sentSat int64
+	var feeSat int64
+	if err := s.db.QueryRow(ctx, `
+select
+  count(*) as attempts,
+  coalesce(sum(case when status='succeeded' then 1 else 0 end), 0) as success_attempts,
+  coalesce(sum(case when status='succeeded' then amount_sat else 0 end), 0) as sent_sat,
+  coalesce(sum(case when status='succeeded' then fee_paid_sat else 0 end), 0) as fee_sat
+from rebalance_attempts
+where job_id=$1
+`, jobID).Scan(&attempts, &successAttempts, &sentSat, &feeSat); err != nil {
+		return err
+	}
+
+	anySuccess := successAttempts > 0
+	_, err := s.db.Exec(ctx, `
+update rebalance_mpp_shadow
+set actual_status=$2,
+  actual_attempts=$3,
+  actual_success_attempts=$4,
+  actual_sent_sat=$5,
+  actual_fee_sat=$6,
+  actual_any_success=$7,
+  updated_at=now()
+where job_id=$1
+`, jobID, status, attempts, successAttempts, sentSat, feeSat, anySuccess)
+	return err
+}
+
+func (s *RebalanceService) fetchMppShadowTelemetry24h(ctx context.Context) (mppShadowTelemetry24h, error) {
+	metrics := mppShadowTelemetry24h{}
+	if s.db == nil {
+		return metrics, nil
+	}
+	err := s.db.QueryRow(ctx, `
+select
+  count(*) as jobs,
+  coalesce(sum(case when planned_shards > 0 then 1 else 0 end), 0) as plan_ready_jobs,
+  coalesce(sum(planned_total_sat), 0) as planned_sat,
+  coalesce(sum(actual_sent_sat), 0) as actual_sent_sat,
+  coalesce(sum(case when actual_any_success then 1 else 0 end), 0) as success_jobs,
+  coalesce(avg(case when planned_shards > 0 then planned_shards::double precision else null end), 0) as avg_planned_shards,
+  coalesce(avg(case when actual_attempts > 0 then actual_attempts::double precision else null end), 0) as avg_actual_attempts
+from rebalance_mpp_shadow
+where created_at >= now() - interval '24 hours'
+`).Scan(
+		&metrics.Jobs,
+		&metrics.PlanReadyJobs,
+		&metrics.PlannedSat,
+		&metrics.ActualSentSat,
+		&metrics.SuccessJobs,
+		&metrics.AvgPlannedShards,
+		&metrics.AvgActualAttempts,
+	)
+	return metrics, err
+}
+
 func (s *RebalanceService) insertJob(ctx context.Context, target *lndclient.ChannelInfo, source string, reason string, targetPct float64, amount int64) (int64, error) {
 	if s.db == nil {
 		return 0, errors.New("db unavailable")
@@ -4465,6 +4907,7 @@ where type='rebalance' and occurred_at >= now() - interval '1 day'
 	paybackProgress := 0.0
 	paybackProgressRebalanced := 0.0
 	attemptTelemetry := rebalanceAttemptTelemetry24h{}
+	mppShadowTelemetry := mppShadowTelemetry24h{}
 	var successCount int64
 	var totalCount int64
 	_ = s.db.QueryRow(ctx, `
@@ -4501,6 +4944,9 @@ where report_date >= current_date - interval '6 days'
 	if telemetry, err := s.fetchAttemptTelemetry24h(ctx, effectiveMinExecuteSat(cfg)); err == nil {
 		attemptTelemetry = telemetry
 	}
+	if telemetry, err := s.fetchMppShadowTelemetry24h(ctx); err == nil {
+		mppShadowTelemetry = telemetry
+	}
 
 	eligibleSources := 0
 	targetsNeeding := 0
@@ -4525,36 +4971,43 @@ where report_date >= current_date - interval '6 days'
 	s.mu.Unlock()
 
 	overview := RebalanceOverview{
-		AutoEnabled:                 cfg.AutoEnabled,
-		DailyBudgetSat:              budget,
-		DailySpentSat:               spent,
-		DailySpentAutoSat:           spentAuto,
-		DailySpentManualSat:         spentManual,
-		LiveCostSat:                 liveCost,
-		Effectiveness7d:             effectiveness,
-		ROI7d:                       roi,
-		SuccessAttempts24h:          attemptTelemetry.SuccessAttempts,
-		SuccessAmount24hSat:         attemptTelemetry.SuccessAmountSat,
-		SuccessAvgAmount24hSat:      attemptTelemetry.SuccessAvgAmountSat,
-		SuccessBelowMinAttempts24h:  attemptTelemetry.SuccessBelowMinAttempts,
-		SuccessBelowMinAmount24hSat: attemptTelemetry.SuccessBelowMinAmountSat,
-		SuccessBelowMinRate24h:      attemptTelemetry.SuccessBelowMinRate,
-		PaybackRevenueSat:           paybackRevenue,
-		PaybackRevenueRebalancedSat: paybackRevenueRebalanced,
-		PaybackCostSat:              paybackCost,
-		PaybackProgress:             paybackProgress,
-		PaybackProgressRebalanced:   paybackProgressRebalanced,
-		LastScanStatus:              lastScanStatus,
-		LastScanDetail:              lastScanDetail,
-		LastScanCandidates:          lastScanCandidates,
-		LastScanRemainingBudgetSat:  lastScanRemainingBudgetSat,
-		LastScanReasons:             lastScanReasons,
-		LastScanTopScoreSat:         lastScanTopScore,
-		LastScanProfitSkipped:       lastScanProfitSkipped,
-		LastScanQueued:              lastScanQueued,
-		LastScanSkipped:             lastScanSkipped,
-		EligibleSources:             eligibleSources,
-		TargetsNeeding:              targetsNeeding,
+		AutoEnabled:                   cfg.AutoEnabled,
+		DailyBudgetSat:                budget,
+		DailySpentSat:                 spent,
+		DailySpentAutoSat:             spentAuto,
+		DailySpentManualSat:           spentManual,
+		LiveCostSat:                   liveCost,
+		Effectiveness7d:               effectiveness,
+		ROI7d:                         roi,
+		SuccessAttempts24h:            attemptTelemetry.SuccessAttempts,
+		SuccessAmount24hSat:           attemptTelemetry.SuccessAmountSat,
+		SuccessAvgAmount24hSat:        attemptTelemetry.SuccessAvgAmountSat,
+		SuccessBelowMinAttempts24h:    attemptTelemetry.SuccessBelowMinAttempts,
+		SuccessBelowMinAmount24hSat:   attemptTelemetry.SuccessBelowMinAmountSat,
+		SuccessBelowMinRate24h:        attemptTelemetry.SuccessBelowMinRate,
+		PaybackRevenueSat:             paybackRevenue,
+		PaybackRevenueRebalancedSat:   paybackRevenueRebalanced,
+		PaybackCostSat:                paybackCost,
+		PaybackProgress:               paybackProgress,
+		PaybackProgressRebalanced:     paybackProgressRebalanced,
+		LastScanStatus:                lastScanStatus,
+		LastScanDetail:                lastScanDetail,
+		LastScanCandidates:            lastScanCandidates,
+		LastScanRemainingBudgetSat:    lastScanRemainingBudgetSat,
+		LastScanReasons:               lastScanReasons,
+		LastScanTopScoreSat:           lastScanTopScore,
+		LastScanProfitSkipped:         lastScanProfitSkipped,
+		LastScanQueued:                lastScanQueued,
+		LastScanSkipped:               lastScanSkipped,
+		EligibleSources:               eligibleSources,
+		TargetsNeeding:                targetsNeeding,
+		MppShadowJobs24h:              mppShadowTelemetry.Jobs,
+		MppShadowPlanReady24h:         mppShadowTelemetry.PlanReadyJobs,
+		MppShadowPlannedSat24h:        mppShadowTelemetry.PlannedSat,
+		MppShadowActualSentSat24h:     mppShadowTelemetry.ActualSentSat,
+		MppShadowSuccessJobs24h:       mppShadowTelemetry.SuccessJobs,
+		MppShadowAvgPlannedShards24h:  mppShadowTelemetry.AvgPlannedShards,
+		MppShadowAvgActualAttempts24h: mppShadowTelemetry.AvgActualAttempts,
 	}
 	if !lastScan.IsZero() {
 		overview.LastScanAt = lastScan.UTC().Format(time.RFC3339)

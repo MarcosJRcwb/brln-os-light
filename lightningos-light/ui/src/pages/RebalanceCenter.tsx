@@ -87,6 +87,13 @@ type RebalanceOverview = {
   payback_cost_sat: number
   payback_progress: number
   payback_progress_rebalanced: number
+  mpp_shadow_jobs_24h?: number
+  mpp_shadow_plan_ready_24h?: number
+  mpp_shadow_planned_sat_24h?: number
+  mpp_shadow_actual_sent_sat_24h?: number
+  mpp_shadow_success_jobs_24h?: number
+  mpp_shadow_avg_planned_shards_24h?: number
+  mpp_shadow_avg_actual_attempts_24h?: number
 }
 
 type RebalanceScanSkip = {
@@ -1083,6 +1090,37 @@ export default function RebalanceCenter() {
               {overview.auto_enabled ? t('common.enabled') : t('common.disabled')}
             </p>
             <p className="text-xs text-fog/50">{t('rebalanceCenter.overview.scanInterval', { value: config?.scan_interval_sec || '-' })}</p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.splitMinStatus', { value: config?.min_split_enabled ? t('common.enabled') : t('common.disabled') })}
+            </p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.mppStatus', {
+                value: config?.mpp_enabled ? t('common.enabled') : t('common.disabled'),
+                scope: config?.mpp_auto_only
+                  ? t('rebalanceCenter.overview.mppScopeAutoOnly')
+                  : t('rebalanceCenter.overview.mppScopeAllJobs')
+              })}
+            </p>
+            {config?.mpp_enabled && (
+              <div className="mt-2 border-t border-white/10 pt-2 space-y-1">
+                <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.mppMetrics24h')}</p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppJobs24h', { value: formatter.format(overview.mpp_shadow_jobs_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppPlanReady24h', { value: formatter.format(overview.mpp_shadow_plan_ready_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppSuccessJobs24h', { value: formatter.format(overview.mpp_shadow_success_jobs_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppPlannedSat24h', { value: formatSats(overview.mpp_shadow_planned_sat_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppActualSentSat24h', { value: formatSats(overview.mpp_shadow_actual_sent_sat_24h ?? 0) })}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}

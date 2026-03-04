@@ -226,3 +226,86 @@ func TestNormalizeRebalanceConfigClampsMppBounds(t *testing.T) {
 		t.Fatalf("expected positive MppRoundTimeoutSec preserved, got %d", got.MppRoundTimeoutSec)
 	}
 }
+
+func TestShouldRunMppShadowRules(t *testing.T) {
+	cfg := RebalanceConfig{}
+	if shouldRunMppExecute(cfg, "auto") {
+		t.Fatalf("expected execute disabled when mpp_enabled=false")
+	}
+	if shouldRunMppShadow(cfg, "auto") {
+		t.Fatalf("expected shadow disabled when mpp_enabled=false")
+	}
+
+	cfg.MppEnabled = true
+	cfg.MppAutoOnly = false
+	if !shouldRunMppExecute(cfg, "manual") {
+		t.Fatalf("expected execute enabled for manual when auto-only=false")
+	}
+	if !shouldRunMppShadow(cfg, "manual") {
+		t.Fatalf("expected shadow enabled for manual when auto-only=false")
+	}
+
+	cfg.MppAutoOnly = true
+	if shouldRunMppExecute(cfg, "manual") {
+		t.Fatalf("expected execute disabled for manual when auto-only=true")
+	}
+	if shouldRunMppShadow(cfg, "manual") {
+		t.Fatalf("expected shadow disabled for manual when auto-only=true")
+	}
+	if !shouldRunMppExecute(cfg, "auto") {
+		t.Fatalf("expected execute enabled for auto when auto-only=true")
+	}
+	if !shouldRunMppShadow(cfg, "auto") {
+		t.Fatalf("expected shadow enabled for auto when auto-only=true")
+	}
+}
+
+func TestBuildMppShadowPlanRespectsShardFloorAndCapacity(t *testing.T) {
+	cfg := RebalanceConfig{
+		MppMaxShards:   3,
+		MppMinShardSat: 1000,
+	}
+	sources := []RebalanceChannel{
+		{ChannelID: 11, MaxSourceSat: 12000},
+		{ChannelID: 22, MaxSourceSat: 10000},
+		{ChannelID: 33, MaxSourceSat: 8000},
+	}
+	plan := buildMppShadowPlan(25000, sources, cfg)
+
+	if plan.PlannedShards <= 0 {
+		t.Fatalf("expected planned shards > 0")
+	}
+	if plan.PlannedShards > cfg.MppMaxShards {
+		t.Fatalf("expected planned shards <= %d, got %d", cfg.MppMaxShards, plan.PlannedShards)
+	}
+	if plan.PlannedTotalSat+plan.PlannedRemainderSat != 25000 {
+		t.Fatalf("expected planned+remainder to equal target, got %d+%d", plan.PlannedTotalSat, plan.PlannedRemainderSat)
+	}
+	for _, shard := range plan.Shards {
+		if shard.AmountSat < cfg.MppMinShardSat {
+			t.Fatalf("expected shard >= min shard (%d), got %d", cfg.MppMinShardSat, shard.AmountSat)
+		}
+	}
+}
+
+func TestBuildMppShadowPlanHandlesInsufficientSourceLiquidity(t *testing.T) {
+	cfg := RebalanceConfig{
+		MppMaxShards:   4,
+		MppMinShardSat: 5000,
+	}
+	sources := []RebalanceChannel{
+		{ChannelID: 1, MaxSourceSat: 4000},
+		{ChannelID: 2, MaxSourceSat: 3000},
+	}
+	plan := buildMppShadowPlan(20000, sources, cfg)
+
+	if plan.EligibleSources != 0 {
+		t.Fatalf("expected no eligible sources, got %d", plan.EligibleSources)
+	}
+	if plan.PlannedShards != 0 || plan.PlannedTotalSat != 0 {
+		t.Fatalf("expected no planned shards/sat, got shards=%d total=%d", plan.PlannedShards, plan.PlannedTotalSat)
+	}
+	if plan.PlannedRemainderSat != 20000 {
+		t.Fatalf("expected full remainder=20000, got %d", plan.PlannedRemainderSat)
+	}
+}

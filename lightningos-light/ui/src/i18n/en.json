@@ -1644,7 +1644,17 @@
         "skipCalc": "Gain {{gain}} · Cost {{cost}} · ROI {{roi}}",
         "skipTarget": "Target {{target}} · Amount {{amount}}",
         "autoMode": "Auto mode",
-        "scanInterval": "Scan: {{value}}s"
+        "scanInterval": "Scan: {{value}}s",
+        "splitMinStatus": "Split min: {{value}}",
+        "mppStatus": "MSPR: {{value}} ({{scope}})",
+        "mppScopeAutoOnly": "auto only",
+        "mppScopeAllJobs": "auto + manual",
+        "mppMetrics24h": "MSPR 24h",
+        "mppJobs24h": "Jobs: {{value}}",
+        "mppPlanReady24h": "Plan ready: {{value}}",
+        "mppSuccessJobs24h": "Jobs with success: {{value}}",
+        "mppPlannedSat24h": "Planned: {{value}}",
+        "mppActualSentSat24h": "Executed: {{value}}"
     },
     "settings": {
       "title": "Rebalance Settings",
