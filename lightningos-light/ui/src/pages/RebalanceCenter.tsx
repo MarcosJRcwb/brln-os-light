@@ -31,6 +31,9 @@ type RebalanceConfig = {
   max_concurrent: number
   min_amount_sat: number
   max_amount_sat: number
+  min_split_enabled: boolean
+  min_probe_sat: number
+  min_execute_sat: number
   fee_ladder_steps: number
   amount_probe_steps: number
   amount_probe_adaptive: boolean
@@ -238,6 +241,11 @@ export default function RebalanceCenter() {
   const formatPct = (value: number) => `${pctFormatter.format(value)}%`
   const formatEconRatio = (value: number) => econRatioFormatter.format(Math.round(value * 100) / 100)
   const formatRoi = (value: number) => (value > 0 && value < 0.01 ? '<0.01' : roiFormatter.format(value))
+  const effectiveExecuteMinSat = (cfg?: RebalanceConfig | null) => {
+    if (!cfg) return 0
+    if (cfg.min_split_enabled && cfg.min_execute_sat > 0) return cfg.min_execute_sat
+    return cfg.min_amount_sat > 0 ? cfg.min_amount_sat : 0
+  }
   const formatTimestamp = (value?: string) => {
     if (!value) return '-'
     const date = new Date(value)
@@ -261,6 +269,9 @@ export default function RebalanceCenter() {
       max_concurrent: cfg.max_concurrent,
       min_amount_sat: cfg.min_amount_sat,
       max_amount_sat: cfg.max_amount_sat,
+      min_split_enabled: cfg.min_split_enabled,
+      min_probe_sat: cfg.min_probe_sat,
+      min_execute_sat: cfg.min_execute_sat,
       fee_ladder_steps: cfg.fee_ladder_steps,
       amount_probe_steps: cfg.amount_probe_steps,
       amount_probe_adaptive: cfg.amount_probe_adaptive,
@@ -463,7 +474,10 @@ export default function RebalanceCenter() {
           attempt_timeout_sec: nextConfig.attempt_timeout_sec || 20,
           rebalance_timeout_sec: nextConfig.rebalance_timeout_sec || 600,
           manual_restart_watch: nextConfig.manual_restart_watch ?? false,
-          mc_half_life_sec: nextConfig.mc_half_life_sec || 0
+          mc_half_life_sec: nextConfig.mc_half_life_sec || 0,
+          min_split_enabled: nextConfig.min_split_enabled ?? false,
+          min_probe_sat: nextConfig.min_probe_sat || 0,
+          min_execute_sat: nextConfig.min_execute_sat || 0
         }
         setServerConfig(normalizedConfig)
         const currentSig = configSignature(configRef.current)
@@ -521,6 +535,9 @@ export default function RebalanceCenter() {
           max_concurrent: config.max_concurrent,
           min_amount_sat: config.min_amount_sat,
           max_amount_sat: config.max_amount_sat,
+          min_split_enabled: config.min_split_enabled,
+          min_probe_sat: config.min_probe_sat,
+          min_execute_sat: config.min_execute_sat,
           fee_ladder_steps: config.fee_ladder_steps,
           amount_probe_steps: config.amount_probe_steps,
           amount_probe_adaptive: config.amount_probe_adaptive,
@@ -957,41 +974,6 @@ export default function RebalanceCenter() {
             <p className="text-xs uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.effectiveness')}</p>
             <p className="text-lg font-semibold text-fog">{formatPct(overview.effectiveness_7d * 100)}</p>
             <p className="text-xs text-fog/50">{t('rebalanceCenter.overview.roi', { value: overview.roi_7d.toFixed(2) })}</p>
-            <p className="text-xs text-fog/50">
-              {t('rebalanceCenter.overview.successAttempts24h', {
-                value: formatter.format(overview.success_attempts_24h ?? 0)
-              })}
-            </p>
-            <p className="text-xs text-fog/50">
-              {t('rebalanceCenter.overview.successAmount24h', {
-                value: formatSats(overview.success_amount_24h_sat ?? 0)
-              })}
-            </p>
-            <p className="text-xs text-fog/50">
-              {t('rebalanceCenter.overview.successAvgAmount24h', {
-                value: formatSats(overview.success_avg_amount_24h_sat ?? 0)
-              })}
-            </p>
-            {(config?.min_amount_sat ?? 0) > 0 && (
-              <>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.belowMinAttempts24h', {
-                    value: formatter.format(overview.success_below_min_attempts_24h ?? 0),
-                    min: formatSats(config?.min_amount_sat ?? 0)
-                  })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.belowMinAmount24h', {
-                    value: formatSats(overview.success_below_min_amount_24h_sat ?? 0)
-                  })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.belowMinRate24h', {
-                    value: formatPct((overview.success_below_min_rate_24h ?? 0) * 100)
-                  })}
-                </p>
-              </>
-            )}
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 space-y-1">
                 <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.paybackGroupRebalanced')}</p>
@@ -1027,6 +1009,44 @@ export default function RebalanceCenter() {
                   {t(`rebalanceCenter.overview.budgetPaused.${overview.last_scan_status}`)}
                 </p>
               )}
+              <div className="mt-2 border-t border-white/10 pt-2 space-y-1">
+                <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.metrics24h')}</p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.successAttempts24h', {
+                    value: formatter.format(overview.success_attempts_24h ?? 0)
+                  })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.successAmount24h', {
+                    value: formatSats(overview.success_amount_24h_sat ?? 0)
+                  })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.successAvgAmount24h', {
+                    value: formatSats(overview.success_avg_amount_24h_sat ?? 0)
+                  })}
+                </p>
+                {effectiveExecuteMinSat(config) > 0 && (
+                  <>
+                    <p className="text-xs text-fog/50">
+                      {t('rebalanceCenter.overview.belowMinAttempts24h', {
+                        value: formatter.format(overview.success_below_min_attempts_24h ?? 0),
+                        min: formatSats(effectiveExecuteMinSat(config))
+                      })}
+                    </p>
+                    <p className="text-xs text-fog/50">
+                      {t('rebalanceCenter.overview.belowMinAmount24h', {
+                        value: formatSats(overview.success_below_min_amount_24h_sat ?? 0)
+                      })}
+                    </p>
+                    <p className="text-xs text-fog/50">
+                      {t('rebalanceCenter.overview.belowMinRate24h', {
+                        value: formatPct((overview.success_below_min_rate_24h ?? 0) * 100)
+                      })}
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
           <div className="section-card space-y-2">
             <p className="text-xs uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.autoMode')}</p>
@@ -1207,6 +1227,42 @@ export default function RebalanceCenter() {
                 min={0}
                 value={config.max_amount_sat}
                 onChange={(e) => setConfig({ ...config, max_amount_sat: Number(e.target.value) })}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minSplitEnabled')}>
+                <input
+                  type="checkbox"
+                  checked={config.min_split_enabled}
+                  onChange={(e) => setConfig({ ...config, min_split_enabled: e.target.checked })}
+                />
+                {t('rebalanceCenter.settings.minSplitEnabled')}
+              </label>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minProbeAmount')}>
+                {t('rebalanceCenter.settings.minProbeAmount')}
+              </label>
+              <input
+                className="input-field"
+                type="number"
+                min={0}
+                value={config.min_probe_sat}
+                disabled={!config.min_split_enabled}
+                onChange={(e) => setConfig({ ...config, min_probe_sat: Number(e.target.value) })}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minExecuteAmount')}>
+                {t('rebalanceCenter.settings.minExecuteAmount')}
+              </label>
+              <input
+                className="input-field"
+                type="number"
+                min={0}
+                value={config.min_execute_sat}
+                disabled={!config.min_split_enabled}
+                onChange={(e) => setConfig({ ...config, min_execute_sat: Number(e.target.value) })}
               />
             </div>
             <div className="space-y-2">

@@ -25,6 +25,9 @@ type rebalanceConfigPayload struct {
 	MaxConcurrent             *int     `json:"max_concurrent,omitempty"`
 	MinAmountSat              *int64   `json:"min_amount_sat,omitempty"`
 	MaxAmountSat              *int64   `json:"max_amount_sat,omitempty"`
+	MinSplitEnabled           *bool    `json:"min_split_enabled,omitempty"`
+	MinProbeSat               *int64   `json:"min_probe_sat,omitempty"`
+	MinExecuteSat             *int64   `json:"min_execute_sat,omitempty"`
 	FeeLadderSteps            *int     `json:"fee_ladder_steps,omitempty"`
 	AmountProbeSteps          *int     `json:"amount_probe_steps,omitempty"`
 	AmountProbeAdaptive       *bool    `json:"amount_probe_adaptive,omitempty"`
@@ -150,6 +153,15 @@ func (s *Server) handleRebalanceConfigPost(w http.ResponseWriter, r *http.Reques
 	}
 	if payload.MaxAmountSat != nil {
 		cfg.MaxAmountSat = *payload.MaxAmountSat
+	}
+	if payload.MinSplitEnabled != nil {
+		cfg.MinSplitEnabled = *payload.MinSplitEnabled
+	}
+	if payload.MinProbeSat != nil {
+		cfg.MinProbeSat = *payload.MinProbeSat
+	}
+	if payload.MinExecuteSat != nil {
+		cfg.MinExecuteSat = *payload.MinExecuteSat
 	}
 	if payload.FeeLadderSteps != nil {
 		cfg.FeeLadderSteps = *payload.FeeLadderSteps

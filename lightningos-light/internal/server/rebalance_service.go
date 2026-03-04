@@ -68,6 +68,9 @@ type RebalanceConfig struct {
 	MaxConcurrent             int     `json:"max_concurrent"`
 	MinAmountSat              int64   `json:"min_amount_sat"`
 	MaxAmountSat              int64   `json:"max_amount_sat"`
+	MinSplitEnabled           bool    `json:"min_split_enabled"`
+	MinProbeSat               int64   `json:"min_probe_sat"`
+	MinExecuteSat             int64   `json:"min_execute_sat"`
 	FeeLadderSteps            int     `json:"fee_ladder_steps"`
 	AmountProbeSteps          int     `json:"amount_probe_steps"`
 	AmountProbeAdaptive       bool    `json:"amount_probe_adaptive"`
@@ -326,6 +329,9 @@ func defaultRebalanceConfig() RebalanceConfig {
 		MaxConcurrent:             2,
 		MinAmountSat:              20000,
 		MaxAmountSat:              0,
+		MinSplitEnabled:           false,
+		MinProbeSat:               0,
+		MinExecuteSat:             0,
 		FeeLadderSteps:            4,
 		AmountProbeSteps:          4,
 		AmountProbeAdaptive:       true,
@@ -450,6 +456,7 @@ func (s *RebalanceService) GetConfig(ctx context.Context) (RebalanceConfig, erro
 }
 
 func (s *RebalanceService) UpdateConfig(ctx context.Context, updated RebalanceConfig) (RebalanceConfig, error) {
+	updated = normalizeRebalanceConfig(updated)
 	if err := s.upsertConfig(ctx, updated); err != nil {
 		return RebalanceConfig{}, err
 	}
@@ -560,6 +567,42 @@ func normalizeChannelSetting(setting channelSetting) channelSetting {
 		setting.EconRatioOverrideSet = false
 	}
 	return setting
+}
+
+func normalizeRebalanceConfig(cfg RebalanceConfig) RebalanceConfig {
+	if cfg.MinAmountSat < 0 {
+		cfg.MinAmountSat = 0
+	}
+	if cfg.MaxAmountSat < 0 {
+		cfg.MaxAmountSat = 0
+	}
+	if cfg.MinProbeSat < 0 {
+		cfg.MinProbeSat = 0
+	}
+	if cfg.MinExecuteSat < 0 {
+		cfg.MinExecuteSat = 0
+	}
+	return cfg
+}
+
+func effectiveMinExecuteSat(cfg RebalanceConfig) int64 {
+	if cfg.MinSplitEnabled && cfg.MinExecuteSat > 0 {
+		return cfg.MinExecuteSat
+	}
+	if cfg.MinAmountSat > 0 {
+		return cfg.MinAmountSat
+	}
+	return 0
+}
+
+func effectiveMinProbeSat(cfg RebalanceConfig) int64 {
+	if cfg.MinSplitEnabled && cfg.MinProbeSat > 0 {
+		return cfg.MinProbeSat
+	}
+	if cfg.MinAmountSat > 0 {
+		return cfg.MinAmountSat
+	}
+	return 0
 }
 
 func effectiveConfigForTarget(cfg RebalanceConfig, setting channelSetting) RebalanceConfig {
@@ -701,7 +744,8 @@ func (s *RebalanceService) runManualRestartWatch() {
 		if deficit <= 0 {
 			continue
 		}
-		if cfg.MinAmountSat > 0 && deficit < cfg.MinAmountSat {
+		minExecuteSat := effectiveMinExecuteSat(cfg)
+		if minExecuteSat > 0 && deficit < minExecuteSat {
 			continue
 		}
 		_, err := s.startJob(ch.ChannelID, "manual", "auto-restart", 0, true)
@@ -989,7 +1033,8 @@ func (s *RebalanceService) runAutoScan() {
 			if fitAmount > targetAmount {
 				fitAmount = targetAmount
 			}
-			if targetCfg.MinAmountSat > 0 && fitAmount < targetCfg.MinAmountSat {
+			minExecuteSat := effectiveMinExecuteSat(targetCfg)
+			if minExecuteSat > 0 && fitAmount < minExecuteSat {
 				noteSkip("budget_below_min")
 				continue
 			}
@@ -1130,6 +1175,8 @@ func (s *RebalanceService) startJob(targetChannelID uint64, source string, reaso
 
 func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount int64, targetPct float64, jobSource string) {
 	cfg, _ := s.loadConfig(context.Background())
+	minExecuteSat := effectiveMinExecuteSat(cfg)
+	minProbeSat := effectiveMinProbeSat(cfg)
 	timeoutSec := cfg.RebalanceTimeoutSec
 	if timeoutSec <= 0 {
 		timeoutSec = 600
@@ -1159,7 +1206,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 
 	s.markJobRunning(jobID)
 
-	if cfg.MinAmountSat > 0 && amount < cfg.MinAmountSat {
+	if minExecuteSat > 0 && amount < minExecuteSat {
 		s.finishJob(jobID, "failed", "amount below minimum")
 		return
 	}
@@ -1170,6 +1217,8 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 	settings, _ := s.loadChannelSettings(ctx)
 	targetSetting := normalizeChannelSetting(settings[targetChannelID])
 	feeCfg := effectiveConfigForTarget(cfg, targetSetting)
+	minExecuteSat = effectiveMinExecuteSat(feeCfg)
+	minProbeSat = effectiveMinProbeSat(feeCfg)
 	exclusions, _ := s.loadExclusions(ctx)
 	ledger, _ := s.loadLedger(ctx)
 	_ = s.applyForwardDeltas(ctx, ledger)
@@ -1215,7 +1264,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		s.finishJob(jobID, "failed", "target already balanced")
 		return
 	}
-	if cfg.MinAmountSat > 0 && amount < cfg.MinAmountSat {
+	if minExecuteSat > 0 && amount < minExecuteSat {
 		s.finishJob(jobID, "failed", "amount below minimum")
 		return
 	}
@@ -1337,7 +1386,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		if err != nil || maxFeePpm <= 0 || stat.SuccessFeePpm > maxFeePpm {
 			continue
 		}
-		if cfg.MinAmountSat > 0 && stat.SuccessAmountSat < cfg.MinAmountSat {
+		if minExecuteSat > 0 && stat.SuccessAmountSat < minExecuteSat {
 			continue
 		}
 		if stat.LastSuccessAt.After(warmAt) {
@@ -1548,7 +1597,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		if amountTry <= 0 {
 			return false, false, 0, false, nil, 0
 		}
-		if cfg.MinAmountSat > 0 && amountTry < cfg.MinAmountSat {
+		if feeCfg.MinSplitEnabled && minExecuteSat > 0 && amountTry < minExecuteSat {
 			return false, false, 0, false, nil, 0
 		}
 		sourcePolicy := lndclient.ChannelPolicySnapshot{
@@ -1614,7 +1663,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			routeFeeLimitPpm := feeLimitPpm
 			activeRoute := route
 			if cfg.AmountProbeSteps > 0 {
-				maxAmount, probeErr := s.probeRoute(attemptCtx, route, amountTry, feeCfg.MinAmountSat, feeCfg.AmountProbeSteps, targetPolicy, sourcePolicy, feeCfg)
+				maxAmount, probeErr := s.probeRoute(attemptCtx, route, amountTry, minProbeSat, feeCfg.AmountProbeSteps, targetPolicy, sourcePolicy, feeCfg)
 				if probeErr != nil {
 					lastErr = probeErr
 					continue
@@ -1628,6 +1677,10 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 				}
 				if maxAmount != routeAmount {
 					routeAmount = maxAmount
+					if feeCfg.MinSplitEnabled && minExecuteSat > 0 && routeAmount < minExecuteSat {
+						lastErr = errors.New("probe amount below execute minimum")
+						continue
+					}
 					maxFeeMsat, err := calcFeeLimitMsat(routeAmount*1000, targetPolicy, &sourcePolicy, feeCfg)
 					if err != nil || maxFeeMsat <= 0 {
 						if err == nil {
@@ -1745,8 +1798,12 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 				if routeFailure.Code == lnrpc.Failure_TEMPORARY_CHANNEL_FAILURE &&
 					feeCfg.AmountProbeSteps > 0 &&
 					int(routeFailure.FailureSourceIndex) == len(activeRoute.Hops)-2 {
-					maxAmount, probeErr := s.probeRoute(attemptCtx, activeRoute, routeAmount, feeCfg.MinAmountSat, feeCfg.AmountProbeSteps, targetPolicy, sourcePolicy, feeCfg)
+					maxAmount, probeErr := s.probeRoute(attemptCtx, activeRoute, routeAmount, minProbeSat, feeCfg.AmountProbeSteps, targetPolicy, sourcePolicy, feeCfg)
 					if probeErr == nil && maxAmount > 0 {
+						if feeCfg.MinSplitEnabled && minExecuteSat > 0 && maxAmount < minExecuteSat {
+							lastErr = errors.New("probe amount below execute minimum")
+							continue
+						}
 						retryFeeMsat, retryErr := calcFeeLimitMsat(maxAmount*1000, targetPolicy, &sourcePolicy, feeCfg)
 						if retryErr == nil && retryFeeMsat > 0 {
 							retryFeePpm := feeMsatToPpm(retryFeeMsat, maxAmount)
@@ -2043,7 +2100,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		if routeCap <= 0 {
 			routeCap = s.maxAmountOnRouteSat(ctx, baseRoute, selfPubkey)
 		}
-		minAmount := cfg.MinAmountSat
+		minAmount := minExecuteSat
 		if minAmount <= 0 {
 			minAmount = 1
 		}
@@ -2264,7 +2321,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			if sendAmount > sourceRemaining {
 				sendAmount = sourceRemaining
 			}
-			probeCap := computeProbeCap(remaining, cfg.MinAmountSat, cfg.MaxAmountSat)
+			probeCap := computeProbeCap(remaining, minExecuteSat, cfg.MaxAmountSat)
 			if probeCap > 0 && probeCap < sendAmount {
 				sendAmount = probeCap
 			}
@@ -2274,7 +2331,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 					sendAmount = capAmount
 				}
 			}
-			if cfg.MinAmountSat > 0 && sendAmount < cfg.MinAmountSat {
+			if minExecuteSat > 0 && sendAmount < minExecuteSat {
 				continue
 			}
 
@@ -2289,7 +2346,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 				if warmTry > sendAmount {
 					warmTry = sendAmount
 				}
-				if cfg.MinAmountSat > 0 && warmTry < cfg.MinAmountSat {
+				if minExecuteSat > 0 && warmTry < minExecuteSat {
 					warmTry = 0
 				}
 				if warmTry > 0 {
@@ -2325,7 +2382,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 				feeSteps = 1
 			}
 
-			probeAmount := cfg.MinAmountSat
+			probeAmount := minProbeSat
 			if probeAmount <= 0 {
 				probeAmount = sendAmount
 			}
@@ -2335,7 +2392,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			if probeAmount <= 0 {
 				continue
 			}
-			if cfg.MinAmountSat > 0 && probeAmount < cfg.MinAmountSat {
+			if minProbeSat > 0 && probeAmount < minProbeSat {
 				continue
 			}
 
@@ -2810,7 +2867,8 @@ func (s *RebalanceService) scheduleManualRestart(info manualRestartInfo) {
 	if deficit <= 0 {
 		return
 	}
-	if cfg.MinAmountSat > 0 && deficit < cfg.MinAmountSat {
+	minExecuteSat := effectiveMinExecuteSat(cfg)
+	if minExecuteSat > 0 && deficit < minExecuteSat {
 		return
 	}
 	if !snapshot.EligibleAsTarget {
@@ -3423,6 +3481,9 @@ end $$;
     max_concurrent integer not null default 2,
     min_amount_sat bigint not null default 20000,
     max_amount_sat bigint not null default 0,
+    min_split_enabled boolean not null default false,
+    min_probe_sat bigint not null default 0,
+    min_execute_sat bigint not null default 0,
     fee_ladder_steps integer not null default 4,
     amount_probe_steps integer not null default 4,
     amount_probe_adaptive boolean not null default true,
@@ -3451,6 +3512,12 @@ end $$;
     add column if not exists fail_tolerance_ppm bigint not null default 1000;
   alter table rebalance_config
     add column if not exists amount_probe_steps integer not null default 4;
+  alter table rebalance_config
+    add column if not exists min_split_enabled boolean not null default false;
+  alter table rebalance_config
+    add column if not exists min_probe_sat bigint not null default 0;
+  alter table rebalance_config
+    add column if not exists min_execute_sat bigint not null default 0;
   alter table rebalance_config
     add column if not exists amount_probe_adaptive boolean not null default true;
   alter table rebalance_config
@@ -3586,7 +3653,7 @@ func (s *RebalanceService) loadConfig(ctx context.Context) (RebalanceConfig, err
 
 	row := s.db.QueryRow(ctx, `
   select auto_enabled, scan_interval_sec, deadband_pct, source_min_local_pct, econ_ratio, econ_ratio_max_ppm, fee_limit_ppm, lost_profit, fail_tolerance_ppm, roi_min, daily_budget_pct,
-    max_concurrent, min_amount_sat, max_amount_sat, fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
+    max_concurrent, min_amount_sat, max_amount_sat, min_split_enabled, min_probe_sat, min_execute_sat, fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
     unlock_days, critical_release_pct, critical_min_sources, critical_min_available_sats, critical_cycles
   from rebalance_config where id=$1`, rebalanceConfigID)
 
@@ -3606,6 +3673,9 @@ func (s *RebalanceService) loadConfig(ctx context.Context) (RebalanceConfig, err
 		&cfg.MaxConcurrent,
 		&cfg.MinAmountSat,
 		&cfg.MaxAmountSat,
+		&cfg.MinSplitEnabled,
+		&cfg.MinProbeSat,
+		&cfg.MinExecuteSat,
 		&cfg.FeeLadderSteps,
 		&cfg.AmountProbeSteps,
 		&cfg.AmountProbeAdaptive,
@@ -3623,6 +3693,7 @@ func (s *RebalanceService) loadConfig(ctx context.Context) (RebalanceConfig, err
 	if err != nil {
 		return cfg, err
 	}
+	cfg = normalizeRebalanceConfig(cfg)
 
 	s.mu.Lock()
 	s.cfg = cfg
@@ -3638,9 +3709,9 @@ func (s *RebalanceService) upsertConfig(ctx context.Context, cfg RebalanceConfig
 	_, err := s.db.Exec(ctx, `
   insert into rebalance_config (
     id, auto_enabled, scan_interval_sec, deadband_pct, source_min_local_pct, econ_ratio, econ_ratio_max_ppm, fee_limit_ppm, lost_profit, fail_tolerance_ppm, roi_min, daily_budget_pct,
-    max_concurrent, min_amount_sat, max_amount_sat, fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
+    max_concurrent, min_amount_sat, max_amount_sat, min_split_enabled, min_probe_sat, min_execute_sat, fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
     unlock_days, critical_release_pct, critical_min_sources, critical_min_available_sats, critical_cycles, updated_at
-  ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,now())
+  ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,now())
    on conflict (id) do update set
     auto_enabled = excluded.auto_enabled,
     scan_interval_sec = excluded.scan_interval_sec,
@@ -3656,6 +3727,9 @@ func (s *RebalanceService) upsertConfig(ctx context.Context, cfg RebalanceConfig
     max_concurrent = excluded.max_concurrent,
     min_amount_sat = excluded.min_amount_sat,
     max_amount_sat = excluded.max_amount_sat,
+    min_split_enabled = excluded.min_split_enabled,
+    min_probe_sat = excluded.min_probe_sat,
+    min_execute_sat = excluded.min_execute_sat,
     fee_ladder_steps = excluded.fee_ladder_steps,
     amount_probe_steps = excluded.amount_probe_steps,
     amount_probe_adaptive = excluded.amount_probe_adaptive,
@@ -3671,7 +3745,7 @@ func (s *RebalanceService) upsertConfig(ctx context.Context, cfg RebalanceConfig
     critical_cycles = excluded.critical_cycles,
     updated_at = now()
   `, rebalanceConfigID, cfg.AutoEnabled, cfg.ScanIntervalSec, cfg.DeadbandPct, cfg.SourceMinLocalPct, cfg.EconRatio, cfg.EconRatioMaxPpm, cfg.FeeLimitPpm, cfg.LostProfit, cfg.FailTolerancePpm, cfg.ROIMin, cfg.DailyBudgetPct, cfg.MaxConcurrent,
-		cfg.MinAmountSat, cfg.MaxAmountSat, cfg.FeeLadderSteps, cfg.AmountProbeSteps, cfg.AmountProbeAdaptive, cfg.AttemptTimeoutSec, cfg.RebalanceTimeoutSec, cfg.ManualRestartWatch, cfg.MissionControlHalfLifeSec, cfg.PaybackModeFlags, cfg.UnlockDays, cfg.CriticalReleasePct, cfg.CriticalMinSources, cfg.CriticalMinAvailableSats, cfg.CriticalCycles,
+		cfg.MinAmountSat, cfg.MaxAmountSat, cfg.MinSplitEnabled, cfg.MinProbeSat, cfg.MinExecuteSat, cfg.FeeLadderSteps, cfg.AmountProbeSteps, cfg.AmountProbeAdaptive, cfg.AttemptTimeoutSec, cfg.RebalanceTimeoutSec, cfg.ManualRestartWatch, cfg.MissionControlHalfLifeSec, cfg.PaybackModeFlags, cfg.UnlockDays, cfg.CriticalReleasePct, cfg.CriticalMinSources, cfg.CriticalMinAvailableSats, cfg.CriticalCycles,
 	)
 	return err
 }
@@ -4324,7 +4398,7 @@ where report_date >= current_date - interval '6 days'
 		paybackProgress = float64(paybackRevenue) / float64(paybackCost)
 		paybackProgressRebalanced = float64(paybackRevenueRebalanced) / float64(paybackCost)
 	}
-	if telemetry, err := s.fetchAttemptTelemetry24h(ctx, cfg.MinAmountSat); err == nil {
+	if telemetry, err := s.fetchAttemptTelemetry24h(ctx, effectiveMinExecuteSat(cfg)); err == nil {
 		attemptTelemetry = telemetry
 	}
 
