@@ -833,6 +833,7 @@ func (s *RebalanceService) runAutoScan() {
 	eligibleSources := 0
 	totalAvailable := int64(0)
 	roiSkipped := 0
+	belowExecuteMinSkipped := 0
 	topScoreSet := false
 	for _, ch := range channels {
 		setting := settings[ch.ChannelID]
@@ -843,7 +844,21 @@ func (s *RebalanceService) runAutoScan() {
 		}
 
 		if setting.AutoEnabled && snapshot.EligibleAsTarget {
+			targetCfg := effectiveConfigForTarget(cfg, setting)
 			targetAmount := snapshot.TargetAmountSat
+			minExecuteSat := effectiveMinExecuteSat(targetCfg)
+			if targetCfg.MinSplitEnabled && minExecuteSat > 0 && targetAmount < minExecuteSat {
+				belowExecuteMinSkipped++
+				skippedDetails = append(skippedDetails, RebalanceSkipDetail{
+					ChannelID:         snapshot.ChannelID,
+					ChannelPoint:      snapshot.ChannelPoint,
+					PeerAlias:         snapshot.PeerAlias,
+					TargetOutboundPct: snapshot.TargetOutboundPct,
+					TargetAmountSat:   targetAmount,
+					Reason:            "below_execute_min",
+				})
+				continue
+			}
 			estimatedCost := estimateHistoricalCost(targetAmount, snapshot.RebalanceCost7dPpm)
 			expectedGain := estimateTargetGain(targetAmount, snapshot.Revenue7dSat, snapshot.LocalBalanceSat, snapshot.CapacitySat)
 			expectedROI, roiValid := estimateTargetROI(expectedGain, estimatedCost, targetAmount, snapshot.OutgoingFeePpm, snapshot.PeerFeeRatePpm)
@@ -913,6 +928,9 @@ func (s *RebalanceService) runAutoScan() {
 		scanCandidates = 0
 		scanRemainingBudget = 0
 		scanReasons = map[string]int{}
+		if belowExecuteMinSkipped > 0 {
+			scanReasons["below_execute_min"] = belowExecuteMinSkipped
+		}
 		if profitSkipped > 0 {
 			scanStatus = "profit_guardrail"
 			if s.logger != nil {
@@ -3224,6 +3242,7 @@ func buildScanDetail(reasons map[string]int, remaining int64, candidates int) st
 		{key: "target_already_balanced", label: "target already balanced"},
 		{key: "recently_attempted", label: "recently attempted"},
 		{key: "fee_cap_zero", label: "fee cap zero"},
+		{key: "below_execute_min", label: "below execute min amount"},
 		{key: "budget_below_min", label: "budget below min amount"},
 		{key: "budget_too_low", label: "budget too low"},
 		{key: "target_not_found", label: "target not found"},
