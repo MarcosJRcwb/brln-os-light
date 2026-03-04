@@ -206,12 +206,17 @@ export default function Chat() {
   const sortedPeers = useMemo(() => {
     const list = [...peers]
     list.sort((a, b) => {
+      const aUnread = unreadPeers.has(a.pub_key)
+      const bUnread = unreadPeers.has(b.pub_key)
+      if (aUnread !== bUnread) {
+        return aUnread ? -1 : 1
+      }
       const aVal = (a.alias || a.pub_key).toLowerCase()
       const bVal = (b.alias || b.pub_key).toLowerCase()
       return aVal.localeCompare(bVal)
     })
     return list
-  }, [peers])
+  }, [peers, unreadPeers])
 
   const filteredPeers = useMemo(() => {
     const query = peerQuery.trim().toLowerCase()
