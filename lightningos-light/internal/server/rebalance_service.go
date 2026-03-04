@@ -102,6 +102,12 @@ type RebalanceOverview struct {
 	LiveCostSat                 int64                 `json:"live_cost_sat"`
 	Effectiveness7d             float64               `json:"effectiveness_7d"`
 	ROI7d                       float64               `json:"roi_7d"`
+	SuccessAttempts24h          int64                 `json:"success_attempts_24h"`
+	SuccessAmount24hSat         int64                 `json:"success_amount_24h_sat"`
+	SuccessAvgAmount24hSat      int64                 `json:"success_avg_amount_24h_sat"`
+	SuccessBelowMinAttempts24h  int64                 `json:"success_below_min_attempts_24h"`
+	SuccessBelowMinAmount24hSat int64                 `json:"success_below_min_amount_24h_sat"`
+	SuccessBelowMinRate24h      float64               `json:"success_below_min_rate_24h"`
 	PaybackRevenueSat           int64                 `json:"payback_revenue_sat"`
 	PaybackRevenueRebalancedSat int64                 `json:"payback_revenue_rebalanced_sat"`
 	PaybackCostSat              int64                 `json:"payback_cost_sat"`
@@ -232,6 +238,15 @@ type rebalanceCost7dStat struct {
 	FeeSat    int64
 	AmountSat int64
 	FeePpm    int64
+}
+
+type rebalanceAttemptTelemetry24h struct {
+	SuccessAttempts          int64
+	SuccessAmountSat         int64
+	SuccessAvgAmountSat      int64
+	SuccessBelowMinAttempts  int64
+	SuccessBelowMinAmountSat int64
+	SuccessBelowMinRate      float64
 }
 
 type paybackTotals7d struct {
@@ -4086,6 +4101,41 @@ where day=$1
 	return autoSat, manualSat, totalSat, true
 }
 
+func (s *RebalanceService) fetchAttemptTelemetry24h(ctx context.Context, minAmountSat int64) (rebalanceAttemptTelemetry24h, error) {
+	metrics := rebalanceAttemptTelemetry24h{}
+	if s.db == nil {
+		return metrics, nil
+	}
+	end := time.Now().In(time.Local)
+	start := end.Add(-24 * time.Hour)
+	var successAttempts int64
+	var successAmountSat int64
+	var belowAttempts int64
+	var belowAmountSat int64
+	err := s.db.QueryRow(ctx, `
+select
+  coalesce(sum(case when status='succeeded' then 1 else 0 end), 0) as success_attempts,
+  coalesce(sum(case when status='succeeded' then amount_sat else 0 end), 0) as success_amount_sat,
+  coalesce(sum(case when status='succeeded' and $3 > 0 and amount_sat < $3 then 1 else 0 end), 0) as success_below_min_attempts,
+  coalesce(sum(case when status='succeeded' and $3 > 0 and amount_sat < $3 then amount_sat else 0 end), 0) as success_below_min_amount_sat
+from rebalance_attempts
+where coalesce(finished_at, started_at) >= $1
+  and coalesce(finished_at, started_at) <= $2
+`, start, end, minAmountSat).Scan(&successAttempts, &successAmountSat, &belowAttempts, &belowAmountSat)
+	if err != nil {
+		return metrics, err
+	}
+	metrics.SuccessAttempts = successAttempts
+	metrics.SuccessAmountSat = successAmountSat
+	metrics.SuccessBelowMinAttempts = belowAttempts
+	metrics.SuccessBelowMinAmountSat = belowAmountSat
+	if successAttempts > 0 {
+		metrics.SuccessAvgAmountSat = successAmountSat / successAttempts
+		metrics.SuccessBelowMinRate = float64(belowAttempts) / float64(successAttempts)
+	}
+	return metrics, nil
+}
+
 func (s *RebalanceService) insertJob(ctx context.Context, target *lndclient.ChannelInfo, source string, reason string, targetPct float64, amount int64) (int64, error) {
 	if s.db == nil {
 		return 0, errors.New("db unavailable")
@@ -4240,6 +4290,7 @@ where type='rebalance' and occurred_at >= now() - interval '1 day'
 	paybackCost := int64(0)
 	paybackProgress := 0.0
 	paybackProgressRebalanced := 0.0
+	attemptTelemetry := rebalanceAttemptTelemetry24h{}
 	var successCount int64
 	var totalCount int64
 	_ = s.db.QueryRow(ctx, `
@@ -4273,6 +4324,9 @@ where report_date >= current_date - interval '6 days'
 		paybackProgress = float64(paybackRevenue) / float64(paybackCost)
 		paybackProgressRebalanced = float64(paybackRevenueRebalanced) / float64(paybackCost)
 	}
+	if telemetry, err := s.fetchAttemptTelemetry24h(ctx, cfg.MinAmountSat); err == nil {
+		attemptTelemetry = telemetry
+	}
 
 	eligibleSources := 0
 	targetsNeeding := 0
@@ -4305,6 +4359,12 @@ where report_date >= current_date - interval '6 days'
 		LiveCostSat:                 liveCost,
 		Effectiveness7d:             effectiveness,
 		ROI7d:                       roi,
+		SuccessAttempts24h:          attemptTelemetry.SuccessAttempts,
+		SuccessAmount24hSat:         attemptTelemetry.SuccessAmountSat,
+		SuccessAvgAmount24hSat:      attemptTelemetry.SuccessAvgAmountSat,
+		SuccessBelowMinAttempts24h:  attemptTelemetry.SuccessBelowMinAttempts,
+		SuccessBelowMinAmount24hSat: attemptTelemetry.SuccessBelowMinAmountSat,
+		SuccessBelowMinRate24h:      attemptTelemetry.SuccessBelowMinRate,
 		PaybackRevenueSat:           paybackRevenue,
 		PaybackRevenueRebalancedSat: paybackRevenueRebalanced,
 		PaybackCostSat:              paybackCost,

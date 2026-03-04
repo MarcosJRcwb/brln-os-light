@@ -67,6 +67,12 @@ type RebalanceOverview = {
   live_cost_sat: number
   effectiveness_7d: number
   roi_7d: number
+  success_attempts_24h?: number
+  success_amount_24h_sat?: number
+  success_avg_amount_24h_sat?: number
+  success_below_min_attempts_24h?: number
+  success_below_min_amount_24h_sat?: number
+  success_below_min_rate_24h?: number
   payback_revenue_sat: number
   payback_revenue_rebalanced_sat: number
   payback_cost_sat: number
@@ -951,6 +957,41 @@ export default function RebalanceCenter() {
             <p className="text-xs uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.effectiveness')}</p>
             <p className="text-lg font-semibold text-fog">{formatPct(overview.effectiveness_7d * 100)}</p>
             <p className="text-xs text-fog/50">{t('rebalanceCenter.overview.roi', { value: overview.roi_7d.toFixed(2) })}</p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.successAttempts24h', {
+                value: formatter.format(overview.success_attempts_24h ?? 0)
+              })}
+            </p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.successAmount24h', {
+                value: formatSats(overview.success_amount_24h_sat ?? 0)
+              })}
+            </p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.successAvgAmount24h', {
+                value: formatSats(overview.success_avg_amount_24h_sat ?? 0)
+              })}
+            </p>
+            {(config?.min_amount_sat ?? 0) > 0 && (
+              <>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.belowMinAttempts24h', {
+                    value: formatter.format(overview.success_below_min_attempts_24h ?? 0),
+                    min: formatSats(config?.min_amount_sat ?? 0)
+                  })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.belowMinAmount24h', {
+                    value: formatSats(overview.success_below_min_amount_24h_sat ?? 0)
+                  })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.belowMinRate24h', {
+                    value: formatPct((overview.success_below_min_rate_24h ?? 0) * 100)
+                  })}
+                </p>
+              </>
+            )}
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 space-y-1">
                 <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.paybackGroupRebalanced')}</p>
