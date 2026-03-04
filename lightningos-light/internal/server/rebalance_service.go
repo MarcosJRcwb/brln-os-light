@@ -605,6 +605,20 @@ func effectiveMinProbeSat(cfg RebalanceConfig) int64 {
 	return 0
 }
 
+func effectiveStartAmountSat(cfg RebalanceConfig) int64 {
+	// Keep legacy anchoring behavior: attempts start from min_amount when set.
+	if cfg.MinAmountSat > 0 {
+		return cfg.MinAmountSat
+	}
+	if v := effectiveMinExecuteSat(cfg); v > 0 {
+		return v
+	}
+	if v := effectiveMinProbeSat(cfg); v > 0 {
+		return v
+	}
+	return 0
+}
+
 func effectiveConfigForTarget(cfg RebalanceConfig, setting channelSetting) RebalanceConfig {
 	normalized := normalizeChannelSetting(setting)
 	effective := cfg
@@ -1237,6 +1251,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 	feeCfg := effectiveConfigForTarget(cfg, targetSetting)
 	minExecuteSat = effectiveMinExecuteSat(feeCfg)
 	minProbeSat = effectiveMinProbeSat(feeCfg)
+	startAmountSat := effectiveStartAmountSat(feeCfg)
 	exclusions, _ := s.loadExclusions(ctx)
 	ledger, _ := s.loadLedger(ctx)
 	_ = s.applyForwardDeltas(ctx, ledger)
@@ -2339,7 +2354,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			if sendAmount > sourceRemaining {
 				sendAmount = sourceRemaining
 			}
-			probeCap := computeProbeCap(remaining, minExecuteSat, cfg.MaxAmountSat)
+			probeCap := computeProbeCap(remaining, startAmountSat, cfg.MaxAmountSat)
 			if probeCap > 0 && probeCap < sendAmount {
 				sendAmount = probeCap
 			}
@@ -2400,7 +2415,7 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 				feeSteps = 1
 			}
 
-			probeAmount := minProbeSat
+			probeAmount := startAmountSat
 			if probeAmount <= 0 {
 				probeAmount = sendAmount
 			}

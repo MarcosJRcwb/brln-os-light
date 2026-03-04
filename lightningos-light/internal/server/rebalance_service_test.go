@@ -110,6 +110,35 @@ func TestEffectiveMinsSplitEnabledFallbackToLegacyWhenUnset(t *testing.T) {
 	}
 }
 
+func TestEffectiveStartAmountUsesMinAmountWithSplitEnabled(t *testing.T) {
+	cfg := RebalanceConfig{
+		MinSplitEnabled: true,
+		MinAmountSat:    30000,
+		MinProbeSat:     1000,
+		MinExecuteSat:   1000,
+	}
+	if got := effectiveStartAmountSat(cfg); got != 30000 {
+		t.Fatalf("expected start amount anchored at min_amount=30000, got %d", got)
+	}
+}
+
+func TestEffectiveStartAmountFallbackOrder(t *testing.T) {
+	cfg := RebalanceConfig{
+		MinSplitEnabled: true,
+		MinAmountSat:    0,
+		MinProbeSat:     1000,
+		MinExecuteSat:   5000,
+	}
+	if got := effectiveStartAmountSat(cfg); got != 5000 {
+		t.Fatalf("expected fallback to execute min=5000, got %d", got)
+	}
+
+	cfg.MinExecuteSat = 0
+	if got := effectiveStartAmountSat(cfg); got != 1000 {
+		t.Fatalf("expected fallback to probe min=1000, got %d", got)
+	}
+}
+
 func TestComputeProbeCapBehavior(t *testing.T) {
 	if got := computeProbeCap(0, 20000, 0); got != 0 {
 		t.Fatalf("expected cap=0 when remaining=0, got %d", got)
