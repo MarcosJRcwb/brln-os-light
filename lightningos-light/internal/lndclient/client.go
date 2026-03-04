@@ -1449,6 +1449,15 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 
 	now := time.Now()
 	inactiveSinceByPoint := c.snapshotInactiveSince(resp.Channels, now)
+	channelAliasByID := make(map[uint64]string, len(resp.Channels))
+	for _, listed := range resp.Channels {
+		if listed == nil || listed.ChanId == 0 {
+			continue
+		}
+		if alias := strings.TrimSpace(listed.PeerAlias); alias != "" {
+			channelAliasByID[listed.ChanId] = alias
+		}
+	}
 
 	channels := make([]ChannelInfo, 0, len(resp.Channels))
 	for _, ch := range resp.Channels {
@@ -1504,12 +1513,15 @@ func (c *Client) ListChannels(ctx context.Context) ([]ChannelInfo, error) {
 			if htlc == nil {
 				continue
 			}
+			forwardingChannelID := htlc.ForwardingChannel
 			pendingHtlcs = append(pendingHtlcs, ChannelPendingHtlcInfo{
-				Incoming:         htlc.Incoming,
-				AmountSat:        htlc.Amount,
-				ExpirationHeight: htlc.ExpirationHeight,
-				HtlcIndex:        htlc.HtlcIndex,
-				LockedIn:         htlc.LockedIn,
+				Incoming:            htlc.Incoming,
+				PeerAlias:           channelAliasByID[forwardingChannelID],
+				AmountSat:           htlc.Amount,
+				ExpirationHeight:    htlc.ExpirationHeight,
+				HtlcIndex:           htlc.HtlcIndex,
+				ForwardingChannelID: forwardingChannelID,
+				LockedIn:            htlc.LockedIn,
 			})
 		}
 		sort.Slice(pendingHtlcs, func(i, j int) bool {
@@ -3095,11 +3107,13 @@ type Status struct {
 }
 
 type ChannelPendingHtlcInfo struct {
-	Incoming         bool   `json:"incoming"`
-	AmountSat        int64  `json:"amount_sat"`
-	ExpirationHeight uint32 `json:"expiration_height"`
-	HtlcIndex        uint64 `json:"htlc_index,omitempty"`
-	LockedIn         bool   `json:"locked_in,omitempty"`
+	Incoming            bool   `json:"incoming"`
+	PeerAlias           string `json:"peer_alias,omitempty"`
+	AmountSat           int64  `json:"amount_sat"`
+	ExpirationHeight    uint32 `json:"expiration_height"`
+	HtlcIndex           uint64 `json:"htlc_index,omitempty"`
+	ForwardingChannelID uint64 `json:"forwarding_channel_id,omitempty"`
+	LockedIn            bool   `json:"locked_in,omitempty"`
 }
 
 type ChannelInfo struct {

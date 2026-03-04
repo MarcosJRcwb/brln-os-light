@@ -35,9 +35,11 @@ type Channel = {
 
 type ChannelPendingHtlc = {
   incoming: boolean
+  peer_alias?: string
   amount_sat: number
   expiration_height: number
   htlc_index?: number
+  forwarding_channel_id?: number
   locked_in?: boolean
 }
 
@@ -4533,10 +4535,11 @@ export default function LightningOps() {
                       <div className={`mt-2 rounded-xl p-2.5 ${isFCRisk ? 'border border-rose-400/45 bg-rose-500/10' : 'border border-white/10 bg-ink/70'}`}>
                         <p className={`text-[10px] uppercase tracking-wide ${isFCRisk ? 'text-rose-200' : 'text-fog/60'}`}>{t('lightningOps.pendingHtlcDetailsTitle')}</p>
                         <div className="mt-2 overflow-x-auto">
-                          <table className="w-full min-w-[420px] text-[11px]">
+                          <table className="w-full min-w-[560px] text-[11px]">
                             <thead>
                               <tr className={isFCRisk ? 'text-rose-200/80' : 'text-fog/60'}>
                                 <th className="py-1 pr-3 text-left">{t('lightningOps.pendingHtlcDirection')}</th>
+                                <th className="py-1 pr-3 text-left">{t('lightningOps.pendingHtlcPeer')}</th>
                                 <th className="py-1 pr-3 text-left">{t('lightningOps.pendingHtlcAmount')}</th>
                                 <th className="py-1 text-left">{t('lightningOps.pendingHtlcExpiry')}</th>
                               </tr>
@@ -4549,12 +4552,18 @@ export default function LightningOps() {
                                   ? Math.max(0, expirationHeight - channelBlockHeight)
                                   : null
                                 const expiryEta = blocksToExpiry === null ? '' : formatMaturityDuration(estimateMaturitySeconds(blocksToExpiry))
+                                const peerAlias = typeof htlc?.peer_alias === 'string' ? htlc.peer_alias.trim() : ''
+                                const forwardingChannelId = typeof htlc?.forwarding_channel_id === 'number' && Number.isFinite(htlc.forwarding_channel_id)
+                                  ? Math.max(0, Math.round(htlc.forwarding_channel_id))
+                                  : 0
+                                const peerLabel = peerAlias || (forwardingChannelId > 0 ? `chan ${forwardingChannelId}` : t('lightningOps.pendingHtlcPeerUnknown'))
                                 const rowKey = `${htlc?.htlc_index ?? 'idx'}-${expirationHeight}-${idx}`
                                 return (
                                   <tr key={rowKey} className={`align-top ${isFCRisk ? 'text-rose-100' : 'text-fog'}`}>
                                     <td className="py-1 pr-3 whitespace-nowrap">
                                       {htlc?.incoming ? t('lightningOps.pendingHtlcIncoming') : t('lightningOps.pendingHtlcOutgoing')}
                                     </td>
+                                    <td className="py-1 pr-3 whitespace-nowrap">{peerLabel}</td>
                                     <td className="py-1 pr-3 whitespace-nowrap">{amountSat} sats</td>
                                     <td className="py-1">
                                       <div>{t('lightningOps.pendingHtlcExpiryHeight', { value: expirationHeight })}</div>
