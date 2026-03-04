@@ -586,8 +586,15 @@ func normalizeRebalanceConfig(cfg RebalanceConfig) RebalanceConfig {
 }
 
 func effectiveMinExecuteSat(cfg RebalanceConfig) int64 {
-	if cfg.MinSplitEnabled && cfg.MinExecuteSat > 0 {
-		return cfg.MinExecuteSat
+	if cfg.MinSplitEnabled {
+		if cfg.MinExecuteSat > 0 {
+			return cfg.MinExecuteSat
+		}
+		// In split mode, if execute min is unset but probe min is set, treat probe min
+		// as the effective execute floor to avoid silent no-attempt jobs.
+		if cfg.MinProbeSat > 0 {
+			return cfg.MinProbeSat
+		}
 	}
 	if cfg.MinAmountSat > 0 {
 		return cfg.MinAmountSat
@@ -2403,6 +2410,9 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			probeAmount := minProbeSat
 			if probeAmount <= 0 {
 				probeAmount = sendAmount
+			}
+			if feeCfg.MinSplitEnabled && minExecuteSat > 0 && probeAmount < minExecuteSat {
+				probeAmount = minExecuteSat
 			}
 			if probeAmount > sendAmount {
 				probeAmount = sendAmount
