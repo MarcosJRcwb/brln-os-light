@@ -28,6 +28,12 @@ type rebalanceConfigPayload struct {
 	MinSplitEnabled           *bool    `json:"min_split_enabled,omitempty"`
 	MinProbeSat               *int64   `json:"min_probe_sat,omitempty"`
 	MinExecuteSat             *int64   `json:"min_execute_sat,omitempty"`
+	MppEnabled                *bool    `json:"mpp_enabled,omitempty"`
+	MppMaxShards              *int     `json:"mpp_max_shards,omitempty"`
+	MppParallelism            *int     `json:"mpp_parallelism,omitempty"`
+	MppMinShardSat            *int64   `json:"mpp_min_shard_sat,omitempty"`
+	MppRoundTimeoutSec        *int     `json:"mpp_round_timeout_sec,omitempty"`
+	MppAutoOnly               *bool    `json:"mpp_auto_only,omitempty"`
 	FeeLadderSteps            *int     `json:"fee_ladder_steps,omitempty"`
 	AmountProbeSteps          *int     `json:"amount_probe_steps,omitempty"`
 	AmountProbeAdaptive       *bool    `json:"amount_probe_adaptive,omitempty"`
@@ -162,6 +168,24 @@ func (s *Server) handleRebalanceConfigPost(w http.ResponseWriter, r *http.Reques
 	}
 	if payload.MinExecuteSat != nil {
 		cfg.MinExecuteSat = *payload.MinExecuteSat
+	}
+	if payload.MppEnabled != nil {
+		cfg.MppEnabled = *payload.MppEnabled
+	}
+	if payload.MppMaxShards != nil {
+		cfg.MppMaxShards = *payload.MppMaxShards
+	}
+	if payload.MppParallelism != nil {
+		cfg.MppParallelism = *payload.MppParallelism
+	}
+	if payload.MppMinShardSat != nil {
+		cfg.MppMinShardSat = *payload.MppMinShardSat
+	}
+	if payload.MppRoundTimeoutSec != nil {
+		cfg.MppRoundTimeoutSec = *payload.MppRoundTimeoutSec
+	}
+	if payload.MppAutoOnly != nil {
+		cfg.MppAutoOnly = *payload.MppAutoOnly
 	}
 	if payload.FeeLadderSteps != nil {
 		cfg.FeeLadderSteps = *payload.FeeLadderSteps

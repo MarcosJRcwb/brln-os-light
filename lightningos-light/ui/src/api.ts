@@ -373,6 +373,12 @@ export const updateRebalanceConfig = (payload: {
   min_split_enabled?: boolean
   min_probe_sat?: number
   min_execute_sat?: number
+  mpp_enabled?: boolean
+  mpp_max_shards?: number
+  mpp_parallelism?: number
+  mpp_min_shard_sat?: number
+  mpp_round_timeout_sec?: number
+  mpp_auto_only?: boolean
   fee_ladder_steps?: number
   amount_probe_steps?: number
   amount_probe_adaptive?: boolean

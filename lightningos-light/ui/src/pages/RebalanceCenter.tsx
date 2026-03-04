@@ -34,6 +34,12 @@ type RebalanceConfig = {
   min_split_enabled: boolean
   min_probe_sat: number
   min_execute_sat: number
+  mpp_enabled: boolean
+  mpp_max_shards: number
+  mpp_parallelism: number
+  mpp_min_shard_sat: number
+  mpp_round_timeout_sec: number
+  mpp_auto_only: boolean
   fee_ladder_steps: number
   amount_probe_steps: number
   amount_probe_adaptive: boolean
@@ -272,6 +278,12 @@ export default function RebalanceCenter() {
       min_split_enabled: cfg.min_split_enabled,
       min_probe_sat: cfg.min_probe_sat,
       min_execute_sat: cfg.min_execute_sat,
+      mpp_enabled: cfg.mpp_enabled,
+      mpp_max_shards: cfg.mpp_max_shards,
+      mpp_parallelism: cfg.mpp_parallelism,
+      mpp_min_shard_sat: cfg.mpp_min_shard_sat,
+      mpp_round_timeout_sec: cfg.mpp_round_timeout_sec,
+      mpp_auto_only: cfg.mpp_auto_only,
       fee_ladder_steps: cfg.fee_ladder_steps,
       amount_probe_steps: cfg.amount_probe_steps,
       amount_probe_adaptive: cfg.amount_probe_adaptive,
@@ -477,7 +489,13 @@ export default function RebalanceCenter() {
           mc_half_life_sec: nextConfig.mc_half_life_sec || 0,
           min_split_enabled: nextConfig.min_split_enabled ?? false,
           min_probe_sat: nextConfig.min_probe_sat || 0,
-          min_execute_sat: nextConfig.min_execute_sat || 0
+          min_execute_sat: nextConfig.min_execute_sat || 0,
+          mpp_enabled: nextConfig.mpp_enabled ?? false,
+          mpp_max_shards: nextConfig.mpp_max_shards || 2,
+          mpp_parallelism: nextConfig.mpp_parallelism || 2,
+          mpp_min_shard_sat: nextConfig.mpp_min_shard_sat || 1000,
+          mpp_round_timeout_sec: nextConfig.mpp_round_timeout_sec || 20,
+          mpp_auto_only: nextConfig.mpp_auto_only ?? false
         }
         setServerConfig(normalizedConfig)
         const currentSig = configSignature(configRef.current)
@@ -538,6 +556,12 @@ export default function RebalanceCenter() {
           min_split_enabled: config.min_split_enabled,
           min_probe_sat: config.min_probe_sat,
           min_execute_sat: config.min_execute_sat,
+          mpp_enabled: config.mpp_enabled,
+          mpp_max_shards: config.mpp_max_shards,
+          mpp_parallelism: config.mpp_parallelism,
+          mpp_min_shard_sat: config.mpp_min_shard_sat,
+          mpp_round_timeout_sec: config.mpp_round_timeout_sec,
+          mpp_auto_only: config.mpp_auto_only,
           fee_ladder_steps: config.fee_ladder_steps,
           amount_probe_steps: config.amount_probe_steps,
           amount_probe_adaptive: config.amount_probe_adaptive,
@@ -1233,41 +1257,137 @@ export default function RebalanceCenter() {
                 onChange={(e) => setConfig({ ...config, max_amount_sat: Number(e.target.value) })}
               />
             </div>
-            <div className="space-y-2">
-              <label className="flex items-center gap-2 text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minSplitEnabled')}>
-                <input
-                  type="checkbox"
-                  checked={config.min_split_enabled}
-                  onChange={(e) => setConfig({ ...config, min_split_enabled: e.target.checked })}
-                />
-                {t('rebalanceCenter.settings.minSplitEnabled')}
-              </label>
+            <div className="lg:col-span-3 rounded-xl border border-white/10 bg-white/5 p-3 space-y-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-fog/60">{t('rebalanceCenter.settings.splitMinTitle')}</p>
+                <p className="text-xs text-fog/50">{t('rebalanceCenter.settings.splitMinSubtitle')}</p>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-3">
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minSplitEnabled')}>
+                    <input
+                      type="checkbox"
+                      checked={config.min_split_enabled}
+                      onChange={(e) => setConfig({ ...config, min_split_enabled: e.target.checked })}
+                    />
+                    {t('rebalanceCenter.settings.minSplitEnabled')}
+                  </label>
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.splitMinRecommended')}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minProbeAmount')}>
+                    {t('rebalanceCenter.settings.minProbeAmount')}
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={0}
+                    value={config.min_probe_sat}
+                    disabled={!config.min_split_enabled}
+                    onChange={(e) => setConfig({ ...config, min_probe_sat: Number(e.target.value) })}
+                  />
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.minProbeRecommended', { value: formatSats(1000) })}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minExecuteAmount')}>
+                    {t('rebalanceCenter.settings.minExecuteAmount')}
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={0}
+                    value={config.min_execute_sat}
+                    disabled={!config.min_split_enabled}
+                    onChange={(e) => setConfig({ ...config, min_execute_sat: Number(e.target.value) })}
+                  />
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.minExecuteRecommended')}</p>
+                </div>
+              </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minProbeAmount')}>
-                {t('rebalanceCenter.settings.minProbeAmount')}
-              </label>
-              <input
-                className="input-field"
-                type="number"
-                min={0}
-                value={config.min_probe_sat}
-                disabled={!config.min_split_enabled}
-                onChange={(e) => setConfig({ ...config, min_probe_sat: Number(e.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.minExecuteAmount')}>
-                {t('rebalanceCenter.settings.minExecuteAmount')}
-              </label>
-              <input
-                className="input-field"
-                type="number"
-                min={0}
-                value={config.min_execute_sat}
-                disabled={!config.min_split_enabled}
-                onChange={(e) => setConfig({ ...config, min_execute_sat: Number(e.target.value) })}
-              />
+            <div className="lg:col-span-3 rounded-xl border border-white/10 bg-white/5 p-3 space-y-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-fog/60">{t('rebalanceCenter.settings.mppTitle')}</p>
+                <p className="text-xs text-fog/50">{t('rebalanceCenter.settings.mppSubtitle')}</p>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-3">
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppEnabled')}>
+                    <input
+                      type="checkbox"
+                      checked={config.mpp_enabled}
+                      onChange={(e) => setConfig({ ...config, mpp_enabled: e.target.checked })}
+                    />
+                    {t('rebalanceCenter.settings.mppEnabled')}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppAutoOnly')}>
+                    <input
+                      type="checkbox"
+                      checked={config.mpp_auto_only}
+                      disabled={!config.mpp_enabled}
+                      onChange={(e) => setConfig({ ...config, mpp_auto_only: e.target.checked })}
+                    />
+                    {t('rebalanceCenter.settings.mppAutoOnly')}
+                  </label>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppMaxShards')}>
+                    {t('rebalanceCenter.settings.mppMaxShards')}
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={config.mpp_max_shards}
+                    disabled={!config.mpp_enabled}
+                    onChange={(e) => setConfig({ ...config, mpp_max_shards: Number(e.target.value) })}
+                  />
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMaxShardsRecommended', { value: 2 })}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppParallelism')}>
+                    {t('rebalanceCenter.settings.mppParallelism')}
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={config.mpp_parallelism}
+                    disabled={!config.mpp_enabled}
+                    onChange={(e) => setConfig({ ...config, mpp_parallelism: Number(e.target.value) })}
+                  />
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppParallelismRecommended', { value: 2 })}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppMinShardSat')}>
+                    {t('rebalanceCenter.settings.mppMinShardSat')}
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={1}
+                    value={config.mpp_min_shard_sat}
+                    disabled={!config.mpp_enabled}
+                    onChange={(e) => setConfig({ ...config, mpp_min_shard_sat: Number(e.target.value) })}
+                  />
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMinShardSatRecommended', { value: formatSats(1000) })}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppRoundTimeout')}>
+                    {t('rebalanceCenter.settings.mppRoundTimeout')}
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={5}
+                    value={config.mpp_round_timeout_sec}
+                    disabled={!config.mpp_enabled}
+                    onChange={(e) => setConfig({ ...config, mpp_round_timeout_sec: Number(e.target.value) })}
+                  />
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppRoundTimeoutRecommended', { value: 20 })}</p>
+                </div>
+              </div>
             </div>
             <div className="space-y-2">
               <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.feeSteps')}>

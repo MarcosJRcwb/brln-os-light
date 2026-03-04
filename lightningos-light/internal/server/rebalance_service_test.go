@@ -25,6 +25,21 @@ func TestDefaultRebalanceConfigSplitCompatibility(t *testing.T) {
 	if effectiveMinProbeSat(cfg) != cfg.MinAmountSat {
 		t.Fatalf("expected effective probe min to match legacy min when split is off")
 	}
+	if cfg.MppEnabled {
+		t.Fatalf("expected MSPR disabled by default")
+	}
+	if cfg.MppMaxShards != 2 {
+		t.Fatalf("expected mpp_max_shards default=2, got %d", cfg.MppMaxShards)
+	}
+	if cfg.MppParallelism != 2 {
+		t.Fatalf("expected mpp_parallelism default=2, got %d", cfg.MppParallelism)
+	}
+	if cfg.MppMinShardSat != 1000 {
+		t.Fatalf("expected mpp_min_shard_sat default=1000, got %d", cfg.MppMinShardSat)
+	}
+	if cfg.MppRoundTimeoutSec != 20 {
+		t.Fatalf("expected mpp_round_timeout_sec default=20, got %d", cfg.MppRoundTimeoutSec)
+	}
 }
 
 func TestNormalizeRebalanceConfigClampsNegativeFields(t *testing.T) {
@@ -47,6 +62,18 @@ func TestNormalizeRebalanceConfigClampsNegativeFields(t *testing.T) {
 	}
 	if got.MinExecuteSat != 0 {
 		t.Fatalf("expected MinExecuteSat clamped to 0, got %d", got.MinExecuteSat)
+	}
+	if got.MppMaxShards != 2 {
+		t.Fatalf("expected MppMaxShards fallback=2, got %d", got.MppMaxShards)
+	}
+	if got.MppParallelism != 2 {
+		t.Fatalf("expected MppParallelism fallback=2, got %d", got.MppParallelism)
+	}
+	if got.MppMinShardSat != 1000 {
+		t.Fatalf("expected MppMinShardSat fallback=1000, got %d", got.MppMinShardSat)
+	}
+	if got.MppRoundTimeoutSec != 20 {
+		t.Fatalf("expected MppRoundTimeoutSec fallback=20, got %d", got.MppRoundTimeoutSec)
 	}
 }
 
@@ -178,5 +205,24 @@ func TestBuildScanDetailIncludesBelowExecuteMinReason(t *testing.T) {
 	}
 	if !strings.Contains(got, "below execute min amount: 3") {
 		t.Fatalf("expected below_execute_min reason in detail, got %q", got)
+	}
+}
+
+func TestNormalizeRebalanceConfigClampsMppBounds(t *testing.T) {
+	cfg := RebalanceConfig{
+		MppMaxShards:       99,
+		MppParallelism:     99,
+		MppMinShardSat:     1,
+		MppRoundTimeoutSec: 1,
+	}
+	got := normalizeRebalanceConfig(cfg)
+	if got.MppMaxShards != 8 {
+		t.Fatalf("expected MppMaxShards clamped to 8, got %d", got.MppMaxShards)
+	}
+	if got.MppParallelism != got.MppMaxShards {
+		t.Fatalf("expected MppParallelism clamped to MppMaxShards=%d, got %d", got.MppMaxShards, got.MppParallelism)
+	}
+	if got.MppRoundTimeoutSec != 1 {
+		t.Fatalf("expected positive MppRoundTimeoutSec preserved, got %d", got.MppRoundTimeoutSec)
 	}
 }

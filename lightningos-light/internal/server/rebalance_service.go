@@ -71,6 +71,12 @@ type RebalanceConfig struct {
 	MinSplitEnabled           bool    `json:"min_split_enabled"`
 	MinProbeSat               int64   `json:"min_probe_sat"`
 	MinExecuteSat             int64   `json:"min_execute_sat"`
+	MppEnabled                bool    `json:"mpp_enabled"`
+	MppMaxShards              int     `json:"mpp_max_shards"`
+	MppParallelism            int     `json:"mpp_parallelism"`
+	MppMinShardSat            int64   `json:"mpp_min_shard_sat"`
+	MppRoundTimeoutSec        int     `json:"mpp_round_timeout_sec"`
+	MppAutoOnly               bool    `json:"mpp_auto_only"`
 	FeeLadderSteps            int     `json:"fee_ladder_steps"`
 	AmountProbeSteps          int     `json:"amount_probe_steps"`
 	AmountProbeAdaptive       bool    `json:"amount_probe_adaptive"`
@@ -332,6 +338,12 @@ func defaultRebalanceConfig() RebalanceConfig {
 		MinSplitEnabled:           false,
 		MinProbeSat:               0,
 		MinExecuteSat:             0,
+		MppEnabled:                false,
+		MppMaxShards:              2,
+		MppParallelism:            2,
+		MppMinShardSat:            1000,
+		MppRoundTimeoutSec:        20,
+		MppAutoOnly:               false,
 		FeeLadderSteps:            4,
 		AmountProbeSteps:          4,
 		AmountProbeAdaptive:       true,
@@ -570,6 +582,7 @@ func normalizeChannelSetting(setting channelSetting) channelSetting {
 }
 
 func normalizeRebalanceConfig(cfg RebalanceConfig) RebalanceConfig {
+	def := defaultRebalanceConfig()
 	if cfg.MinAmountSat < 0 {
 		cfg.MinAmountSat = 0
 	}
@@ -581,6 +594,24 @@ func normalizeRebalanceConfig(cfg RebalanceConfig) RebalanceConfig {
 	}
 	if cfg.MinExecuteSat < 0 {
 		cfg.MinExecuteSat = 0
+	}
+	if cfg.MppMaxShards <= 0 {
+		cfg.MppMaxShards = def.MppMaxShards
+	}
+	if cfg.MppMaxShards > 8 {
+		cfg.MppMaxShards = 8
+	}
+	if cfg.MppParallelism <= 0 {
+		cfg.MppParallelism = def.MppParallelism
+	}
+	if cfg.MppParallelism > cfg.MppMaxShards {
+		cfg.MppParallelism = cfg.MppMaxShards
+	}
+	if cfg.MppMinShardSat <= 0 {
+		cfg.MppMinShardSat = def.MppMinShardSat
+	}
+	if cfg.MppRoundTimeoutSec <= 0 {
+		cfg.MppRoundTimeoutSec = def.MppRoundTimeoutSec
 	}
 	return cfg
 }
@@ -3521,6 +3552,12 @@ end $$;
     min_split_enabled boolean not null default false,
     min_probe_sat bigint not null default 0,
     min_execute_sat bigint not null default 0,
+    mpp_enabled boolean not null default false,
+    mpp_max_shards integer not null default 2,
+    mpp_parallelism integer not null default 2,
+    mpp_min_shard_sat bigint not null default 1000,
+    mpp_round_timeout_sec integer not null default 20,
+    mpp_auto_only boolean not null default false,
     fee_ladder_steps integer not null default 4,
     amount_probe_steps integer not null default 4,
     amount_probe_adaptive boolean not null default true,
@@ -3555,6 +3592,18 @@ end $$;
     add column if not exists min_probe_sat bigint not null default 0;
   alter table rebalance_config
     add column if not exists min_execute_sat bigint not null default 0;
+  alter table rebalance_config
+    add column if not exists mpp_enabled boolean not null default false;
+  alter table rebalance_config
+    add column if not exists mpp_max_shards integer not null default 2;
+  alter table rebalance_config
+    add column if not exists mpp_parallelism integer not null default 2;
+  alter table rebalance_config
+    add column if not exists mpp_min_shard_sat bigint not null default 1000;
+  alter table rebalance_config
+    add column if not exists mpp_round_timeout_sec integer not null default 20;
+  alter table rebalance_config
+    add column if not exists mpp_auto_only boolean not null default false;
   alter table rebalance_config
     add column if not exists amount_probe_adaptive boolean not null default true;
   alter table rebalance_config
@@ -3690,7 +3739,8 @@ func (s *RebalanceService) loadConfig(ctx context.Context) (RebalanceConfig, err
 
 	row := s.db.QueryRow(ctx, `
   select auto_enabled, scan_interval_sec, deadband_pct, source_min_local_pct, econ_ratio, econ_ratio_max_ppm, fee_limit_ppm, lost_profit, fail_tolerance_ppm, roi_min, daily_budget_pct,
-    max_concurrent, min_amount_sat, max_amount_sat, min_split_enabled, min_probe_sat, min_execute_sat, fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
+    max_concurrent, min_amount_sat, max_amount_sat, min_split_enabled, min_probe_sat, min_execute_sat, mpp_enabled, mpp_max_shards, mpp_parallelism, mpp_min_shard_sat, mpp_round_timeout_sec, mpp_auto_only,
+    fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
     unlock_days, critical_release_pct, critical_min_sources, critical_min_available_sats, critical_cycles
   from rebalance_config where id=$1`, rebalanceConfigID)
 
@@ -3713,6 +3763,12 @@ func (s *RebalanceService) loadConfig(ctx context.Context) (RebalanceConfig, err
 		&cfg.MinSplitEnabled,
 		&cfg.MinProbeSat,
 		&cfg.MinExecuteSat,
+		&cfg.MppEnabled,
+		&cfg.MppMaxShards,
+		&cfg.MppParallelism,
+		&cfg.MppMinShardSat,
+		&cfg.MppRoundTimeoutSec,
+		&cfg.MppAutoOnly,
 		&cfg.FeeLadderSteps,
 		&cfg.AmountProbeSteps,
 		&cfg.AmountProbeAdaptive,
@@ -3746,9 +3802,10 @@ func (s *RebalanceService) upsertConfig(ctx context.Context, cfg RebalanceConfig
 	_, err := s.db.Exec(ctx, `
   insert into rebalance_config (
     id, auto_enabled, scan_interval_sec, deadband_pct, source_min_local_pct, econ_ratio, econ_ratio_max_ppm, fee_limit_ppm, lost_profit, fail_tolerance_ppm, roi_min, daily_budget_pct,
-    max_concurrent, min_amount_sat, max_amount_sat, min_split_enabled, min_probe_sat, min_execute_sat, fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
+    max_concurrent, min_amount_sat, max_amount_sat, min_split_enabled, min_probe_sat, min_execute_sat, mpp_enabled, mpp_max_shards, mpp_parallelism, mpp_min_shard_sat, mpp_round_timeout_sec, mpp_auto_only,
+    fee_ladder_steps, amount_probe_steps, amount_probe_adaptive, attempt_timeout_sec, rebalance_timeout_sec, manual_restart_watch, mc_half_life_sec, payback_mode_flags,
     unlock_days, critical_release_pct, critical_min_sources, critical_min_available_sats, critical_cycles, updated_at
-  ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,now())
+  ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,now())
    on conflict (id) do update set
     auto_enabled = excluded.auto_enabled,
     scan_interval_sec = excluded.scan_interval_sec,
@@ -3767,6 +3824,12 @@ func (s *RebalanceService) upsertConfig(ctx context.Context, cfg RebalanceConfig
     min_split_enabled = excluded.min_split_enabled,
     min_probe_sat = excluded.min_probe_sat,
     min_execute_sat = excluded.min_execute_sat,
+    mpp_enabled = excluded.mpp_enabled,
+    mpp_max_shards = excluded.mpp_max_shards,
+    mpp_parallelism = excluded.mpp_parallelism,
+    mpp_min_shard_sat = excluded.mpp_min_shard_sat,
+    mpp_round_timeout_sec = excluded.mpp_round_timeout_sec,
+    mpp_auto_only = excluded.mpp_auto_only,
     fee_ladder_steps = excluded.fee_ladder_steps,
     amount_probe_steps = excluded.amount_probe_steps,
     amount_probe_adaptive = excluded.amount_probe_adaptive,
@@ -3782,7 +3845,7 @@ func (s *RebalanceService) upsertConfig(ctx context.Context, cfg RebalanceConfig
     critical_cycles = excluded.critical_cycles,
     updated_at = now()
   `, rebalanceConfigID, cfg.AutoEnabled, cfg.ScanIntervalSec, cfg.DeadbandPct, cfg.SourceMinLocalPct, cfg.EconRatio, cfg.EconRatioMaxPpm, cfg.FeeLimitPpm, cfg.LostProfit, cfg.FailTolerancePpm, cfg.ROIMin, cfg.DailyBudgetPct, cfg.MaxConcurrent,
-		cfg.MinAmountSat, cfg.MaxAmountSat, cfg.MinSplitEnabled, cfg.MinProbeSat, cfg.MinExecuteSat, cfg.FeeLadderSteps, cfg.AmountProbeSteps, cfg.AmountProbeAdaptive, cfg.AttemptTimeoutSec, cfg.RebalanceTimeoutSec, cfg.ManualRestartWatch, cfg.MissionControlHalfLifeSec, cfg.PaybackModeFlags, cfg.UnlockDays, cfg.CriticalReleasePct, cfg.CriticalMinSources, cfg.CriticalMinAvailableSats, cfg.CriticalCycles,
+		cfg.MinAmountSat, cfg.MaxAmountSat, cfg.MinSplitEnabled, cfg.MinProbeSat, cfg.MinExecuteSat, cfg.MppEnabled, cfg.MppMaxShards, cfg.MppParallelism, cfg.MppMinShardSat, cfg.MppRoundTimeoutSec, cfg.MppAutoOnly, cfg.FeeLadderSteps, cfg.AmountProbeSteps, cfg.AmountProbeAdaptive, cfg.AttemptTimeoutSec, cfg.RebalanceTimeoutSec, cfg.ManualRestartWatch, cfg.MissionControlHalfLifeSec, cfg.PaybackModeFlags, cfg.UnlockDays, cfg.CriticalReleasePct, cfg.CriticalMinSources, cfg.CriticalMinAvailableSats, cfg.CriticalCycles,
 	)
 	return err
 }
