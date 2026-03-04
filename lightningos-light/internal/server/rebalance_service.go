@@ -586,15 +586,8 @@ func normalizeRebalanceConfig(cfg RebalanceConfig) RebalanceConfig {
 }
 
 func effectiveMinExecuteSat(cfg RebalanceConfig) int64 {
-	if cfg.MinSplitEnabled {
-		if cfg.MinExecuteSat > 0 {
-			return cfg.MinExecuteSat
-		}
-		// In split mode, if execute min is unset but probe min is set, treat probe min
-		// as the effective execute floor to avoid silent no-attempt jobs.
-		if cfg.MinProbeSat > 0 {
-			return cfg.MinProbeSat
-		}
+	if cfg.MinSplitEnabled && cfg.MinExecuteSat > 0 {
+		return cfg.MinExecuteSat
 	}
 	if cfg.MinAmountSat > 0 {
 		return cfg.MinAmountSat

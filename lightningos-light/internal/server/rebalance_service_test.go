@@ -80,15 +80,15 @@ func TestEffectiveMinsSplitEnabledUseDedicatedValues(t *testing.T) {
 	}
 }
 
-func TestEffectiveExecuteMinFallsBackToProbeMinInSplitMode(t *testing.T) {
+func TestEffectiveExecuteMinKeepsLegacyMinWhenExecuteUnsetInSplitMode(t *testing.T) {
 	cfg := RebalanceConfig{
 		MinSplitEnabled: true,
 		MinAmountSat:    20000,
 		MinProbeSat:     1500,
 		MinExecuteSat:   0,
 	}
-	if got := effectiveMinExecuteSat(cfg); got != 1500 {
-		t.Fatalf("expected execute min fallback to probe min=1500, got %d", got)
+	if got := effectiveMinExecuteSat(cfg); got != 20000 {
+		t.Fatalf("expected execute min fallback to legacy min=20000, got %d", got)
 	}
 	if got := effectiveMinProbeSat(cfg); got != 1500 {
 		t.Fatalf("expected probe min=1500, got %d", got)
