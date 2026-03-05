@@ -1699,6 +1699,7 @@
         "mppRoundTimeout": "Round timeout (sec)",
         "mppMaxShardsRecommended": "Recommended: {{value}}",
         "mppParallelismRecommended": "Recommended: {{value}}",
+        "mppParallelismBoundedByShards": "Parallel workers cannot exceed max shards.",
         "mppMinShardSatRecommended": "Recommended: {{value}}",
         "mppRoundTimeoutRecommended": "Recommended: {{value}}s",
         "feeSteps": "Fee ladder steps",

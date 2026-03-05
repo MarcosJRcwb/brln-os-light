@@ -549,6 +549,8 @@ export default function RebalanceCenter() {
     setSaving(true)
     setStatus('')
     try {
+        const safeMppMaxShards = Math.max(1, Math.min(8, Number(config.mpp_max_shards) || 1))
+        const safeMppParallelism = Math.max(1, Math.min(safeMppMaxShards, Number(config.mpp_parallelism) || 1))
         const saved = (await updateRebalanceConfig({
           auto_enabled: config.auto_enabled,
           scan_interval_sec: config.scan_interval_sec,
@@ -568,8 +570,8 @@ export default function RebalanceCenter() {
           min_probe_sat: config.min_probe_sat,
           min_execute_sat: config.min_execute_sat,
           mpp_enabled: config.mpp_enabled,
-          mpp_max_shards: config.mpp_max_shards,
-          mpp_parallelism: config.mpp_parallelism,
+          mpp_max_shards: safeMppMaxShards,
+          mpp_parallelism: safeMppParallelism,
           mpp_min_shard_sat: config.mpp_min_shard_sat,
           mpp_round_timeout_sec: config.mpp_round_timeout_sec,
           mpp_auto_only: config.mpp_auto_only,
@@ -1135,30 +1137,32 @@ export default function RebalanceCenter() {
             {config?.mpp_enabled && (
               <div className="mt-2 border-t border-white/10 pt-2 space-y-1">
                 <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.mppMetrics24h')}</p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppJobs24h', { value: formatter.format(overview.mpp_shadow_jobs_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppPlanReady24h', { value: formatter.format(overview.mpp_shadow_plan_ready_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppInProgressJobs24h', { value: formatter.format(overview.mpp_shadow_in_progress_jobs_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppSuccessJobs24h', { value: formatter.format(overview.mpp_shadow_success_jobs_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppFailedJobs24h', { value: formatter.format(overview.mpp_shadow_failed_jobs_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppPartialJobs24h', { value: formatter.format(overview.mpp_shadow_partial_jobs_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppPlannedSat24h', { value: formatSats(overview.mpp_shadow_planned_sat_24h ?? 0) })}
-                </p>
-                <p className="text-xs text-fog/50">
-                  {t('rebalanceCenter.overview.mppActualSentSat24h', { value: formatSats(overview.mpp_shadow_actual_sent_sat_24h ?? 0) })}
-                </p>
+                <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppJobs24h', { value: formatter.format(overview.mpp_shadow_jobs_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppPlanReady24h', { value: formatter.format(overview.mpp_shadow_plan_ready_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppInProgressJobs24h', { value: formatter.format(overview.mpp_shadow_in_progress_jobs_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppSuccessJobs24h', { value: formatter.format(overview.mpp_shadow_success_jobs_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppFailedJobs24h', { value: formatter.format(overview.mpp_shadow_failed_jobs_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppPartialJobs24h', { value: formatter.format(overview.mpp_shadow_partial_jobs_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppPlannedSat24h', { value: formatSats(overview.mpp_shadow_planned_sat_24h ?? 0) })}
+                  </p>
+                  <p className="text-xs text-fog/50">
+                    {t('rebalanceCenter.overview.mppActualSentSat24h', { value: formatSats(overview.mpp_shadow_actual_sent_sat_24h ?? 0) })}
+                  </p>
+                </div>
               </div>
             )}
           </div>
@@ -1636,7 +1640,11 @@ export default function RebalanceCenter() {
                     max={8}
                     value={config.mpp_max_shards}
                     disabled={!config.mpp_enabled}
-                    onChange={(e) => setConfig({ ...config, mpp_max_shards: Number(e.target.value) })}
+                    onChange={(e) => {
+                      const nextMaxShards = Math.max(1, Math.min(8, Number(e.target.value) || 1))
+                      const nextParallelism = Math.max(1, Math.min(config.mpp_parallelism || 1, nextMaxShards))
+                      setConfig({ ...config, mpp_max_shards: nextMaxShards, mpp_parallelism: nextParallelism })
+                    }}
                   />
                   <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMaxShardsRecommended', { value: 2 })}</p>
                 </div>
@@ -1648,12 +1656,17 @@ export default function RebalanceCenter() {
                     className="input-field"
                     type="number"
                     min={1}
-                    max={8}
+                    max={Math.max(1, Math.min(8, config.mpp_max_shards || 1))}
                     value={config.mpp_parallelism}
                     disabled={!config.mpp_enabled}
-                    onChange={(e) => setConfig({ ...config, mpp_parallelism: Number(e.target.value) })}
+                    onChange={(e) => {
+                      const maxAllowed = Math.max(1, Math.min(8, config.mpp_max_shards || 1))
+                      const nextParallelism = Math.max(1, Math.min(maxAllowed, Number(e.target.value) || 1))
+                      setConfig({ ...config, mpp_parallelism: nextParallelism })
+                    }}
                   />
                   <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppParallelismRecommended', { value: 2 })}</p>
+                  <p className="text-[11px] text-fog/45">{t('rebalanceCenter.settings.mppParallelismBoundedByShards')}</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppMinShardSat')}>

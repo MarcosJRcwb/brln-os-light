@@ -729,6 +729,30 @@ func buildMppShadowPlan(targetAmountSat int64, sources []RebalanceChannel, cfg R
 	}
 
 	remaining := targetAmountSat
+	usedSource := make(map[int]bool, len(sources))
+
+	selectSource := func(desired int64, requireDesired bool, preferUnused bool) int {
+		bestIdx := -1
+		bestCap := int64(0)
+		for i, cap := range capacityLeft {
+			if preferUnused && usedSource[i] {
+				continue
+			}
+			if requireDesired {
+				if cap < desired {
+					continue
+				}
+			} else if cap < minShardSat {
+				continue
+			}
+			if bestIdx < 0 || cap > bestCap {
+				bestIdx = i
+				bestCap = cap
+			}
+		}
+		return bestIdx
+	}
+
 	for len(plan.Shards) < maxShards && remaining >= minShardSat {
 		shardsLeft := maxShards - len(plan.Shards)
 		desired := remaining / int64(shardsLeft)
@@ -742,35 +766,31 @@ func buildMppShadowPlan(targetAmountSat int64, sources []RebalanceChannel, cfg R
 			desired = remaining
 		}
 
-		chosenIdx := -1
-		for i, cap := range capacityLeft {
-			if cap >= desired {
-				chosenIdx = i
-				break
-			}
+		chosenIdx := selectSource(desired, true, true)
+		if chosenIdx < 0 {
+			// Prefer source diversity even when the exact desired shard size is unavailable.
+			chosenIdx = selectSource(desired, false, true)
 		}
 		if chosenIdx < 0 {
-			bestCap := int64(0)
-			for i, cap := range capacityLeft {
-				if cap >= minShardSat && cap > bestCap {
-					bestCap = cap
-					chosenIdx = i
-				}
-			}
-			if chosenIdx < 0 {
-				break
-			}
-			if desired > capacityLeft[chosenIdx] {
-				desired = capacityLeft[chosenIdx]
-			}
-			if desired < minShardSat {
-				break
-			}
+			chosenIdx = selectSource(desired, true, false)
+		}
+		if chosenIdx < 0 {
+			chosenIdx = selectSource(desired, false, false)
+		}
+		if chosenIdx < 0 {
+			break
+		}
+		if desired > capacityLeft[chosenIdx] {
+			desired = capacityLeft[chosenIdx]
+		}
+		if desired < minShardSat {
+			break
 		}
 
 		if desired <= 0 || desired > capacityLeft[chosenIdx] {
 			break
 		}
+		usedSource[chosenIdx] = true
 		capacityLeft[chosenIdx] -= desired
 		remaining -= desired
 		plan.Shards = append(plan.Shards, mppShadowShard{
@@ -2537,6 +2557,17 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		Fatal           bool
 	}
 
+	formatMppShardFailReason := func(reason string) string {
+		trimmed := strings.TrimSpace(reason)
+		if trimmed == "" {
+			trimmed = "failed"
+		}
+		if strings.HasPrefix(strings.ToLower(trimmed), "mpp shard:") {
+			return trimmed
+		}
+		return "mpp shard: " + trimmed
+	}
+
 	attemptMppShard := func(roundCtx context.Context, source RebalanceChannel, amountTry int64) mppShardAttemptResult {
 		result := mppShardAttemptResult{
 			Source:          source,
@@ -2876,8 +2907,9 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 					failReason = "mpp shard failed"
 				}
 			}
-			_ = s.insertAttempt(ctx, jobID, attemptIndex, res.Source.ChannelID, attemptAmount, res.FeeLimitPpm, 0, "failed", res.PaymentHash, failReason)
-			s.recordPairFailure(ctx, res.Source.ChannelID, targetChannelID, failReason)
+			shardFailReason := formatMppShardFailReason(failReason)
+			_ = s.insertAttempt(ctx, jobID, attemptIndex, res.Source.ChannelID, attemptAmount, res.FeeLimitPpm, 0, "failed", res.PaymentHash, shardFailReason)
+			s.recordPairFailure(ctx, res.Source.ChannelID, targetChannelID, shardFailReason)
 		}
 
 		if s.logger != nil {

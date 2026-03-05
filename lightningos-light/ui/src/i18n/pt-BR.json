@@ -1699,6 +1699,7 @@
         "mppRoundTimeout": "Timeout por rodada (seg)",
         "mppMaxShardsRecommended": "Recomendado: {{value}}",
         "mppParallelismRecommended": "Recomendado: {{value}}",
+        "mppParallelismBoundedByShards": "Workers paralelos não podem ser maiores que Máx. de shards.",
         "mppMinShardSatRecommended": "Recomendado: {{value}}",
         "mppRoundTimeoutRecommended": "Recomendado: {{value}}s",
         "feeSteps": "Degraus de fee",
