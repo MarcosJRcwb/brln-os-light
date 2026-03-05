@@ -505,6 +505,7 @@ func (s *RebalanceService) GetConfig(ctx context.Context) (RebalanceConfig, erro
 }
 
 func (s *RebalanceService) UpdateConfig(ctx context.Context, updated RebalanceConfig) (RebalanceConfig, error) {
+	prev, _ := s.loadConfig(ctx)
 	updated = normalizeRebalanceConfig(updated)
 	if err := s.upsertConfig(ctx, updated); err != nil {
 		return RebalanceConfig{}, err
@@ -517,6 +518,9 @@ func (s *RebalanceService) UpdateConfig(ctx context.Context, updated RebalanceCo
 		mcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		s.applyMissionControlHalfLife(mcCtx, updated)
 		cancel()
+	}
+	if prev.ManualRestartWatch && !updated.ManualRestartWatch {
+		s.cancelAllManualRestarts()
 	}
 	s.resetSemaphore()
 	s.triggerScan()
@@ -3447,6 +3451,27 @@ func (s *RebalanceService) cancelManualRestart(channelID uint64) {
 	}
 }
 
+func (s *RebalanceService) cancelAllManualRestarts() {
+	s.mu.Lock()
+	if s.manualRestartCancel == nil || len(s.manualRestartCancel) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	handles := make([]*manualRestartHandle, 0, len(s.manualRestartCancel))
+	for _, handle := range s.manualRestartCancel {
+		if handle != nil {
+			handles = append(handles, handle)
+		}
+	}
+	s.manualRestartCancel = map[uint64]*manualRestartHandle{}
+	s.mu.Unlock()
+	for _, handle := range handles {
+		if handle.cancel != nil {
+			handle.cancel()
+		}
+	}
+}
+
 func (s *RebalanceService) shouldManualRestart(status string, reason string) bool {
 	if status == "partial" {
 		return true
@@ -3488,6 +3513,9 @@ func (s *RebalanceService) scheduleManualRestart(info manualRestartInfo) {
 	defer restartCancel()
 
 	cfg, _ := s.loadConfig(restartCtx)
+	if !cfg.ManualRestartWatch {
+		return
+	}
 	settings, _ := s.loadChannelSettings(restartCtx)
 	exclusions, _ := s.loadExclusions(restartCtx)
 	ledger, _ := s.loadLedger(restartCtx)
