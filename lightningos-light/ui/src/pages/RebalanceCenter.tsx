@@ -16,6 +16,11 @@ import {
 } from '../api'
 import { getLocale } from '../i18n'
 
+const MSPR_DEFAULT_MAX_SHARDS = 8
+const MSPR_DEFAULT_PARALLELISM = 6
+const MSPR_DEFAULT_MIN_SHARD_SAT = 1000
+const MSPR_DEFAULT_ROUND_TIMEOUT_SEC = 30
+
 type RebalanceConfig = {
   auto_enabled: boolean
   scan_interval_sec: number
@@ -502,10 +507,10 @@ export default function RebalanceCenter() {
           min_probe_sat: nextConfig.min_probe_sat || 0,
           min_execute_sat: nextConfig.min_execute_sat || 0,
           mpp_enabled: nextConfig.mpp_enabled ?? false,
-          mpp_max_shards: nextConfig.mpp_max_shards || 2,
-          mpp_parallelism: nextConfig.mpp_parallelism || 2,
-          mpp_min_shard_sat: nextConfig.mpp_min_shard_sat || 1000,
-          mpp_round_timeout_sec: nextConfig.mpp_round_timeout_sec || 20,
+          mpp_max_shards: nextConfig.mpp_max_shards || MSPR_DEFAULT_MAX_SHARDS,
+          mpp_parallelism: nextConfig.mpp_parallelism || MSPR_DEFAULT_PARALLELISM,
+          mpp_min_shard_sat: nextConfig.mpp_min_shard_sat || MSPR_DEFAULT_MIN_SHARD_SAT,
+          mpp_round_timeout_sec: nextConfig.mpp_round_timeout_sec || MSPR_DEFAULT_ROUND_TIMEOUT_SEC,
           mpp_auto_only: nextConfig.mpp_auto_only ?? false
         }
         setServerConfig(normalizedConfig)
@@ -549,8 +554,9 @@ export default function RebalanceCenter() {
     setSaving(true)
     setStatus('')
     try {
-        const safeMppMaxShards = Math.max(1, Math.min(8, Number(config.mpp_max_shards) || 1))
-        const safeMppParallelism = Math.max(1, Math.min(safeMppMaxShards, Number(config.mpp_parallelism) || 1))
+        const safeMppMaxShards = Math.max(1, Math.min(8, Number(config.mpp_max_shards) || MSPR_DEFAULT_MAX_SHARDS))
+        const safeMppParallelism = Math.max(1, Math.min(safeMppMaxShards, Number(config.mpp_parallelism) || MSPR_DEFAULT_PARALLELISM))
+        const safeMppRoundTimeoutSec = Math.max(5, Number(config.mpp_round_timeout_sec) || MSPR_DEFAULT_ROUND_TIMEOUT_SEC)
         const saved = (await updateRebalanceConfig({
           auto_enabled: config.auto_enabled,
           scan_interval_sec: config.scan_interval_sec,
@@ -573,7 +579,7 @@ export default function RebalanceCenter() {
           mpp_max_shards: safeMppMaxShards,
           mpp_parallelism: safeMppParallelism,
           mpp_min_shard_sat: config.mpp_min_shard_sat,
-          mpp_round_timeout_sec: config.mpp_round_timeout_sec,
+          mpp_round_timeout_sec: safeMppRoundTimeoutSec,
           mpp_auto_only: config.mpp_auto_only,
           fee_ladder_steps: config.fee_ladder_steps,
           amount_probe_steps: config.amount_probe_steps,
@@ -601,10 +607,10 @@ export default function RebalanceCenter() {
         min_probe_sat: saved.min_probe_sat || 0,
         min_execute_sat: saved.min_execute_sat || 0,
         mpp_enabled: saved.mpp_enabled ?? false,
-        mpp_max_shards: saved.mpp_max_shards || 2,
-        mpp_parallelism: saved.mpp_parallelism || 2,
-        mpp_min_shard_sat: saved.mpp_min_shard_sat || 1000,
-        mpp_round_timeout_sec: saved.mpp_round_timeout_sec || 20,
+        mpp_max_shards: saved.mpp_max_shards || MSPR_DEFAULT_MAX_SHARDS,
+        mpp_parallelism: saved.mpp_parallelism || MSPR_DEFAULT_PARALLELISM,
+        mpp_min_shard_sat: saved.mpp_min_shard_sat || MSPR_DEFAULT_MIN_SHARD_SAT,
+        mpp_round_timeout_sec: saved.mpp_round_timeout_sec || MSPR_DEFAULT_ROUND_TIMEOUT_SEC,
         mpp_auto_only: saved.mpp_auto_only ?? false
       }
       setServerConfig(normalizedSaved)
@@ -1646,7 +1652,7 @@ export default function RebalanceCenter() {
                       setConfig({ ...config, mpp_max_shards: nextMaxShards, mpp_parallelism: nextParallelism })
                     }}
                   />
-                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMaxShardsRecommended', { value: 2 })}</p>
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMaxShardsRecommended', { value: MSPR_DEFAULT_MAX_SHARDS })}</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppParallelism')}>
@@ -1665,7 +1671,7 @@ export default function RebalanceCenter() {
                       setConfig({ ...config, mpp_parallelism: nextParallelism })
                     }}
                   />
-                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppParallelismRecommended', { value: 2 })}</p>
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppParallelismRecommended', { value: MSPR_DEFAULT_PARALLELISM })}</p>
                   <p className="text-[11px] text-fog/45">{t('rebalanceCenter.settings.mppParallelismBoundedByShards')}</p>
                 </div>
                 <div className="space-y-2">
@@ -1680,7 +1686,7 @@ export default function RebalanceCenter() {
                     disabled={!config.mpp_enabled}
                     onChange={(e) => setConfig({ ...config, mpp_min_shard_sat: Number(e.target.value) })}
                   />
-                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMinShardSatRecommended', { value: formatSats(1000) })}</p>
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppMinShardSatRecommended', { value: formatSats(MSPR_DEFAULT_MIN_SHARD_SAT) })}</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm text-fog/70" title={t('rebalanceCenter.settingsHints.mppRoundTimeout')}>
@@ -1694,7 +1700,7 @@ export default function RebalanceCenter() {
                     disabled={!config.mpp_enabled}
                     onChange={(e) => setConfig({ ...config, mpp_round_timeout_sec: Number(e.target.value) })}
                   />
-                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppRoundTimeoutRecommended', { value: 20 })}</p>
+                  <p className="text-[11px] text-fog/50">{t('rebalanceCenter.settings.mppRoundTimeoutRecommended', { value: MSPR_DEFAULT_ROUND_TIMEOUT_SEC })}</p>
                 </div>
               </div>
             </div>

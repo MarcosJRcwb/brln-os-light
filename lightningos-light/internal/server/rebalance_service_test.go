@@ -28,17 +28,17 @@ func TestDefaultRebalanceConfigSplitCompatibility(t *testing.T) {
 	if cfg.MppEnabled {
 		t.Fatalf("expected MSPR disabled by default")
 	}
-	if cfg.MppMaxShards != 2 {
-		t.Fatalf("expected mpp_max_shards default=2, got %d", cfg.MppMaxShards)
+	if cfg.MppMaxShards != 8 {
+		t.Fatalf("expected mpp_max_shards default=8, got %d", cfg.MppMaxShards)
 	}
-	if cfg.MppParallelism != 2 {
-		t.Fatalf("expected mpp_parallelism default=2, got %d", cfg.MppParallelism)
+	if cfg.MppParallelism != 6 {
+		t.Fatalf("expected mpp_parallelism default=6, got %d", cfg.MppParallelism)
 	}
 	if cfg.MppMinShardSat != 1000 {
 		t.Fatalf("expected mpp_min_shard_sat default=1000, got %d", cfg.MppMinShardSat)
 	}
-	if cfg.MppRoundTimeoutSec != 20 {
-		t.Fatalf("expected mpp_round_timeout_sec default=20, got %d", cfg.MppRoundTimeoutSec)
+	if cfg.MppRoundTimeoutSec != 30 {
+		t.Fatalf("expected mpp_round_timeout_sec default=30, got %d", cfg.MppRoundTimeoutSec)
 	}
 }
 
@@ -63,17 +63,17 @@ func TestNormalizeRebalanceConfigClampsNegativeFields(t *testing.T) {
 	if got.MinExecuteSat != 0 {
 		t.Fatalf("expected MinExecuteSat clamped to 0, got %d", got.MinExecuteSat)
 	}
-	if got.MppMaxShards != 2 {
-		t.Fatalf("expected MppMaxShards fallback=2, got %d", got.MppMaxShards)
+	if got.MppMaxShards != 8 {
+		t.Fatalf("expected MppMaxShards fallback=8, got %d", got.MppMaxShards)
 	}
-	if got.MppParallelism != 2 {
-		t.Fatalf("expected MppParallelism fallback=2, got %d", got.MppParallelism)
+	if got.MppParallelism != 6 {
+		t.Fatalf("expected MppParallelism fallback=6, got %d", got.MppParallelism)
 	}
 	if got.MppMinShardSat != 1000 {
 		t.Fatalf("expected MppMinShardSat fallback=1000, got %d", got.MppMinShardSat)
 	}
-	if got.MppRoundTimeoutSec != 20 {
-		t.Fatalf("expected MppRoundTimeoutSec fallback=20, got %d", got.MppRoundTimeoutSec)
+	if got.MppRoundTimeoutSec != 30 {
+		t.Fatalf("expected MppRoundTimeoutSec fallback=30, got %d", got.MppRoundTimeoutSec)
 	}
 }
 

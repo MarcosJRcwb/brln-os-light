@@ -376,10 +376,10 @@ func defaultRebalanceConfig() RebalanceConfig {
 		MinProbeSat:               0,
 		MinExecuteSat:             0,
 		MppEnabled:                false,
-		MppMaxShards:              2,
-		MppParallelism:            2,
+		MppMaxShards:              8,
+		MppParallelism:            6,
 		MppMinShardSat:            1000,
-		MppRoundTimeoutSec:        20,
+		MppRoundTimeoutSec:        30,
 		MppAutoOnly:               false,
 		FeeLadderSteps:            4,
 		AmountProbeSteps:          4,
@@ -4168,10 +4168,10 @@ end $$;
     min_probe_sat bigint not null default 0,
     min_execute_sat bigint not null default 0,
     mpp_enabled boolean not null default false,
-    mpp_max_shards integer not null default 2,
-    mpp_parallelism integer not null default 2,
+    mpp_max_shards integer not null default 8,
+    mpp_parallelism integer not null default 6,
     mpp_min_shard_sat bigint not null default 1000,
-    mpp_round_timeout_sec integer not null default 20,
+    mpp_round_timeout_sec integer not null default 30,
     mpp_auto_only boolean not null default false,
     fee_ladder_steps integer not null default 4,
     amount_probe_steps integer not null default 4,
@@ -4210,13 +4210,19 @@ end $$;
   alter table rebalance_config
     add column if not exists mpp_enabled boolean not null default false;
   alter table rebalance_config
-    add column if not exists mpp_max_shards integer not null default 2;
+    add column if not exists mpp_max_shards integer not null default 8;
   alter table rebalance_config
-    add column if not exists mpp_parallelism integer not null default 2;
+    add column if not exists mpp_parallelism integer not null default 6;
   alter table rebalance_config
     add column if not exists mpp_min_shard_sat bigint not null default 1000;
   alter table rebalance_config
-    add column if not exists mpp_round_timeout_sec integer not null default 20;
+    add column if not exists mpp_round_timeout_sec integer not null default 30;
+  alter table rebalance_config
+    alter column mpp_max_shards set default 8;
+  alter table rebalance_config
+    alter column mpp_parallelism set default 6;
+  alter table rebalance_config
+    alter column mpp_round_timeout_sec set default 30;
   alter table rebalance_config
     add column if not exists mpp_auto_only boolean not null default false;
   alter table rebalance_config
