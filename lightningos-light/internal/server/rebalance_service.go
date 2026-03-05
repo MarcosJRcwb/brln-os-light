@@ -128,7 +128,10 @@ type RebalanceOverview struct {
 	MppShadowPlanReady24h         int64                 `json:"mpp_shadow_plan_ready_24h"`
 	MppShadowPlannedSat24h        int64                 `json:"mpp_shadow_planned_sat_24h"`
 	MppShadowActualSentSat24h     int64                 `json:"mpp_shadow_actual_sent_sat_24h"`
+	MppShadowInProgressJobs24h    int64                 `json:"mpp_shadow_in_progress_jobs_24h"`
 	MppShadowSuccessJobs24h       int64                 `json:"mpp_shadow_success_jobs_24h"`
+	MppShadowFailedJobs24h        int64                 `json:"mpp_shadow_failed_jobs_24h"`
+	MppShadowPartialJobs24h       int64                 `json:"mpp_shadow_partial_jobs_24h"`
 	MppShadowAvgPlannedShards24h  float64               `json:"mpp_shadow_avg_planned_shards_24h"`
 	MppShadowAvgActualAttempts24h float64               `json:"mpp_shadow_avg_actual_attempts_24h"`
 }
@@ -284,7 +287,10 @@ type mppShadowTelemetry24h struct {
 	PlanReadyJobs     int64
 	PlannedSat        int64
 	ActualSentSat     int64
+	InProgressJobs    int64
 	SuccessJobs       int64
+	FailedJobs        int64
+	PartialJobs       int64
 	AvgPlannedShards  float64
 	AvgActualAttempts float64
 }
@@ -2515,6 +2521,185 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		return false, false
 	}
 
+	type mppShardAttemptResult struct {
+		ShardIndex      int
+		Source          RebalanceChannel
+		AmountRequested int64
+		AmountSent      int64
+		FeeLimitPpm     int64
+		FeePaidSat      int64
+		RouteMaxSat     int64
+		PaymentHash     string
+		FailReason      string
+		Attempted       bool
+		Succeeded       bool
+		TimedOut        bool
+		Fatal           bool
+	}
+
+	attemptMppShard := func(roundCtx context.Context, source RebalanceChannel, amountTry int64) mppShardAttemptResult {
+		result := mppShardAttemptResult{
+			Source:          source,
+			AmountRequested: amountTry,
+			AmountSent:      amountTry,
+			Attempted:       true,
+		}
+		if amountTry <= 0 {
+			result.Attempted = false
+			return result
+		}
+		if feeCfg.MinSplitEnabled && minExecuteSat > 0 && amountTry < minExecuteSat {
+			result.Attempted = false
+			return result
+		}
+		if roundCtx.Err() != nil {
+			if ctx.Err() != nil {
+				result.Fatal = true
+			} else {
+				result.TimedOut = true
+				result.FailReason = "mpp round timeout"
+			}
+			return result
+		}
+
+		sourcePolicy := lndclient.ChannelPolicySnapshot{
+			FeeRatePpm:  source.OutgoingFeePpm,
+			BaseFeeMsat: source.OutgoingBaseMsat,
+		}
+		feeLimitMsat, feeErr := calcFeeLimitMsat(amountTry*1000, targetPolicy, &sourcePolicy, feeCfg)
+		if feeErr != nil || feeLimitMsat <= 0 {
+			result.FailReason = "fee cap zero"
+			return result
+		}
+		result.FeeLimitPpm = feeMsatToPpm(feeLimitMsat, amountTry)
+
+		attemptCtx := roundCtx
+		cancelAttempt := func() {}
+		if attemptTimeoutSec > 0 {
+			attemptCtx, cancelAttempt = context.WithTimeout(roundCtx, time.Duration(attemptTimeoutSec)*time.Second)
+		}
+		defer cancelAttempt()
+
+		routes, err := s.lnd.QueryRoutes(attemptCtx, selfPubkey, amountTry, source.ChannelID, targetSnapshot.RemotePubkey, feeLimitMsat, 3, nil, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				result.Fatal = true
+				result.FailReason = "cancelled"
+				return result
+			}
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded) || errors.Is(roundCtx.Err(), context.DeadlineExceeded) {
+				result.TimedOut = true
+				result.FailReason = "attempt timeout"
+				return result
+			}
+			result.FailReason = err.Error()
+			return result
+		}
+
+		var route *lnrpc.Route
+		for _, candidate := range routes {
+			if candidate != nil {
+				route = candidate
+				break
+			}
+		}
+		if route == nil {
+			result.FailReason = "no route returned"
+			return result
+		}
+
+		routeAmount := amountTry
+		if feeCfg.AmountProbeSteps > 0 {
+			maxAmount, probeErr := s.probeRoute(attemptCtx, route, amountTry, minProbeSat, feeCfg.AmountProbeSteps, targetPolicy, sourcePolicy, feeCfg)
+			if probeErr != nil {
+				result.FailReason = probeErr.Error()
+				return result
+			}
+			if maxAmount <= 0 {
+				result.FailReason = "probe returned no amount"
+				return result
+			}
+			if maxAmount < routeAmount {
+				routeAmount = maxAmount
+			}
+		}
+		if feeCfg.MinSplitEnabled && minExecuteSat > 0 && routeAmount < minExecuteSat {
+			result.FailReason = "probe amount below execute minimum"
+			return result
+		}
+		if routeAmount <= 0 {
+			result.FailReason = "invalid shard amount"
+			return result
+		}
+
+		if routeAmount != amountTry {
+			rebuilt, rebuildErr := s.rebuildRouteForAmount(attemptCtx, route, routeAmount)
+			if rebuildErr != nil {
+				result.FailReason = rebuildErr.Error()
+				return result
+			}
+			route = rebuilt
+			result.AmountSent = routeAmount
+			feeLimitMsat, feeErr = calcFeeLimitMsat(routeAmount*1000, targetPolicy, &sourcePolicy, feeCfg)
+			if feeErr != nil || feeLimitMsat <= 0 {
+				result.FailReason = "fee cap zero"
+				return result
+			}
+			result.FeeLimitPpm = feeMsatToPpm(feeLimitMsat, routeAmount)
+		}
+
+		routeFeeMsat := int64(0)
+		if route.TotalFeesMsat > 0 {
+			routeFeeMsat = route.TotalFeesMsat
+		} else if route.TotalFees > 0 {
+			routeFeeMsat = route.TotalFees * 1000
+		}
+		if feeLimitMsat > 0 && routeFeeMsat > feeLimitMsat {
+			result.FailReason = "route fee exceeds limit"
+			return result
+		}
+
+		_, paymentHash, paymentAddr, invErr := s.createRebalanceInvoice(attemptCtx, routeAmount, jobID, source.ChannelID, targetChannelID)
+		if invErr != nil {
+			if ctx.Err() != nil {
+				result.Fatal = true
+				result.FailReason = "cancelled"
+				return result
+			}
+			if errors.Is(invErr, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded) || errors.Is(roundCtx.Err(), context.DeadlineExceeded) {
+				result.TimedOut = true
+				result.FailReason = "attempt timeout"
+				return result
+			}
+			result.FailReason = invErr.Error()
+			return result
+		}
+		result.PaymentHash = paymentHash
+		applyMppRecord(route, paymentAddr, routeAmount)
+		result.RouteMaxSat = s.maxAmountOnRouteSat(attemptCtx, route, selfPubkey)
+
+		_, sendErr := s.lnd.SendToRoute(attemptCtx, paymentHash, route)
+		if sendErr != nil {
+			if ctx.Err() != nil {
+				result.Fatal = true
+				result.FailReason = "cancelled"
+				return result
+			}
+			if errors.Is(sendErr, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded) || errors.Is(roundCtx.Err(), context.DeadlineExceeded) {
+				result.TimedOut = true
+				result.FailReason = "attempt timeout"
+				return result
+			}
+			result.FailReason = sendErr.Error()
+			return result
+		}
+
+		result.Succeeded = true
+		result.AmountSent = routeAmount
+		result.FeePaidSat = msatToSatCeil(routeFeeMsat)
+		return result
+	}
+
 	runMppPrepass := func() (bool, bool) {
 		if !shouldRunMppExecute(feeCfg, jobSource) {
 			return false, false
@@ -2525,7 +2710,6 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 
 		allowedSources := make([]RebalanceChannel, 0, len(sources))
 		sourceByID := make(map[uint64]RebalanceChannel, len(sources))
-		sourceRemaining := make(map[uint64]int64, len(sources))
 		for _, source := range sources {
 			if source.MaxSourceSat <= 0 {
 				continue
@@ -2539,7 +2723,6 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			}
 			allowedSources = append(allowedSources, source)
 			sourceByID[source.ChannelID] = source
-			sourceRemaining[source.ChannelID] = source.MaxSourceSat
 		}
 		if len(allowedSources) == 0 {
 			return false, false
@@ -2554,42 +2737,42 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 		if roundTimeoutSec <= 0 {
 			roundTimeoutSec = 20
 		}
-		roundDeadline := time.Now().Add(time.Duration(roundTimeoutSec) * time.Second)
+		roundCtx, cancelRound := context.WithTimeout(ctx, time.Duration(roundTimeoutSec)*time.Second)
+		defer cancelRound()
 		parallelism := feeCfg.MppParallelism
 		if parallelism <= 0 {
 			parallelism = 1
 		}
+		if parallelism > plan.PlannedShards {
+			parallelism = plan.PlannedShards
+		}
 
-		attemptedShards := 0
-		succeededShards := 0
-		batchCounter := 0
-		for _, shard := range plan.Shards {
-			if remaining <= 0 {
+		type shardTask struct {
+			ShardIndex int
+			Source     RebalanceChannel
+			AmountSat  int64
+		}
+		tasks := make([]shardTask, 0, plan.PlannedShards)
+		planSourceRemaining := make(map[uint64]int64, len(allowedSources))
+		for _, source := range allowedSources {
+			planSourceRemaining[source.ChannelID] = source.MaxSourceSat
+		}
+		remainingForPlan := remaining
+		for idx, shard := range plan.Shards {
+			if remainingForPlan <= 0 {
 				break
 			}
-			if ctx.Err() != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					finishOnTimeout()
-				} else {
-					s.finishJob(jobID, "cancelled", "cancelled")
-				}
-				return false, true
-			}
-			if time.Now().After(roundDeadline) {
-				break
-			}
-
 			source, ok := sourceByID[shard.SourceChannelID]
 			if !ok {
 				continue
 			}
-			capLeft := sourceRemaining[source.ChannelID]
+			capLeft := planSourceRemaining[source.ChannelID]
 			if capLeft <= 0 {
 				continue
 			}
 			amountTry := shard.AmountSat
-			if amountTry > remaining {
-				amountTry = remaining
+			if amountTry > remainingForPlan {
+				amountTry = remainingForPlan
 			}
 			if amountTry > capLeft {
 				amountTry = capLeft
@@ -2600,41 +2783,106 @@ func (s *RebalanceService) runJob(jobID int64, targetChannelID uint64, amount in
 			if minExecuteSat > 0 && amountTry < minExecuteSat {
 				continue
 			}
+			tasks = append(tasks, shardTask{
+				ShardIndex: idx,
+				Source:     source,
+				AmountSat:  amountTry,
+			})
+			planSourceRemaining[source.ChannelID] -= amountTry
+			remainingForPlan -= amountTry
+		}
+		if len(tasks) == 0 {
+			return false, false
+		}
 
-			attemptedShards++
-			success, fatal, routeMax, timedOut, _, amountSent := attemptPayment(source, amountTry, 0, true)
-			if fatal {
+		sem := make(chan struct{}, parallelism)
+		resultsCh := make(chan mppShardAttemptResult, len(tasks))
+		var wg sync.WaitGroup
+		for _, task := range tasks {
+			task := task
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				res := attemptMppShard(roundCtx, task.Source, task.AmountSat)
+				res.ShardIndex = task.ShardIndex
+				resultsCh <- res
+			}()
+		}
+		wg.Wait()
+		close(resultsCh)
+
+		results := make([]mppShardAttemptResult, 0, len(tasks))
+		for res := range resultsCh {
+			results = append(results, res)
+		}
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].ShardIndex < results[j].ShardIndex
+		})
+
+		attemptedShards := 0
+		succeededShards := 0
+		sourceSuccessRemaining := make(map[uint64]int64, len(allowedSources))
+		for _, source := range allowedSources {
+			sourceSuccessRemaining[source.ChannelID] = source.MaxSourceSat
+		}
+
+		for _, res := range results {
+			if res.Fatal {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					finishOnTimeout()
+				} else {
+					s.finishJob(jobID, "cancelled", "cancelled")
+				}
 				return false, true
 			}
-			if timedOut {
-				break
+			if !res.Attempted {
+				continue
 			}
-			if success {
+			attemptedAny = true
+			attemptedShards++
+
+			attemptIndex++
+			attemptAmount := res.AmountRequested
+			if res.AmountSent > 0 {
+				attemptAmount = res.AmountSent
+			}
+			if res.Succeeded {
+				_ = s.insertAttempt(ctx, jobID, attemptIndex, res.Source.ChannelID, attemptAmount, res.FeeLimitPpm, res.FeePaidSat, "succeeded", res.PaymentHash, "")
+				s.recordPairSuccess(ctx, res.Source.ChannelID, targetChannelID, attemptAmount, res.FeeLimitPpm, res.FeePaidSat)
+				_ = s.applyRebalanceLedger(ctx, targetChannelID, attemptAmount, res.FeePaidSat)
+				_ = s.addBudgetSpend(ctx, res.FeePaidSat, jobSource)
 				succeededShards++
+
 				routeCap := int64(0)
-				sourceCap := sourceRemaining[source.ChannelID]
-				if applySuccess(amountSent, routeMax, &routeCap, &sourceCap) {
-					sourceRemaining[source.ChannelID] = sourceCap
+				sourceCap := sourceSuccessRemaining[res.Source.ChannelID]
+				if applySuccess(attemptAmount, res.RouteMaxSat, &routeCap, &sourceCap) {
+					sourceSuccessRemaining[res.Source.ChannelID] = sourceCap
 					if s.logger != nil {
-						s.logger.Printf("rebalance mpp execute: job=%d completed via mpp prepass shards=%d/%d", jobID, succeededShards, attemptedShards)
+						s.logger.Printf("rebalance mpp execute: job=%d completed via parallel prepass shards=%d/%d", jobID, succeededShards, attemptedShards)
 					}
 					return true, false
 				}
-				sourceRemaining[source.ChannelID] = sourceCap
+				sourceSuccessRemaining[res.Source.ChannelID] = sourceCap
+				continue
 			}
 
-			batchCounter++
-			if batchCounter >= parallelism {
-				batchCounter = 0
-				if time.Now().After(roundDeadline) {
-					break
+			failReason := res.FailReason
+			if strings.TrimSpace(failReason) == "" {
+				if res.TimedOut {
+					failReason = "attempt timeout"
+				} else {
+					failReason = "mpp shard failed"
 				}
 			}
+			_ = s.insertAttempt(ctx, jobID, attemptIndex, res.Source.ChannelID, attemptAmount, res.FeeLimitPpm, 0, "failed", res.PaymentHash, failReason)
+			s.recordPairFailure(ctx, res.Source.ChannelID, targetChannelID, failReason)
 		}
 
 		if s.logger != nil {
 			s.logger.Printf(
-				"rebalance mpp execute: job=%d prepass attempted_shards=%d succeeded_shards=%d remaining=%d (fallback legacy)",
+				"rebalance mpp execute: job=%d parallel prepass attempted_shards=%d succeeded_shards=%d remaining=%d (fallback legacy)",
 				jobID,
 				attemptedShards,
 				succeededShards,
@@ -4735,7 +4983,10 @@ select
   coalesce(sum(case when planned_shards > 0 then 1 else 0 end), 0) as plan_ready_jobs,
   coalesce(sum(planned_total_sat), 0) as planned_sat,
   coalesce(sum(actual_sent_sat), 0) as actual_sent_sat,
+  coalesce(sum(case when actual_status is null or actual_status in ('queued','running') then 1 else 0 end), 0) as in_progress_jobs,
   coalesce(sum(case when actual_any_success then 1 else 0 end), 0) as success_jobs,
+  coalesce(sum(case when actual_status='failed' then 1 else 0 end), 0) as failed_jobs,
+  coalesce(sum(case when actual_status='partial' then 1 else 0 end), 0) as partial_jobs,
   coalesce(avg(case when planned_shards > 0 then planned_shards::double precision else null end), 0) as avg_planned_shards,
   coalesce(avg(case when actual_attempts > 0 then actual_attempts::double precision else null end), 0) as avg_actual_attempts
 from rebalance_mpp_shadow
@@ -4745,7 +4996,10 @@ where created_at >= now() - interval '24 hours'
 		&metrics.PlanReadyJobs,
 		&metrics.PlannedSat,
 		&metrics.ActualSentSat,
+		&metrics.InProgressJobs,
 		&metrics.SuccessJobs,
+		&metrics.FailedJobs,
+		&metrics.PartialJobs,
 		&metrics.AvgPlannedShards,
 		&metrics.AvgActualAttempts,
 	)
@@ -5005,7 +5259,10 @@ where report_date >= current_date - interval '6 days'
 		MppShadowPlanReady24h:         mppShadowTelemetry.PlanReadyJobs,
 		MppShadowPlannedSat24h:        mppShadowTelemetry.PlannedSat,
 		MppShadowActualSentSat24h:     mppShadowTelemetry.ActualSentSat,
+		MppShadowInProgressJobs24h:    mppShadowTelemetry.InProgressJobs,
 		MppShadowSuccessJobs24h:       mppShadowTelemetry.SuccessJobs,
+		MppShadowFailedJobs24h:        mppShadowTelemetry.FailedJobs,
+		MppShadowPartialJobs24h:       mppShadowTelemetry.PartialJobs,
 		MppShadowAvgPlannedShards24h:  mppShadowTelemetry.AvgPlannedShards,
 		MppShadowAvgActualAttempts24h: mppShadowTelemetry.AvgActualAttempts,
 	}

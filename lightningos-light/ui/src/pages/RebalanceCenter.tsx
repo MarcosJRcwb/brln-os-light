@@ -91,7 +91,10 @@ type RebalanceOverview = {
   mpp_shadow_plan_ready_24h?: number
   mpp_shadow_planned_sat_24h?: number
   mpp_shadow_actual_sent_sat_24h?: number
+  mpp_shadow_in_progress_jobs_24h?: number
   mpp_shadow_success_jobs_24h?: number
+  mpp_shadow_failed_jobs_24h?: number
+  mpp_shadow_partial_jobs_24h?: number
   mpp_shadow_avg_planned_shards_24h?: number
   mpp_shadow_avg_actual_attempts_24h?: number
 }
@@ -546,7 +549,7 @@ export default function RebalanceCenter() {
     setSaving(true)
     setStatus('')
     try {
-        await updateRebalanceConfig({
+        const saved = (await updateRebalanceConfig({
           auto_enabled: config.auto_enabled,
           scan_interval_sec: config.scan_interval_sec,
           deadband_pct: config.deadband_pct,
@@ -583,7 +586,27 @@ export default function RebalanceCenter() {
           critical_min_sources: config.critical_min_sources,
           critical_min_available_sats: config.critical_min_available_sats,
         critical_cycles: config.critical_cycles
-      })
+      })) as RebalanceConfig
+      const normalizedSaved = {
+        ...saved,
+        amount_probe_steps: saved.amount_probe_steps || 4,
+        amount_probe_adaptive: saved.amount_probe_adaptive ?? true,
+        attempt_timeout_sec: saved.attempt_timeout_sec || 20,
+        rebalance_timeout_sec: saved.rebalance_timeout_sec || 600,
+        manual_restart_watch: saved.manual_restart_watch ?? false,
+        mc_half_life_sec: saved.mc_half_life_sec || 0,
+        min_split_enabled: saved.min_split_enabled ?? false,
+        min_probe_sat: saved.min_probe_sat || 0,
+        min_execute_sat: saved.min_execute_sat || 0,
+        mpp_enabled: saved.mpp_enabled ?? false,
+        mpp_max_shards: saved.mpp_max_shards || 2,
+        mpp_parallelism: saved.mpp_parallelism || 2,
+        mpp_min_shard_sat: saved.mpp_min_shard_sat || 1000,
+        mpp_round_timeout_sec: saved.mpp_round_timeout_sec || 20,
+        mpp_auto_only: saved.mpp_auto_only ?? false
+      }
+      setServerConfig(normalizedSaved)
+      setConfig(normalizedSaved)
       setStatus(t('rebalanceCenter.settingsSaved'))
       loadAll()
     } catch (err) {
@@ -1090,17 +1113,25 @@ export default function RebalanceCenter() {
               {overview.auto_enabled ? t('common.enabled') : t('common.disabled')}
             </p>
             <p className="text-xs text-fog/50">{t('rebalanceCenter.overview.scanInterval', { value: config?.scan_interval_sec || '-' })}</p>
-            <p className="text-xs text-fog/50">
-              {t('rebalanceCenter.overview.splitMinStatus', { value: config?.min_split_enabled ? t('common.enabled') : t('common.disabled') })}
-            </p>
-            <p className="text-xs text-fog/50">
-              {t('rebalanceCenter.overview.mppStatus', {
-                value: config?.mpp_enabled ? t('common.enabled') : t('common.disabled'),
-                scope: config?.mpp_auto_only
-                  ? t('rebalanceCenter.overview.mppScopeAutoOnly')
-                  : t('rebalanceCenter.overview.mppScopeAllJobs')
-              })}
-            </p>
+            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.splitMode')}</p>
+                <p className={`text-sm font-semibold ${config?.min_split_enabled ? 'text-emerald-200' : 'text-fog'}`}>
+                  {config?.min_split_enabled ? t('common.enabled') : t('common.disabled')}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.mppMode')}</p>
+                <p className={`text-sm font-semibold ${config?.mpp_enabled ? 'text-emerald-200' : 'text-fog'}`}>
+                  {config?.mpp_enabled ? t('common.enabled') : t('common.disabled')}
+                </p>
+                <p className="text-[11px] text-fog/60">
+                  {config?.mpp_auto_only
+                    ? t('rebalanceCenter.overview.mppScopeAutoOnly')
+                    : t('rebalanceCenter.overview.mppScopeAllJobs')}
+                </p>
+              </div>
+            </div>
             {config?.mpp_enabled && (
               <div className="mt-2 border-t border-white/10 pt-2 space-y-1">
                 <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.mppMetrics24h')}</p>
@@ -1111,7 +1142,16 @@ export default function RebalanceCenter() {
                   {t('rebalanceCenter.overview.mppPlanReady24h', { value: formatter.format(overview.mpp_shadow_plan_ready_24h ?? 0) })}
                 </p>
                 <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppInProgressJobs24h', { value: formatter.format(overview.mpp_shadow_in_progress_jobs_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
                   {t('rebalanceCenter.overview.mppSuccessJobs24h', { value: formatter.format(overview.mpp_shadow_success_jobs_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppFailedJobs24h', { value: formatter.format(overview.mpp_shadow_failed_jobs_24h ?? 0) })}
+                </p>
+                <p className="text-xs text-fog/50">
+                  {t('rebalanceCenter.overview.mppPartialJobs24h', { value: formatter.format(overview.mpp_shadow_partial_jobs_24h ?? 0) })}
                 </p>
                 <p className="text-xs text-fog/50">
                   {t('rebalanceCenter.overview.mppPlannedSat24h', { value: formatSats(overview.mpp_shadow_planned_sat_24h ?? 0) })}
