@@ -80,6 +80,9 @@ type RebalanceOverview = {
   daily_spent_manual_sat: number
   live_cost_sat: number
   effectiveness_7d: number
+  effectiveness_execution_7d?: number
+  jobs_without_attempt_7d?: number
+  jobs_without_attempt_rate_7d?: number
   roi_7d: number
   success_attempts_24h?: number
   success_amount_24h_sat?: number
@@ -1039,7 +1042,26 @@ export default function RebalanceCenter() {
             </div>
           <div className="section-card space-y-3">
             <p className="text-xs uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.effectiveness')}</p>
-            <p className="text-lg font-semibold text-fog">{formatPct(overview.effectiveness_7d * 100)}</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 space-y-1">
+                <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.effectivenessOperational')}</p>
+                <p className="text-sm font-semibold text-fog">{formatPct((overview.effectiveness_7d || 0) * 100)}</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 space-y-1">
+                <p className="text-[10px] uppercase tracking-wide text-fog/60">{t('rebalanceCenter.overview.effectivenessExecution')}</p>
+                <p className="text-sm font-semibold text-fog">{formatPct(((overview.effectiveness_execution_7d ?? overview.effectiveness_7d) || 0) * 100)}</p>
+              </div>
+            </div>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.jobsWithoutAttempt7d', {
+                value: formatter.format(overview.jobs_without_attempt_7d ?? 0)
+              })}
+            </p>
+            <p className="text-xs text-fog/50">
+              {t('rebalanceCenter.overview.jobsWithoutAttemptRate7d', {
+                value: formatPct((overview.jobs_without_attempt_rate_7d ?? 0) * 100)
+              })}
+            </p>
             <p className="text-xs text-fog/50">{t('rebalanceCenter.overview.roi', { value: overview.roi_7d.toFixed(2) })}</p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 space-y-1">

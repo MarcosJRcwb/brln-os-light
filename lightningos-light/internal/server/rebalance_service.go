@@ -110,6 +110,9 @@ type RebalanceOverview struct {
 	DailySpentManualSat           int64                 `json:"daily_spent_manual_sat"`
 	LiveCostSat                   int64                 `json:"live_cost_sat"`
 	Effectiveness7d               float64               `json:"effectiveness_7d"`
+	EffectivenessExecution7d      float64               `json:"effectiveness_execution_7d"`
+	JobsWithoutAttempt7d          int64                 `json:"jobs_without_attempt_7d"`
+	JobsWithoutAttemptRate7d      float64               `json:"jobs_without_attempt_rate_7d"`
 	ROI7d                         float64               `json:"roi_7d"`
 	SuccessAttempts24h            int64                 `json:"success_attempts_24h"`
 	SuccessAmount24hSat           int64                 `json:"success_amount_24h_sat"`
@@ -5230,15 +5233,37 @@ where type='rebalance' and occurred_at >= now() - interval '1 day'
 	mppShadowTelemetry := mppShadowTelemetry24h{}
 	var successCount int64
 	var totalCount int64
+	var attemptedCount int64
+	var jobsWithoutAttemptCount int64
 	_ = s.db.QueryRow(ctx, `
+with jobs_7d as (
+  select id, status
+  from rebalance_jobs
+  where completed_at >= now() - interval '7 days'
+),
+jobs_with_attempts as (
+  select j.id, j.status, exists (
+    select 1 from rebalance_attempts a where a.job_id = j.id
+  ) as has_attempt
+  from jobs_7d j
+)
 select
-  coalesce(sum(case when status in ('succeeded','partial') then 1 else 0 end), 0),
-  count(*)
-from rebalance_jobs
-where completed_at >= now() - interval '7 days'
-`).Scan(&successCount, &totalCount)
+  coalesce(sum(case when status in ('succeeded','partial') then 1 else 0 end), 0) as success_count,
+  count(*) as total_count,
+  coalesce(sum(case when has_attempt then 1 else 0 end), 0) as attempted_count,
+  coalesce(sum(case when not has_attempt then 1 else 0 end), 0) as jobs_without_attempt_count
+from jobs_with_attempts
+`).Scan(&successCount, &totalCount, &attemptedCount, &jobsWithoutAttemptCount)
 	if totalCount > 0 {
 		effectiveness = float64(successCount) / float64(totalCount)
+	}
+	effectivenessExecution := 0.0
+	if attemptedCount > 0 {
+		effectivenessExecution = float64(successCount) / float64(attemptedCount)
+	}
+	jobsWithoutAttemptRate := 0.0
+	if totalCount > 0 {
+		jobsWithoutAttemptRate = float64(jobsWithoutAttemptCount) / float64(totalCount)
 	}
 	var revenue int64
 	var cost int64
@@ -5298,6 +5323,9 @@ where report_date >= current_date - interval '6 days'
 		DailySpentManualSat:           spentManual,
 		LiveCostSat:                   liveCost,
 		Effectiveness7d:               effectiveness,
+		EffectivenessExecution7d:      effectivenessExecution,
+		JobsWithoutAttempt7d:          jobsWithoutAttemptCount,
+		JobsWithoutAttemptRate7d:      jobsWithoutAttemptRate,
 		ROI7d:                         roi,
 		SuccessAttempts24h:            attemptTelemetry.SuccessAttempts,
 		SuccessAmount24hSat:           attemptTelemetry.SuccessAmountSat,
