@@ -234,7 +234,7 @@ Parâmetros de configuração:
 - `Subtract source fees`: reduz orçamento de taxa com estimativa de source fees (mais conservador).
 - `ROI minimum`: ROI mínimo estimado (receita 7d / custo estimado) para enfileirar jobs auto.
 - `Max concurrent`: máximo de rebalances simultâneos.
-- `Minimum (sats)`: menor valor de rebalance para tentativas padrão (probing pode ir abaixo para capturar rota válida).
+- `Minimum (sats)`: âncora legada de início das tentativas; com split desligado, também vira o piso efetivo de probe/execução.
 - `Maximum (sats)`: limite superior do tamanho de rebalance (0 = ilimitado).
 - `Fee ladder steps`: número de fee caps tentados do menor para o maior antes de desistir.
 - `Amount probe steps`: número de sondas de valor (do maior para o menor) quando ocorre falha temporária no último salto.
@@ -252,6 +252,42 @@ Parâmetros de configuração:
 - `Critical cycles`: varreduras consecutivas com poucas origens antes de acionar liberação crítica.
 - `Critical min sources`: mínimo de canais origem elegíveis para evitar modo crítico.
 - `Critical min available sats`: liquidez total mínima de origem para evitar modo crítico.
+
+Controles de split mínimo (`Split min (probe/execute)`):
+- Objetivo: separar a âncora econômica de início (`Minimum (sats)`) dos pisos rígidos de probe e execução.
+- `Split min (probe/execute)`: habilita pisos separados para probe e execução.
+- `Min probe amount (sats)` (`min_probe_sat`, padrão `0`): piso mínimo permitido no probe quando split está ligado. `0` herda `Minimum (sats)`.
+- `Min execute amount (sats)` (`min_execute_sat`, padrão `0`): piso mínimo permitido para execução real quando split está ligado. `0` herda `Minimum (sats)`.
+Interações importantes:
+- As tentativas continuam começando com âncora em `Minimum (sats)` (compatível com comportamento legado).
+- Com split ligado, o probe pode descer até `min_probe_sat` e a execução é bloqueada abaixo de `min_execute_sat`.
+- Com split ligado, candidatos auto abaixo do piso de execução são descartados cedo.
+Recomendação prática:
+- Manter `Min execute amount (sats)` igual ao `Min probe amount (sats)`, a menos que você queira explicitamente probe mais baixo que execução.
+- Use split quando quiser ampliar descoberta de rota sem liberar execução abaixo do piso desejado.
+
+MSPR (`MSPR (Paralelo Multi-Source)`):
+- Objetivo: aumentar a chance de sucesso no primeiro passe tentando shards em múltiplas fontes em paralelo, antes do fallback legado sequencial.
+- `Enable MSPR` (`mpp_enabled`, padrão `false`): habilita o prepass MSPR com execução real.
+- `MSPR for auto jobs only` (`mpp_auto_only`, padrão `false`): quando ligado, só jobs auto usam MSPR; jobs manuais ficam no legado.
+- `Max shards` (`mpp_max_shards`, padrão `8`, faixa `1..8`): máximo de shards planejados na rodada MSPR.
+- `Parallel workers` (`mpp_parallelism`, padrão `6`, faixa `1..max_shards`): número máximo de tentativas de shard concorrentes na rodada.
+- `Min shard amount (sats)` (`mpp_min_shard_sat`, padrão `1000`): tamanho mínimo de shard planejado pelo MSPR.
+- `Round timeout (sec)` (`mpp_round_timeout_sec`, padrão `30`): tempo máximo da rodada MSPR antes de cair para tentativas legadas.
+Modelo de execução:
+- O MSPR roda um prepass paralelo (com plano de shards e workers).
+- Shards com sucesso são executados e contabilizados imediatamente.
+- Após o prepass, o job continua na mesma fila/fluxo legado para o valor remanescente.
+- Falhas de shard aparecem no histórico com prefixo `mpp shard:` no motivo.
+Recomendação prática:
+- Comece com `max_shards=8`, `parallel_workers=6`, `min_shard=1000`, `round_timeout=30`.
+- Se os primeiros shards ainda estiverem grandes, aumente shards (até o limite) e mantenha workers menor ou igual a shards.
+- Se o nó estiver sensível a carga, reduza primeiro os workers paralelos (não o número de shards).
+
+Quando usar cada modo:
+- Mais conservador (foco legado): split desligado e MSPR desligado.
+- Melhor descoberta com piso controlado: split ligado, `min_probe=min_execute` (ex.: `1000`), mantendo `Minimum (sats)` como alvo econômico (ex.: `30000`).
+- Maior taxa de acerto no primeiro passe em grafo movimentado: split ligado + MSPR ligado, com ajuste gradual por métricas MSPR 24h.
 
 ## Lightning Ops: Autofee
 O Autofee ajusta **outbound fees** por canal com esta prioridade:

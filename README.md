@@ -234,7 +234,7 @@ Configuration parameters:
 - `Subtract source fees`: reduces the fee budget by estimated source fees (more conservative).
 - `ROI minimum`: minimum estimated ROI (7d revenue / estimated cost) to enqueue auto jobs.
 - `Max concurrent`: maximum number of rebalances running at the same time.
-- `Minimum (sats)`: smallest rebalance amount for standard attempts (probing may go below to capture a valid route).
+- `Minimum (sats)`: legacy start anchor for attempts; with split disabled, it is also the effective probe/execute floor.
 - `Maximum (sats)`: upper bound for rebalance size (0 = unlimited).
 - `Fee ladder steps`: number of fee caps to try from low to high before giving up.
 - `Amount probe steps`: number of amount probes from large to small when a last-hop temporary failure occurs.
@@ -252,6 +252,42 @@ Configuration parameters:
 - `Critical cycles`: consecutive scans with low sources before critical release triggers.
 - `Critical min sources`: minimum eligible source channels required to avoid critical mode.
 - `Critical min available sats`: minimum total source liquidity required to avoid critical mode.
+
+Split min controls (`Split min (probe/execute)`):
+- Purpose: decouple the economic start anchor (`Minimum (sats)`) from strict probe/execute floors.
+- `Split min (probe/execute)`: enables separate floor controls for probing and execution.
+- `Min probe amount (sats)` (`min_probe_sat`, default `0`): minimum amount allowed during route probing when split is enabled. `0` falls back to `Minimum (sats)`.
+- `Min execute amount (sats)` (`min_execute_sat`, default `0`): minimum amount allowed to be actually sent when split is enabled. `0` falls back to `Minimum (sats)`.
+Key interactions:
+- Attempts still start anchored by `Minimum (sats)` (legacy-compatible behavior).
+- If split is enabled, probing can go down to `min_probe_sat` and execution is blocked below `min_execute_sat`.
+- With split enabled, auto candidates below execute floor are skipped early.
+Practical recommendation:
+- Keep `Min execute amount (sats)` equal to `Min probe amount (sats)` unless you explicitly want to allow probing lower than execution.
+- Use split when you want broader route discovery without opening execution below your chosen floor.
+
+MSPR (`MSPR (Multi-Source Parallel)`):
+- Purpose: increase first-pass success chance by trying shards across multiple source channels in parallel before legacy sequential fallback.
+- `Enable MSPR` (`mpp_enabled`, default `false`): enables MSPR prepass execution.
+- `MSPR for auto jobs only` (`mpp_auto_only`, default `false`): when enabled, only auto jobs use MSPR; manual jobs stay legacy.
+- `Max shards` (`mpp_max_shards`, default `8`, range `1..8`): max number of shards planned for the MSPR round.
+- `Parallel workers` (`mpp_parallelism`, default `6`, range `1..max_shards`): max concurrent shard attempts in the round.
+- `Min shard amount (sats)` (`mpp_min_shard_sat`, default `1000`): minimum shard size planned by MSPR.
+- `Round timeout (sec)` (`mpp_round_timeout_sec`, default `30`): max duration for one MSPR round before fallback to legacy attempts.
+Execution model:
+- MSPR runs one parallel prepass (using shard plan + workers).
+- Successful shards are executed and accounted immediately.
+- After the prepass, the job continues in the same legacy queue/attempt flow for remaining amount.
+- Failed shard attempts appear in history with `mpp shard:` reason prefix.
+Practical recommendation:
+- Start with `max_shards=8`, `parallel_workers=6`, `min_shard=1000`, `round_timeout=30`.
+- If you see too many large first shards, increase shards (within limit) and keep workers lower or equal to shards.
+- If your node is resource-constrained, reduce parallel workers first (not shard count).
+
+When to use each mode:
+- Legacy-focused (most conservative): split off, MSPR off.
+- Better route discovery with controlled floor: split on, set `min_probe=min_execute` (for example `1000`), keep `Minimum (sats)` as economic target (for example `30000`).
+- Higher first-pass hit rate in busy graphs: split on + MSPR on, tune shards/workers, monitor 24h MSPR metrics and adjust gradually.
 
 ## Lightning Ops: Autofee
 Autofee adjusts **outbound fees** per channel with one goal hierarchy:
