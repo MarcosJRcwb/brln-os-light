@@ -43,7 +43,9 @@ export default function Wallet() {
   const [sendRunning, setSendRunning] = useState(false)
   const [amount, setAmount] = useState('')
   const [memo, setMemo] = useState('')
+  const [invoiceExpiry, setInvoiceExpiry] = useState('3600')
   const [invoice, setInvoice] = useState('')
+  const [invoiceQr, setInvoiceQr] = useState<string | null>(null)
   const [invoiceCopied, setInvoiceCopied] = useState(false)
   const [invoiceNotice, setInvoiceNotice] = useState('')
   const [paymentRequest, setPaymentRequest] = useState('')
@@ -318,6 +320,16 @@ export default function Wallet() {
       .catch(() => setAddressQr(null))
   }, [address])
 
+  useEffect(() => {
+    if (!invoice) {
+      setInvoiceQr(null)
+      return
+    }
+    QRCode.toDataURL(`lightning:${invoice}`, { width: 220, margin: 1 })
+      .then(setInvoiceQr)
+      .catch(() => setInvoiceQr(null))
+  }, [invoice])
+
   const handleAddFunds = async () => {
     setShowAddress(true)
     setAddress('')
@@ -392,8 +404,16 @@ export default function Wallet() {
     setStatus(t('wallet.creatingInvoice'))
     setInvoiceNotice('')
     setInvoiceCopied(false)
+    const parsedExpiry = Number(invoiceExpiry || 0)
+    const expirySeconds = Number.isFinite(parsedExpiry) && parsedExpiry > 0
+      ? Math.trunc(parsedExpiry)
+      : undefined
     try {
-      const res = await createInvoice({ amount_sat: Number(amount), memo })
+      const res = await createInvoice({
+        amount_sat: Number(amount),
+        memo,
+        expiry_seconds: expirySeconds
+      })
       setInvoice(res.payment_request)
       setStatus(t('wallet.invoiceReady'))
     } catch {
@@ -646,6 +666,17 @@ export default function Wallet() {
           <h3 className="text-lg font-semibold">{t('wallet.createInvoice')}</h3>
           <input className="input-field" placeholder={t('wallet.amountSats')} value={amount} onChange={(e) => setAmount(e.target.value)} />
           <input className="input-field" placeholder={t('wallet.memo')} value={memo} onChange={(e) => setMemo(e.target.value)} />
+          <div className="space-y-1">
+            <label className="text-xs text-fog/60">{t('wallet.invoiceExpirySeconds')}</label>
+            <input
+              className="input-field"
+              placeholder={t('wallet.invoiceExpirySeconds')}
+              type="number"
+              min={1}
+              value={invoiceExpiry}
+              onChange={(e) => setInvoiceExpiry(e.target.value)}
+            />
+          </div>
           <button className="btn-primary" onClick={handleInvoice}>{t('wallet.generateInvoice')}</button>
           {invoice && (
             <div className="rounded-2xl border border-white/10 bg-ink/60 p-3">
@@ -655,6 +686,13 @@ export default function Wallet() {
                   {t('common.close')}
                 </button>
               </div>
+              {invoiceQr && (
+                <img
+                  src={invoiceQr}
+                  alt={t('wallet.invoiceLightning')}
+                  className="mt-3 w-full max-w-[220px] rounded-xl border border-white/10 bg-white p-2"
+                />
+              )}
               <p className="mt-2 text-xs font-mono break-all">{invoice}</p>
               <div className="mt-2 flex items-center gap-2">
                 <button className="btn-secondary text-xs px-3 py-1.5" onClick={handleCopyInvoice}>

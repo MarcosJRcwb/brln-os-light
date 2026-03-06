@@ -742,6 +742,7 @@
     "hideSend": "Hide send",
     "invalidInvoice": "Invalid invoice",
     "invoice": "Invoice",
+    "invoiceExpirySeconds": "Expiry (seconds)",
     "invoiceFailed": "Invoice failed.",
     "invoiceLightning": "Invoice (Lightning)",
     "invoiceReady": "Invoice ready.",

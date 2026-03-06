@@ -742,6 +742,7 @@
     "hideSend": "Ocultar envio",
     "invalidInvoice": "Invoice inválida",
     "invoice": "Invoice",
+    "invoiceExpirySeconds": "Expiração (segundos)",
     "invoiceFailed": "Falha ao criar invoice.",
     "invoiceLightning": "Invoice (Lightning)",
     "invoiceReady": "Invoice pronta.",

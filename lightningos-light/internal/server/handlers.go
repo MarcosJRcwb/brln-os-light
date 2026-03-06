@@ -2992,8 +2992,9 @@ func (s *Server) handleWalletAddress(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWalletInvoice(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AmountSat int64  `json:"amount_sat"`
-		Memo      string `json:"memo"`
+		AmountSat     int64  `json:"amount_sat"`
+		Memo          string `json:"memo"`
+		ExpirySeconds int64  `json:"expiry_seconds"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -3003,11 +3004,15 @@ func (s *Server) handleWalletInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "amount_sat must be positive")
 		return
 	}
+	if req.ExpirySeconds < 0 {
+		writeError(w, http.StatusBadRequest, "expiry_seconds must be zero or positive")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	invoice, err := s.lnd.CreateInvoice(ctx, req.AmountSat, req.Memo, 3600)
+	invoice, err := s.lnd.CreateInvoice(ctx, req.AmountSat, req.Memo, req.ExpirySeconds)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "invoice failed")
 		return
