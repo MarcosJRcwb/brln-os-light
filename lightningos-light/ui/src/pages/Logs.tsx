@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getLogs } from '../api'
 
@@ -20,8 +20,10 @@ export default function Logs() {
   const [lines, setLines] = useState(200)
   const [data, setData] = useState<string[]>([])
   const [status, setStatus] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    setLoading(true)
     setStatus(t('logs.loading'))
     try {
       const res = await getLogs(service, lines)
@@ -29,12 +31,14 @@ export default function Logs() {
       setStatus('')
     } catch (err: any) {
       setStatus(err?.message || t('logs.fetchFailed'))
+    } finally {
+      setLoading(false)
     }
-  }
+  }, [service, lines, t])
 
   useEffect(() => {
-    load()
-  }, [service, lines])
+    void load()
+  }, [load])
 
   return (
     <section className="space-y-6">
@@ -59,6 +63,9 @@ export default function Logs() {
               <option key={value} value={value}>{t('logs.linesOption', { count: value })}</option>
             ))}
           </select>
+          <button className="btn-secondary" type="button" onClick={() => void load()} disabled={loading}>
+            {t('common.refresh')}
+          </button>
         </div>
         {status && <p className="text-sm text-brass">{status}</p>}
         <div className="bg-ink/70 border border-white/10 rounded-2xl p-4 text-xs font-mono whitespace-pre-wrap min-h-[280px]">

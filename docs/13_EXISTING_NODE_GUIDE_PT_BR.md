@@ -163,3 +163,11 @@ curl -k https://127.0.0.1:8443/api/health
 - `sudo: a password is required` ao usar `sudo -n`: sudoers do `lightningos` invalido ou incompleto.
 - `docker-compose failed ... sudo failed`: normalmente mesmo problema de sudoers, ou Docker inativo.
 - Versao da app voltou para antiga apos `install_existing.sh`: checkout local estava em branch/tag antiga e UI/manager foram recompilados com default `y`.
+- App mostra Bitcoin como `remote`/`ERR` mesmo com bitcoind local: confirme no `/data/lnd/lnd.conf` uma secao ativa `[Bitcoind]` com RPC local (linhas nao comentadas), por exemplo:
+```ini
+[Bitcoind]
+bitcoind.rpchost=127.0.0.1:8332
+bitcoind.rpcuser=SEU_RPC_USER
+bitcoind.rpcpass=SEU_RPC_PASS
+```
+Se faltar esse bloco, a autodeteccao pode cair para `remote`. Depois de ajustar, reinicie `lightningos-manager` e `lnd`.
