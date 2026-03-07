@@ -242,7 +242,8 @@ export default function RebalanceCenter() {
   const [serverConfig, setServerConfig] = useState<RebalanceConfig | null>(null)
   const [configDirty, setConfigDirty] = useState(false)
   const [historyFilter, setHistoryFilter] = useState<'all' | 'succeeded' | 'partial' | 'failed'>('all')
-  const [loading, setLoading] = useState(true)
+  const [initialLoading, setInitialLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [status, setStatus] = useState('')
   const [saving, setSaving] = useState(false)
   const [autoOpen, setAutoOpen] = useState(false)
@@ -261,6 +262,9 @@ export default function RebalanceCenter() {
   const autoOpenRef = useRef(false)
   const pendingScrollChannelRef = useRef('')
   const focusClearTimerRef = useRef<number | null>(null)
+  const hasLoadedOnceRef = useRef(false)
+  const loadInFlightRef = useRef(false)
+  const queuedSilentRefreshRef = useRef(false)
 
   const formatSats = (value: number) => `${formatter.format(Math.round(value))} sats`
   const formatPct = (value: number) => `${pctFormatter.format(value)}%`
@@ -486,10 +490,25 @@ export default function RebalanceCenter() {
         : config?.econ_ratio ?? 0
     return formatEconRatio(fallback)
   }
+  const isSameChannel = (
+    left: Pick<RebalanceChannel, 'channel_id' | 'channel_point'>,
+    right: Pick<RebalanceChannel, 'channel_id' | 'channel_point'>
+  ) => left.channel_id === right.channel_id || (Boolean(left.channel_point) && left.channel_point === right.channel_point)
 
-  const loadAll = async () => {
+  const loadAll = async (options: { silent?: boolean } = {}) => {
+    const silent = options.silent ?? false
+    if (loadInFlightRef.current) {
+      queuedSilentRefreshRef.current = true
+      return
+    }
+    loadInFlightRef.current = true
+    const isFirstLoad = !hasLoadedOnceRef.current
     try {
-      setLoading(true)
+      if (isFirstLoad) {
+        setInitialLoading(true)
+      } else if (!silent) {
+        setIsRefreshing(true)
+      }
         const [cfg, ovw, ch, queue, hist] = await Promise.all([
           getRebalanceConfig(),
           getRebalanceOverview(),
@@ -537,17 +556,27 @@ export default function RebalanceCenter() {
     } catch (err) {
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.loadFailed'))
     } finally {
-      setLoading(false)
+      if (isFirstLoad) {
+        hasLoadedOnceRef.current = true
+        setInitialLoading(false)
+      } else if (!silent) {
+        setIsRefreshing(false)
+      }
+      loadInFlightRef.current = false
+      if (queuedSilentRefreshRef.current) {
+        queuedSilentRefreshRef.current = false
+        void loadAll({ silent: true })
+      }
     }
   }
 
   useEffect(() => {
-    loadAll()
+    void loadAll()
   }, [])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      loadAll()
+      void loadAll({ silent: true })
     }, 30000)
     return () => window.clearInterval(timer)
   }, [])
@@ -619,7 +648,7 @@ export default function RebalanceCenter() {
       setServerConfig(normalizedSaved)
       setConfig(normalizedSaved)
       setStatus(t('rebalanceCenter.settingsSaved'))
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.settingsSaveFailed'))
     } finally {
@@ -628,14 +657,17 @@ export default function RebalanceCenter() {
   }
 
   const handleToggleChannelAuto = async (channel: RebalanceChannel, enabled: boolean) => {
+    const previous = channel.auto_enabled
+    setChannels((prev) => prev.map((ch) => (isSameChannel(ch, channel) ? { ...ch, auto_enabled: enabled } : ch)))
     try {
       await updateRebalanceChannelAuto({
         channel_id: channel.channel_id,
         channel_point: channel.channel_point,
         auto_enabled: enabled
       })
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
+      setChannels((prev) => prev.map((ch) => (isSameChannel(ch, channel) ? { ...ch, auto_enabled: previous } : ch)))
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.saveFailed'))
     }
   }
@@ -653,7 +685,7 @@ export default function RebalanceCenter() {
           })
         )
       )
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.saveFailed'))
     }
@@ -672,17 +704,20 @@ export default function RebalanceCenter() {
           })
         )
       )
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.saveFailed'))
     }
   }
 
   const handleExcludeSource = async (channel: RebalanceChannel, excluded: boolean) => {
+    const previous = channel.excluded_as_source
+    setChannels((prev) => prev.map((ch) => (isSameChannel(ch, channel) ? { ...ch, excluded_as_source: excluded } : ch)))
     try {
       await updateRebalanceExclude({ channel_id: channel.channel_id, channel_point: channel.channel_point, excluded })
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
+      setChannels((prev) => prev.map((ch) => (isSameChannel(ch, channel) ? { ...ch, excluded_as_source: previous } : ch)))
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.saveFailed'))
     }
   }
@@ -714,7 +749,7 @@ export default function RebalanceCenter() {
         ...prev,
         [channel.channel_id]: useDefault ? formatEconRatio(config?.econ_ratio ?? 0) : formatEconRatio(parsedEcon)
       }))
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.saveFailed'))
     }
@@ -741,7 +776,7 @@ export default function RebalanceCenter() {
         target_outbound_pct: parsed,
         auto_restart: autoRestart
       })
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.runFailed'))
     }
@@ -751,15 +786,21 @@ export default function RebalanceCenter() {
     const key = channel.channel_point
     const previous = manualRestart[key] === true
     setManualRestart((prev) => ({ ...prev, [key]: enabled }))
+    setChannels((prev) =>
+      prev.map((ch) => (isSameChannel(ch, channel) ? { ...ch, manual_restart_enabled: enabled } : ch))
+    )
     try {
       await updateRebalanceChannelManualRestart({
         channel_id: channel.channel_id,
         channel_point: channel.channel_point,
         enabled
       })
-      loadAll()
+      void loadAll({ silent: true })
     } catch (err) {
       setManualRestart((prev) => ({ ...prev, [key]: previous }))
+      setChannels((prev) =>
+        prev.map((ch) => (isSameChannel(ch, channel) ? { ...ch, manual_restart_enabled: previous } : ch))
+      )
       setStatus(err instanceof Error ? err.message : t('rebalanceCenter.saveFailed'))
     }
   }
@@ -872,7 +913,7 @@ export default function RebalanceCenter() {
   }
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-6" aria-busy={initialLoading || isRefreshing}>
       <div className="section-card flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold">{t('rebalanceCenter.title')}</h2>
@@ -881,7 +922,7 @@ export default function RebalanceCenter() {
       </div>
 
       {status && <p className="text-sm text-brass">{status}</p>}
-      {loading && <p className="text-sm text-fog/60">{t('rebalanceCenter.loading')}</p>}
+      {initialLoading && <p className="text-sm text-fog/60">{t('rebalanceCenter.loading')}</p>}
 
       {overview && (
         <div className="grid gap-4 lg:grid-cols-4">
