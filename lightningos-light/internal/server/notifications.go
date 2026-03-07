@@ -1761,18 +1761,7 @@ func (n *Notifier) lookupNodeAlias(pubkey string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	conn, err := n.lnd.DialLightning(ctx)
-	if err != nil {
-		return ""
-	}
-	defer conn.Close()
-
-	client := lnrpc.NewLightningClient(conn)
-	info, err := client.GetNodeInfo(ctx, &lnrpc.NodeInfoRequest{PubKey: trimmed, IncludeChannels: false})
-	if err != nil || info.GetNode() == nil {
-		return ""
-	}
-	return info.GetNode().Alias
+	return n.lnd.LookupNodeAlias(ctx, trimmed)
 }
 
 func (n *Notifier) runForwards() {

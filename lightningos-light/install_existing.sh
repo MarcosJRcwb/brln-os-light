@@ -855,11 +855,11 @@ ensure_ufw_manager_port() {
     return 0
   fi
   local status
-  status=$(ufw status 2>/dev/null || true)
-  if ! echo "$status" | grep -qi "Status: active"; then
+  status=$(LC_ALL=C ufw status 2>/dev/null || true)
+  if ! echo "$status" | grep -qiE '^status:[[:space:]]+active'; then
     return 0
   fi
-  if echo "$status" | grep -Eq '(^|[[:space:]])8443/tcp([[:space:]]|$)'; then
+  if echo "$status" | grep -Eq '(^|[[:space:]])8443(/tcp)?([[:space:]]|$)'; then
     return 0
   fi
   ufw allow 8443/tcp || print_warn "Failed to open UFW port 8443/tcp"

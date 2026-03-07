@@ -27,7 +27,9 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 const recentOnchainWindowBlocks int64 = 20160
@@ -45,6 +47,13 @@ type Client struct {
 	infoCacheValid  bool
 	channelStateMu  sync.Mutex
 	channelInactive map[string]time.Time
+	nodeAliasMu     sync.Mutex
+	nodeAliasCache  map[string]nodeAliasCacheEntry
+}
+
+type nodeAliasCacheEntry struct {
+	alias     string
+	expiresAt time.Time
 }
 
 type DerivedKey struct {
@@ -120,7 +129,11 @@ type SignOutputRawParams struct {
 }
 
 func New(cfg *config.Config, logger *log.Logger) *Client {
-	return &Client{cfg: cfg, logger: logger}
+	return &Client{
+		cfg:            cfg,
+		logger:         logger,
+		nodeAliasCache: make(map[string]nodeAliasCacheEntry),
+	}
 }
 
 const (
@@ -129,7 +142,106 @@ const (
 	statusCacheTimeout           = 60 * time.Second
 	maxGRPCMsgSize               = 32 * 1024 * 1024
 	defaultConnectPeerTimeoutSec = uint64(8)
+	nodeAliasCacheTTL            = 30 * time.Minute
+	nodeAliasNotFoundCacheTTL    = 5 * time.Minute
 )
+
+func normalizePubkeyCacheKey(pubkey string) string {
+	return strings.ToLower(strings.TrimSpace(pubkey))
+}
+
+func (c *Client) getNodeAliasFromCache(pubkey string) (string, bool) {
+	key := normalizePubkeyCacheKey(pubkey)
+	if key == "" {
+		return "", false
+	}
+
+	now := time.Now()
+	c.nodeAliasMu.Lock()
+	defer c.nodeAliasMu.Unlock()
+
+	entry, ok := c.nodeAliasCache[key]
+	if !ok {
+		return "", false
+	}
+	if now.After(entry.expiresAt) {
+		delete(c.nodeAliasCache, key)
+		return "", false
+	}
+	return entry.alias, true
+}
+
+func (c *Client) setNodeAliasCache(pubkey string, alias string, ttl time.Duration) {
+	key := normalizePubkeyCacheKey(pubkey)
+	if key == "" || ttl <= 0 {
+		return
+	}
+
+	c.nodeAliasMu.Lock()
+	defer c.nodeAliasMu.Unlock()
+
+	if c.nodeAliasCache == nil {
+		c.nodeAliasCache = make(map[string]nodeAliasCacheEntry)
+	}
+	c.nodeAliasCache[key] = nodeAliasCacheEntry{
+		alias:     strings.TrimSpace(alias),
+		expiresAt: time.Now().Add(ttl),
+	}
+}
+
+func (c *Client) lookupNodeAliasWithClient(ctx context.Context, client lnrpc.LightningClient, pubkey string) string {
+	trimmed := strings.TrimSpace(pubkey)
+	if trimmed == "" {
+		return ""
+	}
+
+	if alias, ok := c.getNodeAliasFromCache(trimmed); ok {
+		return alias
+	}
+
+	info, err := client.GetNodeInfo(ctx, &lnrpc.NodeInfoRequest{PubKey: trimmed, IncludeChannels: false})
+	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+			c.setNodeAliasCache(trimmed, "", nodeAliasNotFoundCacheTTL)
+		}
+		return ""
+	}
+
+	node := info.GetNode()
+	if node == nil {
+		c.setNodeAliasCache(trimmed, "", nodeAliasNotFoundCacheTTL)
+		return ""
+	}
+
+	alias := strings.TrimSpace(node.Alias)
+	if alias == "" {
+		c.setNodeAliasCache(trimmed, "", nodeAliasNotFoundCacheTTL)
+		return ""
+	}
+
+	c.setNodeAliasCache(trimmed, alias, nodeAliasCacheTTL)
+	return alias
+}
+
+func (c *Client) LookupNodeAlias(ctx context.Context, pubkey string) string {
+	trimmed := strings.TrimSpace(pubkey)
+	if trimmed == "" {
+		return ""
+	}
+
+	if alias, ok := c.getNodeAliasFromCache(trimmed); ok {
+		return alias
+	}
+
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	return c.lookupNodeAliasWithClient(ctx, client, trimmed)
+}
 
 func (c *Client) ResetMissionControl(ctx context.Context) error {
 	conn, err := c.dial(ctx, true)
@@ -1602,13 +1714,9 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 		if alias := aliasMap[pubkey]; alias != "" {
 			return alias
 		}
-		info, err := client.GetNodeInfo(ctx, &lnrpc.NodeInfoRequest{PubKey: pubkey, IncludeChannels: false})
-		if err == nil && info.GetNode() != nil {
-			alias := info.GetNode().Alias
-			if alias != "" {
-				aliasMap[pubkey] = alias
-				return alias
-			}
+		if alias := c.lookupNodeAliasWithClient(ctx, client, pubkey); alias != "" {
+			aliasMap[pubkey] = alias
+			return alias
 		}
 		return ""
 	}
@@ -1719,10 +1827,7 @@ func (c *Client) ListPeers(ctx context.Context) ([]PeerInfo, error) {
 	for _, peer := range resp.Peers {
 		alias := aliasMap[peer.PubKey]
 		if alias == "" {
-			info, err := client.GetNodeInfo(ctx, &lnrpc.NodeInfoRequest{PubKey: peer.PubKey, IncludeChannels: false})
-			if err == nil && info.GetNode() != nil {
-				alias = info.GetNode().Alias
-			}
+			alias = c.lookupNodeAliasWithClient(ctx, client, peer.PubKey)
 		}
 		lastErr := ""
 		lastErrTime := int64(0)
