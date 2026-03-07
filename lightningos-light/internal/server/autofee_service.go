@@ -113,6 +113,21 @@ const (
 	reversalFastTrackStallMinRounds     = 2
 	htlcLowSampleMaxDownFrac            = 0.05
 	generalMaxDownFrac                  = 0.08
+	channelSizeRatioExponent            = 0.35
+	channelSizeRatioFactorMin           = 0.45
+	channelSizeRatioFactorMax           = 1.80
+	channelOutlierBlendFullAtRatio      = 3.00
+	channelOutlierAbsBlendMax           = 0.60
+	channelLargeAbsLocalMinAvg          = 0.60
+	channelLargeAbsLocalFullAvg         = 1.00
+	channelLargeAbsOutRatioMin          = 0.30
+	channelLargeAbsOutRatioMax          = 0.45
+	channelNodeRatioLow                 = 0.30
+	channelNodeRatioHigh                = 0.70
+	channelNodeRatioAdjMax              = 0.05
+	channelOutlierLargeCapRelMin        = 2.00
+	channelOutlierSmallCapRelMax        = 0.50
+	channelOutNormTagDiffMin            = 0.04
 )
 
 func normalizeRebalCostMode(value string) string {
@@ -2506,6 +2521,89 @@ func effectiveLowOutThresholds(baseLow float64, baseProtect float64, liquidityCl
 	return lowOut, protect, factor
 }
 
+type outRatioNormalizationMeta struct {
+	Raw          float64
+	Effective    float64
+	CapRel       float64
+	LocalToAvg   float64
+	NodeAdj      float64
+	OutlierLarge bool
+	OutlierSmall bool
+	AbsFloorUsed bool
+}
+
+// effectiveChannelOutRatio blends per-channel ratio with absolute/local and node-wide liquidity context.
+// This keeps large/small outlier channels from being over-classified as drained/full using only local/capacity.
+func effectiveChannelOutRatio(outRatio float64, localBalSat int64, capacitySat int64, avgCapacitySat int64, nodeLocalRatio float64) (float64, outRatioNormalizationMeta) {
+	effective := clampFloat(outRatio, 0.0, 1.0)
+	meta := outRatioNormalizationMeta{
+		Raw:       effective,
+		Effective: effective,
+	}
+	if capacitySat <= 0 || avgCapacitySat <= 0 {
+		return effective, meta
+	}
+
+	capRel := float64(capacitySat) / float64(avgCapacitySat)
+	if capRel <= 0 {
+		return effective, meta
+	}
+	meta.CapRel = capRel
+	meta.OutlierLarge = capRel >= channelOutlierLargeCapRelMin
+	meta.OutlierSmall = capRel <= channelOutlierSmallCapRelMax
+	sizeFactor := math.Pow(capRel, channelSizeRatioExponent)
+	sizeFactor = clampFloat(sizeFactor, channelSizeRatioFactorMin, channelSizeRatioFactorMax)
+	ratioAdj := clampFloat(effective*sizeFactor, 0.0, 1.0)
+
+	localSat := math.Max(0.0, float64(localBalSat))
+	absScore := 0.0
+	if localSat > 0 {
+		absScore = localSat / (localSat + float64(avgCapacitySat))
+	}
+	meta.LocalToAvg = localSat / float64(avgCapacitySat)
+
+	blendWeight := 0.0
+	blendDen := math.Log(channelOutlierBlendFullAtRatio)
+	if blendDen > 0 {
+		blendWeight = math.Abs(math.Log(capRel)) / blendDen
+		blendWeight = clampFloat(blendWeight, 0.0, channelOutlierAbsBlendMax)
+	}
+	effective = ratioAdj*(1.0-blendWeight) + absScore*blendWeight
+
+	// If absolute local liquidity is large versus node average, avoid treating the channel as severely drained.
+	localToAvg := meta.LocalToAvg
+	if localToAvg >= channelLargeAbsLocalMinAvg {
+		t := 0.0
+		if channelLargeAbsLocalFullAvg > channelLargeAbsLocalMinAvg {
+			t = (localToAvg - channelLargeAbsLocalMinAvg) / (channelLargeAbsLocalFullAvg - channelLargeAbsLocalMinAvg)
+		}
+		t = clampFloat(t, 0.0, 1.0)
+		floor := channelLargeAbsOutRatioMin + t*(channelLargeAbsOutRatioMax-channelLargeAbsOutRatioMin)
+		if effective < floor {
+			effective = floor
+			meta.AbsFloorUsed = true
+		}
+	}
+
+	// Node-wide local liquidity shifts sensitivity slightly.
+	nodeAdj := 0.0
+	if nodeLocalRatio > 0 && nodeLocalRatio < 1 {
+		if nodeLocalRatio < channelNodeRatioLow {
+			lack := (channelNodeRatioLow - nodeLocalRatio) / channelNodeRatioLow
+			nodeAdj = -(clampFloat(lack, 0.0, 1.0) * channelNodeRatioAdjMax)
+		} else if nodeLocalRatio > channelNodeRatioHigh {
+			headroom := (nodeLocalRatio - channelNodeRatioHigh) / (1.0 - channelNodeRatioHigh)
+			nodeAdj = clampFloat(headroom, 0.0, 1.0) * channelNodeRatioAdjMax
+		}
+		effective += nodeAdj
+	}
+
+	effective = clampFloat(effective, 0.0, 1.0)
+	meta.NodeAdj = nodeAdj
+	meta.Effective = effective
+	return effective, meta
+}
+
 func minStagnationRecoveryOutSat(capacitySat int64) int64 {
 	byCap := int64(math.Ceil(float64(capacitySat) * stagnationExitMinOutCapFrac))
 	if byCap < stagnationExitMinOutSat1d {
@@ -3511,6 +3609,7 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	if ch.CapacitySat > 0 {
 		outRatio = float64(ch.LocalBalanceSat) / float64(ch.CapacitySat)
 	}
+	outRatio, outNormMeta := effectiveChannelOutRatio(outRatio, ch.LocalBalanceSat, ch.CapacitySat, e.calib.AvgCapacitySat, e.calib.LocalRatio)
 
 	fwd := forwardStats[ch.ChannelID]
 	fwd1d := forwardStats1d[ch.ChannelID]
@@ -3772,6 +3871,27 @@ func (e *autofeeEngine) evaluateChannel(ch lndclient.ChannelInfo, st *autofeeCha
 	}
 
 	tags := []string{}
+	if outNormMeta.OutlierLarge || outNormMeta.OutlierSmall || math.Abs(outNormMeta.Effective-outNormMeta.Raw) >= channelOutNormTagDiffMin {
+		tags = append(tags,
+			"outnorm",
+			fmt.Sprintf("outnorm:raw=%.2f", outNormMeta.Raw),
+			fmt.Sprintf("outnorm:eff=%.2f", outNormMeta.Effective),
+		)
+		if outNormMeta.CapRel > 0 {
+			tags = append(tags, fmt.Sprintf("outnorm:capx=%.2f", outNormMeta.CapRel))
+		}
+		if outNormMeta.OutlierLarge {
+			tags = append(tags, "outnorm:large")
+		} else if outNormMeta.OutlierSmall {
+			tags = append(tags, "outnorm:small")
+		}
+		if outNormMeta.AbsFloorUsed {
+			tags = append(tags, "outnorm:abs-floor")
+		}
+		if math.Abs(outNormMeta.NodeAdj) >= 0.005 {
+			tags = append(tags, fmt.Sprintf("outnorm:nodeadj=%+.2f", outNormMeta.NodeAdj))
+		}
+	}
 	if newInboundBootstrap {
 		tags = append(tags, "new-inbound", "bootstrap")
 	}
@@ -5180,6 +5300,16 @@ func clampInt(v int, min int, max int) int {
 	return v
 }
 
+func clampFloat(v float64, min float64, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -5458,6 +5588,10 @@ func formatAutofeeTags(d *decision) string {
 			add("📉htlc-low-sample-downcap")
 		case t == "stall-alert":
 			add("🚨stall-alert")
+		case t == "outnorm":
+			add("🧮outnorm")
+		case strings.HasPrefix(t, "outnorm:"):
+			add("🧮" + strings.TrimPrefix(t, "outnorm:"))
 		case t == "global-neg-lock":
 			add("🛡️global-neg-lock")
 		case t == "lock-skip-no-chan-rebal":
