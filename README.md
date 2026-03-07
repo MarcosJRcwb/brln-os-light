@@ -30,6 +30,8 @@ LightningOS Light is a Full Lightning Node Daemon Installer, Lightning node mana
 - `ui`: React + Tailwind UI
 - `templates`: systemd units and config templates
 - `install.sh`: idempotent installer (wrapper in `scripts/install.sh`)
+- `install_existing.sh`: installer for existing nodes (x86_64/amd64)
+- `install_existing_pi.sh`: installer for existing nodes on Raspberry Pi 4 (arm64)
 - `configs/config.yaml`: local dev config
 
 ## Install (Ubuntu Server)
@@ -93,6 +95,17 @@ sudo iptables -I INPUT -i br-<id> -p tcp --dport 10009 -j ACCEPT
 Follow the Existing Node Guide instead:
 - PT-BR: `docs/13_EXISTING_NODE_GUIDE_PT_BR.md`
 - EN: `docs/14_EXISTING_NODE_GUIDE_EN.md`
+
+Run the installer that matches your environment:
+```bash
+cd lightningos-light
+
+# Existing node on x86_64/amd64
+sudo ./install_existing.sh
+
+# Existing node on Raspberry Pi 4 (arm64)
+sudo ./install_existing_pi.sh
+```
 
 Access the UI from another machine on the same LAN:
 `https://<SERVER_LAN_IP>:8443`

@@ -1026,6 +1026,7 @@ ensure_postgres_service() {
       return
     fi
   fi
+  maybe_move_postgres_data_to_ssd
   if ! systemctl is-active --quiet postgresql; then
     if prompt_yes_no "PostgreSQL is inactive. Enable and start it now?" "y"; then
       systemctl enable --now postgresql
@@ -1034,6 +1035,68 @@ ensure_postgres_service() {
       print_warn "PostgreSQL is required for reports/notifications"
     fi
   fi
+}
+
+maybe_move_postgres_data_to_ssd() {
+  local data_mount="/data"
+  local pg_target="/var/lib/postgresql"
+  local ssd_pg_dir="${POSTGRES_SSD_DIR:-/data/postgresql}"
+
+  if [[ ! -d "$data_mount" ]] || ! findmnt -n --target "$data_mount" >/dev/null 2>&1; then
+    print_warn "/data is not mounted; keeping PostgreSQL on default storage"
+    return 0
+  fi
+  if ! id -u postgres >/dev/null 2>&1; then
+    print_warn "PostgreSQL user not found; skipping SSD migration"
+    return 0
+  fi
+
+  local current_source=""
+  current_source=$(findmnt -n -o SOURCE --target "$pg_target" 2>/dev/null || true)
+  if [[ "$current_source" == "$ssd_pg_dir" ]]; then
+    print_ok "PostgreSQL data already mounted from ${ssd_pg_dir}"
+    return 0
+  fi
+
+  local existing_fstab_target=""
+  existing_fstab_target=$(awk '$1 !~ /^#/ && $2 == "/var/lib/postgresql" {print $1}' /etc/fstab | head -n1 || true)
+  if [[ -n "$existing_fstab_target" && "$existing_fstab_target" != "$ssd_pg_dir" ]]; then
+    print_warn "Found existing /etc/fstab entry for /var/lib/postgresql (${existing_fstab_target}); skipping auto-migration"
+    return 0
+  fi
+
+  if ! prompt_yes_no "Move PostgreSQL data to SSD at ${ssd_pg_dir}? (recommended for Raspberry Pi)" "y"; then
+    return 0
+  fi
+
+  print_step "Moving PostgreSQL data to SSD (${ssd_pg_dir})"
+  systemctl stop postgresql >/dev/null 2>&1 || true
+
+  mkdir -p "$ssd_pg_dir"
+  chown postgres:postgres "$ssd_pg_dir"
+  chmod 700 "$ssd_pg_dir"
+
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a "$pg_target/" "$ssd_pg_dir/"
+  else
+    cp -a "$pg_target/." "$ssd_pg_dir/"
+  fi
+  chown -R postgres:postgres "$ssd_pg_dir"
+  chmod 700 "$ssd_pg_dir"
+
+  if mountpoint -q "$pg_target"; then
+    umount "$pg_target" || true
+  fi
+  mkdir -p "$pg_target"
+  mount --bind "$ssd_pg_dir" "$pg_target"
+
+  if ! grep -Eq "^[[:space:]]*${ssd_pg_dir//\//\\/}[[:space:]]+${pg_target//\//\\/}[[:space:]]+none[[:space:]]+.*bind" /etc/fstab; then
+    cp /etc/fstab "/etc/fstab.lightningos.bak.$(date +%Y%m%d%H%M%S)"
+    echo "${ssd_pg_dir} ${pg_target} none bind,nofail 0 0" >> /etc/fstab
+  fi
+
+  systemctl start postgresql
+  print_ok "PostgreSQL data moved to SSD (${ssd_pg_dir})"
 }
 
 get_os_codename() {
