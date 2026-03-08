@@ -226,6 +226,7 @@ export default function Reports() {
   const [chartGranularity, setChartGranularity] = useState<ChartGranularity>('day')
   const [includeOnchainCostInCharts, setIncludeOnchainCostInCharts] = useState(false)
   const [includeOnchainBreakdownInCharts, setIncludeOnchainBreakdownInCharts] = useState(false)
+  const [useDualScaleInCumulativeChart, setUseDualScaleInCumulativeChart] = useState(false)
 
   const formatter = useMemo(() => new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }), [locale])
   const compactFormatter = useMemo(() => new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 2 }), [locale])
@@ -413,10 +414,15 @@ export default function Reports() {
   }
 
   useEffect(() => {
-    if (!includeOnchainCostInCharts && includeOnchainBreakdownInCharts) {
-      setIncludeOnchainBreakdownInCharts(false)
+    if (!includeOnchainCostInCharts) {
+      if (includeOnchainBreakdownInCharts) {
+        setIncludeOnchainBreakdownInCharts(false)
+      }
+      if (useDualScaleInCumulativeChart) {
+        setUseDualScaleInCumulativeChart(false)
+      }
     }
-  }, [includeOnchainBreakdownInCharts, includeOnchainCostInCharts])
+  }, [includeOnchainBreakdownInCharts, includeOnchainCostInCharts, useDualScaleInCumulativeChart])
 
   useEffect(() => {
     const selectedToday = range === 'date' && isTodaySelection(customDate, movementLive?.date)
@@ -745,7 +751,9 @@ export default function Reports() {
       }
     })
   }, [chartData])
-  const cumulativeYAxisTicks = useMemo(() => {
+  const dualScaleEnabled = includeOnchainCostInCharts && useDualScaleInCumulativeChart
+
+  const cumulativeSingleAxisTicks = useMemo(() => {
     if (cumulativeCostData.length === 0) {
       return [0]
     }
@@ -762,6 +770,36 @@ export default function Reports() {
             item.cumulativeOnchainRemoteForce
           )
         }
+      }
+    }
+    return buildYAxisTicks(maxValue, 22)
+  }, [cumulativeCostData, includeOnchainBreakdownInCharts, includeOnchainCostInCharts])
+
+  const cumulativeRightAxisTicks = useMemo(() => {
+    if (cumulativeCostData.length === 0) {
+      return [0]
+    }
+    let maxValue = 0
+    for (const item of cumulativeCostData) {
+      maxValue = Math.max(maxValue, item.cumulativeRevenue, item.cumulativeOffchain)
+    }
+    return buildYAxisTicks(maxValue, 22)
+  }, [cumulativeCostData])
+
+  const cumulativeLeftAxisTicks = useMemo(() => {
+    if (cumulativeCostData.length === 0 || !includeOnchainCostInCharts) {
+      return [0]
+    }
+    let maxValue = 0
+    for (const item of cumulativeCostData) {
+      maxValue = Math.max(maxValue, item.cumulativeOnchain)
+      if (includeOnchainBreakdownInCharts) {
+        maxValue = Math.max(
+          maxValue,
+          item.cumulativeOnchainCoop,
+          item.cumulativeOnchainLocalForce,
+          item.cumulativeOnchainRemoteForce
+        )
       }
     }
     return buildYAxisTicks(maxValue, 22)
@@ -1246,6 +1284,16 @@ export default function Reports() {
               />
               <span>{t('reports.includeOnchainBreakdown')}</span>
             </label>
+            <label className={`inline-flex items-center gap-2 text-sm ${includeOnchainCostInCharts ? 'text-fog/70' : 'text-fog/40'}`}>
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-emerald-500"
+                checked={useDualScaleInCumulativeChart}
+                disabled={!includeOnchainCostInCharts}
+                onChange={(e) => setUseDualScaleInCumulativeChart(e.target.checked)}
+              />
+              <span>{t('reports.dualScale')}</span>
+            </label>
             {renderGranularityToggle()}
           </div>
         </div>
@@ -1283,13 +1331,37 @@ export default function Reports() {
                 </defs>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis
-                  tick={{ fill: '#cbd5f5', fontSize: 11 }}
-                  tickFormatter={formatCompact}
-                  axisLine={false}
-                  tickLine={false}
-                  ticks={cumulativeYAxisTicks}
-                />
+                {dualScaleEnabled ? (
+                  <>
+                    <YAxis
+                      yAxisId="left"
+                      orientation="left"
+                      tick={{ fill: '#cbd5f5', fontSize: 11 }}
+                      tickFormatter={formatCompact}
+                      axisLine={false}
+                      tickLine={false}
+                      ticks={cumulativeLeftAxisTicks}
+                    />
+                    <YAxis
+                      yAxisId="right"
+                      orientation="right"
+                      tick={{ fill: '#cbd5f5', fontSize: 11 }}
+                      tickFormatter={formatCompact}
+                      axisLine={false}
+                      tickLine={false}
+                      ticks={cumulativeRightAxisTicks}
+                    />
+                  </>
+                ) : (
+                  <YAxis
+                    yAxisId="single"
+                    tick={{ fill: '#cbd5f5', fontSize: 11 }}
+                    tickFormatter={formatCompact}
+                    axisLine={false}
+                    tickLine={false}
+                    ticks={cumulativeSingleAxisTicks}
+                  />
+                )}
                 <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                 <Tooltip
                   cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
@@ -1303,6 +1375,7 @@ export default function Reports() {
                   type="monotone"
                   dataKey="cumulativeRevenue"
                   name={t('reports.revenue')}
+                  yAxisId={dualScaleEnabled ? 'right' : 'single'}
                   stroke={COLORS.revenue}
                   fill="url(#cumulativeRevenueGradient)"
                   strokeWidth={2}
@@ -1312,6 +1385,7 @@ export default function Reports() {
                   type="monotone"
                   dataKey="cumulativeOffchain"
                   name={t('reports.offchainCost')}
+                  yAxisId={dualScaleEnabled ? 'right' : 'single'}
                   stroke={COLORS.cost}
                   fill="url(#cumulativeOffchainGradient)"
                   strokeWidth={2}
@@ -1322,6 +1396,7 @@ export default function Reports() {
                     type="monotone"
                     dataKey="cumulativeOnchain"
                     name={t('reports.onchainCost')}
+                    yAxisId={dualScaleEnabled ? 'left' : 'single'}
                     stroke={COLORS.onchain}
                     fill="url(#cumulativeOnchainGradient)"
                     strokeWidth={2}
@@ -1333,6 +1408,7 @@ export default function Reports() {
                     type="monotone"
                     dataKey="cumulativeOnchainCoop"
                     name={t('reports.cooperativeCloseCost')}
+                    yAxisId={dualScaleEnabled ? 'left' : 'single'}
                     stroke={COLORS.onchainCoop}
                     fill="url(#cumulativeOnchainCoopGradient)"
                     strokeWidth={2}
@@ -1344,6 +1420,7 @@ export default function Reports() {
                     type="monotone"
                     dataKey="cumulativeOnchainLocalForce"
                     name={t('reports.localForceCloseCost')}
+                    yAxisId={dualScaleEnabled ? 'left' : 'single'}
                     stroke={COLORS.onchainLocalForce}
                     fill="url(#cumulativeOnchainLocalForceGradient)"
                     strokeWidth={2}
@@ -1355,6 +1432,7 @@ export default function Reports() {
                     type="monotone"
                     dataKey="cumulativeOnchainRemoteForce"
                     name={t('reports.remoteForceCloseCost')}
+                    yAxisId={dualScaleEnabled ? 'left' : 'single'}
                     stroke={COLORS.onchainRemoteForce}
                     fill="url(#cumulativeOnchainRemoteForceGradient)"
                     strokeWidth={2}

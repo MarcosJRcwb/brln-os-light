@@ -682,6 +682,7 @@
     "payments": "Pagamentos",
     "includeOnchainCost": "Incluir custo on-chain no gráfico de custo",
     "includeOnchainBreakdown": "Mostrar breakdown de fechamento on-chain",
+    "dualScale": "Escala dual",
     "cooperativeCloseCost": "Custo de fechamento cooperativo",
     "localForceCloseCost": "Custo de fechamento forçado local",
     "remoteForceCloseCost": "Custo de fechamento forçado remoto",

@@ -682,6 +682,7 @@
     "payments": "Payments",
     "includeOnchainCost": "Include on-chain cost in cost chart",
     "includeOnchainBreakdown": "Show on-chain close breakdown",
+    "dualScale": "Dual scale",
     "cooperativeCloseCost": "Cooperative close cost",
     "localForceCloseCost": "Local force close cost",
     "remoteForceCloseCost": "Remote force close cost",
