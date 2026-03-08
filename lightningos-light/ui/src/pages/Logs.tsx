@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getLogs } from '../api'
 
@@ -21,6 +21,7 @@ export default function Logs() {
   const [data, setData] = useState<string[]>([])
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
+  const logContainerRef = useRef<HTMLDivElement | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -39,6 +40,12 @@ export default function Logs() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const container = logContainerRef.current
+    if (!container) return
+    container.scrollTop = container.scrollHeight
+  }, [data])
 
   return (
     <section className="space-y-6">
@@ -68,7 +75,10 @@ export default function Logs() {
           </button>
         </div>
         {status && <p className="text-sm text-brass">{status}</p>}
-        <div className="bg-ink/70 border border-white/10 rounded-2xl p-4 text-xs font-mono whitespace-pre-wrap min-h-[280px]">
+        <div
+          ref={logContainerRef}
+          className="bg-ink/70 border border-white/10 rounded-2xl p-4 text-xs font-mono whitespace-pre-wrap min-h-[320px] h-[60vh] max-h-[720px] overflow-y-auto"
+        >
           {data.length ? data.join('\n') : t('logs.noLogs')}
         </div>
       </div>
