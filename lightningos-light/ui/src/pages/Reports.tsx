@@ -1165,7 +1165,21 @@ export default function Reports() {
         ) : (
           <div className="h-[52rem]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={cumulativeCostData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
+              <AreaChart data={cumulativeCostData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
+                <defs>
+                  <linearGradient id="cumulativeRevenueGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS.revenue} stopOpacity={0.35} />
+                    <stop offset="95%" stopColor={COLORS.revenue} stopOpacity={0.04} />
+                  </linearGradient>
+                  <linearGradient id="cumulativeOffchainGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS.cost} stopOpacity={0.35} />
+                    <stop offset="95%" stopColor={COLORS.cost} stopOpacity={0.04} />
+                  </linearGradient>
+                  <linearGradient id="cumulativeOnchainGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS.onchain} stopOpacity={0.35} />
+                    <stop offset="95%" stopColor={COLORS.onchain} stopOpacity={0.04} />
+                  </linearGradient>
+                </defs>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
@@ -1178,12 +1192,36 @@ export default function Reports() {
                   formatter={(value) => formatSats(Number(value))}
                   labelFormatter={(value) => String(value)}
                 />
-                <Line type="monotone" dataKey="cumulativeRevenue" name={t('reports.revenue')} stroke={COLORS.revenue} strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="cumulativeOffchain" name={t('reports.offchainCost')} stroke={COLORS.cost} strokeWidth={2} dot={false} />
+                <Area
+                  type="monotone"
+                  dataKey="cumulativeRevenue"
+                  name={t('reports.revenue')}
+                  stroke={COLORS.revenue}
+                  fill="url(#cumulativeRevenueGradient)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="cumulativeOffchain"
+                  name={t('reports.offchainCost')}
+                  stroke={COLORS.cost}
+                  fill="url(#cumulativeOffchainGradient)"
+                  strokeWidth={2}
+                  dot={false}
+                />
                 {includeOnchainCostInCharts && (
-                  <Line type="monotone" dataKey="cumulativeOnchain" name={t('reports.onchainCost')} stroke={COLORS.onchain} strokeWidth={2} dot={false} />
+                  <Area
+                    type="monotone"
+                    dataKey="cumulativeOnchain"
+                    name={t('reports.onchainCost')}
+                    stroke={COLORS.onchain}
+                    fill="url(#cumulativeOnchainGradient)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
                 )}
-              </LineChart>
+              </AreaChart>
             </ResponsiveContainer>
           </div>
         )}
