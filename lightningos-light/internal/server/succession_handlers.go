@@ -71,6 +71,8 @@ func (s *Server) handleSuccessionConfigPost(w http.ResponseWriter, r *http.Reque
 		PreapproveFCOffline   *bool   `json:"preapprove_fc_offline"`
 		PreapproveFCStuckHTLC *bool   `json:"preapprove_fc_stuck_htlc"`
 		StuckHTLCThresholdSec *int64  `json:"stuck_htlc_threshold_sec"`
+		SweepMinConfs         *int    `json:"sweep_min_confs"`
+		SweepSatPerVbyte      *int64  `json:"sweep_sat_per_vbyte"`
 		CheckPeriodDays       *int    `json:"check_period_days"`
 		ReminderPeriodDays    *int    `json:"reminder_period_days"`
 	}
@@ -89,10 +91,16 @@ func (s *Server) handleSuccessionConfigPost(w http.ResponseWriter, r *http.Reque
 		PreapproveFCOffline:   req.PreapproveFCOffline,
 		PreapproveFCStuckHTLC: req.PreapproveFCStuckHTLC,
 		StuckHTLCThresholdSec: req.StuckHTLCThresholdSec,
+		SweepMinConfs:         req.SweepMinConfs,
+		SweepSatPerVbyte:      req.SweepSatPerVbyte,
 		CheckPeriodDays:       req.CheckPeriodDays,
 		ReminderPeriodDays:    req.ReminderPeriodDays,
 	})
 	if err != nil {
+		if errors.Is(err, ErrSuccessionTelegramMirrorRequired) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -167,6 +167,14 @@ export const getNodeRetirementSession = (sessionID: string) =>
   request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}`)
 export const getNodeRetirementSessionEvents = (sessionID: string, limit = 100) =>
   request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}/events?limit=${encodeURIComponent(String(limit))}`)
+export const getNodeRetirementSessionChannels = (sessionID: string) =>
+  request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}/channels`)
+export const getNodeRetirementSessionTransfer = (sessionID: string) =>
+  request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}/transfer`)
+export const confirmNodeRetirementCoopClose = (sessionID: string) =>
+  request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}/confirm-coop`, { method: 'POST' })
+export const decideNodeRetirementChannel = (sessionID: string, payload: { channel_point: string; decision: 'wait' | 'force_close' }) =>
+  request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}/decision`, { method: 'POST', body: JSON.stringify(payload) })
 export const getSuccessionStatus = () => request('/api/lnops/succession/status')
 export const getSuccessionConfig = () => request('/api/lnops/succession/config')
 export const updateSuccessionConfig = (payload: {
@@ -176,6 +184,8 @@ export const updateSuccessionConfig = (payload: {
   preapprove_fc_offline?: boolean
   preapprove_fc_stuck_htlc?: boolean
   stuck_htlc_threshold_sec?: number
+  sweep_min_confs?: number
+  sweep_sat_per_vbyte?: number
   check_period_days?: number
   reminder_period_days?: number
 }) => request('/api/lnops/succession/config', { method: 'POST', body: JSON.stringify(payload) })

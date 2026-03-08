@@ -515,13 +515,26 @@ func (s *Server) runTelegramCommandLoop() {
 				continue
 			}
 			cmd := parseTelegramCommand(msg.Text)
+			handled := false
 			switch cmd {
 			case "scb":
 				s.handleTelegramScbCommand(cfg)
+				handled = true
 			case "balances":
 				s.handleTelegramBalancesCommand(cfg)
+				handled = true
 			case "system":
 				s.handleTelegramSystemCommand(cfg)
+				handled = true
+			case "alive":
+				s.handleTelegramAliveCommand(cfg)
+				handled = true
+			}
+			if !handled {
+				switch parseTelegramLivenessText(msg.Text) {
+				case "alive":
+					s.handleTelegramAliveCommand(cfg)
+				}
 			}
 		}
 
@@ -561,6 +574,7 @@ func setTelegramBotCommands(ctx context.Context, token string) error {
 			{Command: "scb", Description: "on-demand SCB backup"},
 			{Command: "balances", Description: "on-demand financial summary"},
 			{Command: "system", Description: "on-demand system status"},
+			{Command: "alive", Description: "confirm succession proof-of-life"},
 		},
 	}
 	body, err := json.Marshal(payload)
@@ -664,6 +678,17 @@ func parseTelegramCommand(text string) string {
 	return strings.ToLower(strings.TrimSpace(cmd))
 }
 
+func parseTelegramLivenessText(text string) string {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	switch normalized {
+	case "estou vivo", "i am alive", "im alive", "alive", "vivo":
+		return "alive"
+	default:
+		return ""
+	}
+}
+
 func (s *Server) handleTelegramScbCommand(cfg telegramBackupConfig) {
 	if s == nil || s.notifier == nil {
 		return
@@ -718,6 +743,36 @@ func (s *Server) handleTelegramSystemCommand(cfg telegramBackupConfig) {
 			s.logger.Printf("notifications: telegram /system send failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) handleTelegramAliveCommand(cfg telegramBackupConfig) {
+	if s == nil {
+		return
+	}
+	svc, errMsg := s.successionService()
+	if svc == nil {
+		reply := "Succession mode unavailable."
+		if strings.TrimSpace(errMsg) != "" {
+			reply = "Succession mode unavailable: " + strings.TrimSpace(errMsg)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		_ = sendTelegramMessage(ctx, cfg.BotToken, cfg.ChatID, reply)
+		cancel()
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	next, err := svc.MarkAlive(ctx, "telegram")
+	cancel()
+	reply := "Proof-of-life confirmed."
+	if err != nil {
+		reply = "Failed to confirm proof-of-life: " + err.Error()
+	} else if next.NextCheckAt != nil {
+		reply = "Proof-of-life confirmed. Next check: " + next.NextCheckAt.UTC().Format(time.RFC3339)
+	}
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	_ = sendTelegramMessage(sendCtx, cfg.BotToken, cfg.ChatID, reply)
+	sendCancel()
 }
 
 func (s *Server) buildTelegramBalanceSummary(ctx context.Context) (string, error) {

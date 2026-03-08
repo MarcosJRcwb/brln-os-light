@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
+
+	"lightningos-light/internal/lndclient"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,11 +27,19 @@ const (
 )
 
 const (
-	nodeRetirementStateCreated         = "created"
-	nodeRetirementStateFailed          = "failed"
-	nodeRetirementStateCanceled        = "canceled"
-	nodeRetirementStateCompleted       = "completed"
-	nodeRetirementStateDryRunCompleted = "dry_run_completed"
+	nodeRetirementStateCreated          = "created"
+	nodeRetirementStateSnapshotTaken    = "snapshot_taken"
+	nodeRetirementStateQuiescing        = "quiescing"
+	nodeRetirementStateDrainingHTLCs    = "draining_htlcs"
+	nodeRetirementStateReadyForConfirm  = "ready_for_coop_confirmation"
+	nodeRetirementStateClosingCoop      = "closing_coop"
+	nodeRetirementStateAwaitingDecision = "awaiting_user_decision"
+	nodeRetirementStateForceClosing     = "force_closing"
+	nodeRetirementStateMonitoring       = "monitoring_onchain"
+	nodeRetirementStateFailed           = "failed"
+	nodeRetirementStateCanceled         = "canceled"
+	nodeRetirementStateCompleted        = "completed"
+	nodeRetirementStateDryRunCompleted  = "dry_run_completed"
 )
 
 const (
@@ -36,16 +47,30 @@ const (
 	nodeRetirementSourceSuccession = "succession"
 )
 
+const (
+	nodeRetirementDecisionWait       = "wait"
+	nodeRetirementDecisionForceClose = "force_close"
+)
+
 var (
-	ErrNodeRetirementDBUnavailable   = errors.New("node retirement db unavailable")
-	ErrNodeRetirementSessionNotFound = errors.New("node retirement session not found")
-	ErrNodeRetirementInvalidSource   = errors.New("invalid node retirement source")
-	ErrNodeRetirementActiveSession   = errors.New("node retirement already has an active session")
+	ErrNodeRetirementDBUnavailable    = errors.New("node retirement db unavailable")
+	ErrNodeRetirementSessionNotFound  = errors.New("node retirement session not found")
+	ErrNodeRetirementInvalidSource    = errors.New("invalid node retirement source")
+	ErrNodeRetirementActiveSession    = errors.New("node retirement already has an active session")
+	ErrNodeRetirementInvalidState     = errors.New("invalid node retirement state transition")
+	ErrNodeRetirementInvalidDecision  = errors.New("invalid node retirement channel decision")
+	ErrNodeRetirementChannelNotFound  = errors.New("node retirement channel not found")
+	ErrNodeRetirementTransferNotFound = errors.New("node retirement transfer not found")
 )
 
 type NodeRetirementService struct {
-	db     *pgxpool.Pool
-	logger *log.Logger
+	db        *pgxpool.Pool
+	logger    *log.Logger
+	lnd       *lndclient.Client
+	rebalance *RebalanceService
+	autofee   *AutofeeService
+	mu        sync.Mutex
+	started   bool
 }
 
 type NodeRetirementSession struct {
@@ -74,6 +99,39 @@ type NodeRetirementEvent struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+type NodeRetirementChannel struct {
+	ID           int64           `json:"id"`
+	SessionID    string          `json:"session_id"`
+	ChannelPoint string          `json:"channel_point"`
+	ChannelID    int64           `json:"channel_id"`
+	InitialState json.RawMessage `json:"initial_state,omitempty"`
+	CurrentState json.RawMessage `json:"current_state,omitempty"`
+	Decision     string          `json:"decision,omitempty"`
+	CloseMode    string          `json:"close_mode,omitempty"`
+	CloseTxid    string          `json:"close_txid,omitempty"`
+	LastError    string          `json:"last_error,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type NodeRetirementTransfer struct {
+	ID                 int64      `json:"id"`
+	SessionID          string     `json:"session_id"`
+	DestinationAddress string     `json:"destination_address"`
+	SweepAll           bool       `json:"sweep_all"`
+	SatPerVbyte        int64      `json:"sat_per_vbyte"`
+	MinConfirmations   int        `json:"min_confirmations"`
+	Status             string     `json:"status"`
+	Txid               string     `json:"txid,omitempty"`
+	AmountSat          int64      `json:"amount_sat"`
+	Attempts           int        `json:"attempts"`
+	LastError          string     `json:"last_error,omitempty"`
+	LastAttemptAt      *time.Time `json:"last_attempt_at,omitempty"`
+	Confirmations      int32      `json:"confirmations,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
 type NodeRetirementCreateParams struct {
 	Source             string
 	DryRun             bool
@@ -88,11 +146,40 @@ type NodeRetirementStatus struct {
 	ActiveState     string `json:"active_state,omitempty"`
 }
 
-func NewNodeRetirementService(db *pgxpool.Pool, logger *log.Logger) *NodeRetirementService {
-	return &NodeRetirementService{db: db, logger: logger}
+func NewNodeRetirementService(db *pgxpool.Pool, logger *log.Logger, lnd *lndclient.Client, rebalance *RebalanceService, autofee *AutofeeService) *NodeRetirementService {
+	return &NodeRetirementService{
+		db:        db,
+		logger:    logger,
+		lnd:       lnd,
+		rebalance: rebalance,
+		autofee:   autofee,
+	}
 }
 
-func (s *NodeRetirementService) Start() {}
+func (s *NodeRetirementService) AttachRuntime(lnd *lndclient.Client, rebalance *RebalanceService, autofee *AutofeeService) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.lnd = lnd
+	s.rebalance = rebalance
+	s.autofee = autofee
+	s.mu.Unlock()
+}
+
+func (s *NodeRetirementService) Start() {
+	if s == nil || s.db == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return
+	}
+	s.started = true
+	s.mu.Unlock()
+	go s.runLoop()
+}
 
 func (s *NodeRetirementService) EnsureSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
@@ -148,6 +235,25 @@ create table if not exists node_retirement_events (
 );
 
 create index if not exists node_retirement_events_session_idx on node_retirement_events (session_id, created_at desc);
+
+create table if not exists node_retirement_transfers (
+  id bigserial primary key,
+  session_id text not null unique references node_retirement_sessions(session_id) on delete cascade,
+  destination_address text not null default '',
+  sweep_all boolean not null default true,
+  sat_per_vbyte bigint not null default 0,
+  min_confirmations integer not null default 3,
+  status text not null default 'waiting',
+  txid text not null default '',
+  amount_sat bigint not null default 0,
+  attempts integer not null default 0,
+  last_error text not null default '',
+  last_attempt_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists node_retirement_transfers_status_idx on node_retirement_transfers (status, updated_at desc);
 `)
 	return err
 }
@@ -407,6 +513,213 @@ limit $2
 		return nil, err
 	}
 	return items, nil
+}
+
+func (s *NodeRetirementService) ListSessionChannels(ctx context.Context, sessionID string) ([]NodeRetirementChannel, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNodeRetirementDBUnavailable
+	}
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" {
+		return nil, ErrNodeRetirementSessionNotFound
+	}
+	if _, err := s.GetSession(ctx, trimmed); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(ctx, `
+select id, session_id, channel_point, channel_id, initial_state_json::text, current_state_json::text,
+  decision, close_mode, close_txid, last_error, created_at, updated_at
+from node_retirement_channels
+where session_id = $1
+order by created_at asc, id asc
+`, trimmed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]NodeRetirementChannel, 0, 16)
+	for rows.Next() {
+		var item NodeRetirementChannel
+		if err := rows.Scan(
+			&item.ID,
+			&item.SessionID,
+			&item.ChannelPoint,
+			&item.ChannelID,
+			&item.InitialState,
+			&item.CurrentState,
+			&item.Decision,
+			&item.CloseMode,
+			&item.CloseTxid,
+			&item.LastError,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *NodeRetirementService) ConfirmCoopClose(ctx context.Context, sessionID string) (NodeRetirementSession, error) {
+	if s == nil || s.db == nil {
+		return NodeRetirementSession{}, ErrNodeRetirementDBUnavailable
+	}
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return NodeRetirementSession{}, err
+	}
+	if session.State != nodeRetirementStateReadyForConfirm {
+		return NodeRetirementSession{}, ErrNodeRetirementInvalidState
+	}
+	if err := s.updateSessionState(ctx, session.SessionID, nodeRetirementStateClosingCoop, ""); err != nil {
+		return NodeRetirementSession{}, err
+	}
+	_ = s.insertEvent(ctx, session.SessionID, "coop_close_confirmed", "info", map[string]any{"source": "ui"})
+	return s.GetSession(ctx, session.SessionID)
+}
+
+func (s *NodeRetirementService) SetChannelDecision(ctx context.Context, sessionID string, channelPoint string, decision string) error {
+	if s == nil || s.db == nil {
+		return ErrNodeRetirementDBUnavailable
+	}
+	normalizedDecision := strings.TrimSpace(strings.ToLower(decision))
+	if normalizedDecision != nodeRetirementDecisionWait && normalizedDecision != nodeRetirementDecisionForceClose {
+		return ErrNodeRetirementInvalidDecision
+	}
+
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if session.State != nodeRetirementStateAwaitingDecision && session.State != nodeRetirementStateForceClosing {
+		return ErrNodeRetirementInvalidState
+	}
+
+	trimmedPoint := strings.TrimSpace(channelPoint)
+	if trimmedPoint == "" {
+		return ErrNodeRetirementChannelNotFound
+	}
+
+	tag, tagErr := s.channelExists(ctx, session.SessionID, trimmedPoint)
+	if tagErr != nil {
+		return tagErr
+	}
+	if !tag {
+		return ErrNodeRetirementChannelNotFound
+	}
+
+	_, err = s.db.Exec(ctx, `
+update node_retirement_channels
+set decision = $3,
+  updated_at = now()
+where session_id = $1 and channel_point = $2
+`, session.SessionID, trimmedPoint, normalizedDecision)
+	if err != nil {
+		return err
+	}
+	_ = s.insertEvent(ctx, session.SessionID, "channel_decision", "info", map[string]any{
+		"channel_point": trimmedPoint,
+		"decision":      normalizedDecision,
+	})
+	if normalizedDecision == nodeRetirementDecisionForceClose {
+		_ = s.updateSessionState(ctx, session.SessionID, nodeRetirementStateForceClosing, "")
+	}
+	return nil
+}
+
+func (s *NodeRetirementService) GetSessionTransfer(ctx context.Context, sessionID string) (NodeRetirementTransfer, error) {
+	if s == nil || s.db == nil {
+		return NodeRetirementTransfer{}, ErrNodeRetirementDBUnavailable
+	}
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" {
+		return NodeRetirementTransfer{}, ErrNodeRetirementSessionNotFound
+	}
+	if _, err := s.GetSession(ctx, trimmed); err != nil {
+		return NodeRetirementTransfer{}, err
+	}
+
+	var item NodeRetirementTransfer
+	err := s.db.QueryRow(ctx, `
+select id, session_id, destination_address, sweep_all, sat_per_vbyte, min_confirmations,
+  status, txid, amount_sat, attempts, last_error, last_attempt_at, created_at, updated_at
+from node_retirement_transfers
+where session_id = $1
+`, trimmed).Scan(
+		&item.ID,
+		&item.SessionID,
+		&item.DestinationAddress,
+		&item.SweepAll,
+		&item.SatPerVbyte,
+		&item.MinConfirmations,
+		&item.Status,
+		&item.Txid,
+		&item.AmountSat,
+		&item.Attempts,
+		&item.LastError,
+		scanOptionalTime(&item.LastAttemptAt),
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return NodeRetirementTransfer{}, ErrNodeRetirementTransferNotFound
+		}
+		return NodeRetirementTransfer{}, err
+	}
+
+	if strings.TrimSpace(item.Txid) != "" && s.lnd != nil {
+		txs, txErr := s.lnd.ListOnchainTransactions(ctx, 400)
+		if txErr == nil {
+			target := strings.ToLower(strings.TrimSpace(item.Txid))
+			for _, tx := range txs {
+				if strings.ToLower(strings.TrimSpace(tx.Txid)) != target {
+					continue
+				}
+				item.Confirmations = tx.Confirmations
+				break
+			}
+		}
+	}
+	return item, nil
+}
+
+func (s *NodeRetirementService) channelExists(ctx context.Context, sessionID string, channelPoint string) (bool, error) {
+	var count int
+	if err := s.db.QueryRow(ctx, `
+select count(*)
+from node_retirement_channels
+where session_id = $1 and channel_point = $2
+`, sessionID, channelPoint).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *NodeRetirementService) insertEvent(ctx context.Context, sessionID string, eventType string, severity string, payload any) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	if err := s.insertEventTx(ctx, tx, sessionID, eventType, severity, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
 }
 
 func (s *NodeRetirementService) insertEventTx(ctx context.Context, tx pgx.Tx, sessionID string, eventType string, severity string, payload any) error {

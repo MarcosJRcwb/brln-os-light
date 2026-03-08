@@ -200,3 +200,142 @@ func (s *Server) handleNodeRetirementSessionEventsGet(w http.ResponseWriter, r *
 
 	writeJSON(w, http.StatusOK, map[string]any{"items": events})
 }
+
+func (s *Server) handleNodeRetirementSessionChannelsGet(w http.ResponseWriter, r *http.Request) {
+	svc, errMsg := s.nodeRetirementService()
+	if svc == nil {
+		if errMsg == "" {
+			errMsg = "node retirement unavailable"
+		}
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	channels, err := svc.ListSessionChannels(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, ErrNodeRetirementSessionNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": channels})
+}
+
+func (s *Server) handleNodeRetirementSessionConfirmCoopPost(w http.ResponseWriter, r *http.Request) {
+	svc, errMsg := s.nodeRetirementService()
+	if svc == nil {
+		if errMsg == "" {
+			errMsg = "node retirement unavailable"
+		}
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	session, err := svc.ConfirmCoopClose(ctx, sessionID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNodeRetirementSessionNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrNodeRetirementInvalidState):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleNodeRetirementSessionDecisionPost(w http.ResponseWriter, r *http.Request) {
+	svc, errMsg := s.nodeRetirementService()
+	if svc == nil {
+		if errMsg == "" {
+			errMsg = "node retirement unavailable"
+		}
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+
+	var req struct {
+		ChannelPoint string `json:"channel_point"`
+		Decision     string `json:"decision"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := svc.SetChannelDecision(ctx, sessionID, req.ChannelPoint, req.Decision); err != nil {
+		switch {
+		case errors.Is(err, ErrNodeRetirementSessionNotFound), errors.Is(err, ErrNodeRetirementChannelNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrNodeRetirementInvalidDecision):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrNodeRetirementInvalidState):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleNodeRetirementSessionTransferGet(w http.ResponseWriter, r *http.Request) {
+	svc, errMsg := s.nodeRetirementService()
+	if svc == nil {
+		if errMsg == "" {
+			errMsg = "node retirement unavailable"
+		}
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	transfer, err := svc.GetSessionTransfer(ctx, sessionID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNodeRetirementSessionNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrNodeRetirementTransferNotFound):
+			writeJSON(w, http.StatusOK, map[string]any{"item": nil})
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": transfer})
+}
