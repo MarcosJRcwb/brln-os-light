@@ -1125,7 +1125,13 @@ export default function Reports() {
               <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
+                <YAxis
+                  tick={{ fill: '#cbd5f5', fontSize: 11 }}
+                  tickFormatter={formatCompact}
+                  axisLine={false}
+                  tickLine={false}
+                  tickCount={14}
+                />
                 <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                 <Tooltip
                   cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}

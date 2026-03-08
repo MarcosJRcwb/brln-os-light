@@ -23,7 +23,7 @@ func FetchOnchainFeeMetrics(ctx context.Context, lnd *lndclient.Client, startUni
 		if ts < int64(startUnix) || ts > int64(endUnix) {
 			continue
 		}
-		if tx.Direction != "out" || tx.FeeSat <= 0 {
+		if tx.FeeSat <= 0 {
 			continue
 		}
 		totals.FeeMsat += tx.FeeSat * 1000
@@ -50,7 +50,7 @@ func FetchOnchainFeesByDay(ctx context.Context, lnd *lndclient.Client, startUnix
 		if ts < int64(startUnix) || ts > int64(endUnix) {
 			continue
 		}
-		if tx.Direction != "out" || tx.FeeSat <= 0 {
+		if tx.FeeSat <= 0 {
 			continue
 		}
 		local := tx.Timestamp.In(loc)
