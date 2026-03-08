@@ -1135,14 +1135,25 @@ export default function Reports() {
       </div>
 
       <div className="section-card space-y-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold">{t('reports.cumulativeRevenueCosts')}</h3>
-          {renderGranularityToggle()}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex items-center gap-2 text-sm text-fog/70">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-emerald-500"
+                checked={includeOnchainCostInCharts}
+                onChange={(e) => setIncludeOnchainCostInCharts(e.target.checked)}
+              />
+              <span>{t('reports.includeOnchainCost')}</span>
+            </label>
+            {renderGranularityToggle()}
+          </div>
         </div>
         {cumulativeCostData.length === 0 && !seriesLoading && !seriesError ? (
           <p className="text-sm text-fog/60">{t('reports.noData')}</p>
         ) : (
-          <div className="h-72">
+          <div className="h-[26rem]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={cumulativeCostData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
@@ -1159,7 +1170,9 @@ export default function Reports() {
                 />
                 <Line type="monotone" dataKey="cumulativeRevenue" name={t('reports.revenue')} stroke={COLORS.revenue} strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="cumulativeOffchain" name={t('reports.offchainCost')} stroke={COLORS.cost} strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="cumulativeOnchain" name={t('reports.onchainCost')} stroke={COLORS.onchain} strokeWidth={2} dot={false} />
+                {includeOnchainCostInCharts && (
+                  <Line type="monotone" dataKey="cumulativeOnchain" name={t('reports.onchainCost')} stroke={COLORS.onchain} strokeWidth={2} dot={false} />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
