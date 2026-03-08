@@ -43,6 +43,7 @@ type NodeRetirementEvent = {
   id: number
   event_type: string
   severity: string
+  payload?: unknown
   created_at: string
 }
 
@@ -231,6 +232,18 @@ const formatDelta = (initial: number | null, current: number | null) => {
   return '0 sats'
 }
 
+const formatDurationSeconds = (value: number | null) => {
+  if (value === null || !Number.isFinite(value) || value < 0) return '-'
+  const seconds = Math.floor(value)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m`
+  const days = Math.floor(hours / 24)
+  return `${days}d ${hours % 24}h`
+}
+
 export default function NodeRetirement() {
   const { t } = useTranslation()
   const successionFormDirtyRef = useRef(false)
@@ -411,6 +424,7 @@ export default function NodeRetirement() {
     return channels.map((item) => {
       const initial = asRecord(item.initial_state)
       const current = asRecord(item.current_state)
+      const stuckFlag = asBool(current.stuck_htlc)
       return {
         id: item.id,
         channelPoint: item.channel_point,
@@ -426,6 +440,9 @@ export default function NodeRetirement() {
         currentRemote: pickNumber(current, ['remote_balance_sat', 'remoteBalanceSat']),
         initialPendingHTLCs: pickNumber(initial, ['pending_htlc_count', 'pendingHtlcCount']),
         currentPendingHTLCs: pickNumber(current, ['pending_htlc_count', 'pendingHtlcCount']),
+        pendingSince: pickString(current, ['pending_htlc_first_seen_at']),
+        pendingAgeSec: pickNumber(current, ['pending_htlc_age_sec']),
+        stuckHTLC: stuckFlag === true,
         decision: item.decision || '',
         closeMode: item.close_mode || '',
         closeTxid: item.close_txid || '',
@@ -433,6 +450,92 @@ export default function NodeRetirement() {
       }
     })
   }, [channels])
+
+  const stuckThresholdSec = useMemo(() => {
+    const cfg = asRecord(activeSession?.config)
+    return pickNumber(cfg, ['stuck_htlc_threshold_sec']) ?? 86400
+  }, [activeSession])
+
+  const retirementMetrics = useMemo(() => {
+    let pendingChannels = 0
+    let pendingHtlcsTotal = 0
+    let maxPendingAgeSec: number | null = null
+    let stuckChannels = 0
+    let forceCloseDecisions = 0
+    let forceClosePendingRetry = 0
+
+    for (const item of channelTimeline) {
+      const pending = item.currentPendingHTLCs ?? 0
+      if (pending > 0) {
+        pendingChannels++
+        pendingHtlcsTotal += pending
+      }
+      if (item.pendingAgeSec !== null) {
+        maxPendingAgeSec = maxPendingAgeSec === null ? item.pendingAgeSec : Math.max(maxPendingAgeSec, item.pendingAgeSec)
+      }
+      if (item.stuckHTLC) stuckChannels++
+      if (item.decision === 'force_close') {
+        forceCloseDecisions++
+        if (!item.closeMode) forceClosePendingRetry++
+      }
+    }
+
+    let quiesceErrors = 0
+    let forceCloseRetryFailures = 0
+    for (const evt of events) {
+      const payload = asRecord(evt.payload)
+      if (evt.event_type === 'node_quiesced') {
+        quiesceErrors = pickNumber(payload, ['error_count']) ?? quiesceErrors
+      }
+      if (evt.event_type === 'force_close_retry_needed') {
+        forceCloseRetryFailures = pickNumber(payload, ['failed_count']) ?? forceCloseRetryFailures
+      }
+    }
+
+    return {
+      trackedChannels: channelTimeline.length,
+      pendingChannels,
+      pendingHtlcsTotal,
+      maxPendingAgeSec,
+      stuckChannels,
+      forceCloseDecisions,
+      forceClosePendingRetry,
+      quiesceErrors,
+      forceCloseRetryFailures,
+    }
+  }, [channelTimeline, events])
+
+  const describeEventPayload = (evt: NodeRetirementEvent) => {
+    const payload = asRecord(evt.payload)
+    if (Object.keys(payload).length === 0) return ''
+
+    if (evt.event_type === 'node_quiesced') {
+      const errors = pickNumber(payload, ['error_count']) ?? 0
+      return t('nodeRetirement.eventNodeQuiesced', { errors })
+    }
+    if (evt.event_type === 'stuck_htlc_force_preapproved') {
+      const count = pickNumber(payload, ['count']) ?? 0
+      const threshold = pickNumber(payload, ['threshold_sec']) ?? 0
+      return t('nodeRetirement.eventStuckAutoForce', { count, threshold })
+    }
+    if (evt.event_type === 'coop_close_attempted') {
+      const submitted = pickNumber(payload, ['submitted']) ?? 0
+      const exceptions = pickNumber(payload, ['exceptions']) ?? 0
+      const autoForce = pickNumber(payload, ['auto_force']) ?? 0
+      return t('nodeRetirement.eventCoopAttempted', { submitted, exceptions, autoForce })
+    }
+    if (evt.event_type === 'force_close_retry_needed') {
+      const failed = pickNumber(payload, ['failed_count']) ?? 0
+      return t('nodeRetirement.eventForceRetry', { failed })
+    }
+    if (evt.event_type === 'succession_transfer_submitted') {
+      const amount = pickNumber(payload, ['amount_sat']) ?? 0
+      const txid = pickString(payload, ['txid'])
+      return t('nodeRetirement.eventTransferSubmitted', { amount, txid: txid || '-' })
+    }
+
+    return ''
+  }
 
   const stepStates = useMemo(() => {
     const idx = stateIndexBySessionState[activeSession?.state || ''] ?? -1
@@ -711,6 +814,21 @@ export default function NodeRetirement() {
             )}
           </div>
         </div>
+        <div className="rounded-2xl border border-white/10 bg-ink/60 p-3">
+          <p className="text-sm text-fog mb-2">{t('nodeRetirement.metricsTitle')}</p>
+          <div className="grid gap-1 text-xs text-fog/70 lg:grid-cols-3">
+            <p>{t('nodeRetirement.metricsTrackedChannels')}: <span className="text-fog">{retirementMetrics.trackedChannels}</span></p>
+            <p>{t('nodeRetirement.metricsPendingChannels')}: <span className="text-fog">{retirementMetrics.pendingChannels}</span></p>
+            <p>{t('nodeRetirement.metricsPendingHtlcs')}: <span className="text-fog">{retirementMetrics.pendingHtlcsTotal}</span></p>
+            <p>{t('nodeRetirement.metricsMaxPendingAge')}: <span className="text-fog">{formatDurationSeconds(retirementMetrics.maxPendingAgeSec)}</span></p>
+            <p>{t('nodeRetirement.metricsStuckThreshold')}: <span className="text-fog">{formatDurationSeconds(stuckThresholdSec)}</span></p>
+            <p>{t('nodeRetirement.metricsStuckChannels')}: <span className="text-fog">{retirementMetrics.stuckChannels}</span></p>
+            <p>{t('nodeRetirement.metricsForceDecisions')}: <span className="text-fog">{retirementMetrics.forceCloseDecisions}</span></p>
+            <p>{t('nodeRetirement.metricsForcePendingRetry')}: <span className="text-fog">{retirementMetrics.forceClosePendingRetry}</span></p>
+            <p>{t('nodeRetirement.metricsQuiesceErrors')}: <span className="text-fog">{retirementMetrics.quiesceErrors}</span></p>
+            <p>{t('nodeRetirement.metricsForceRetryFailures')}: <span className="text-fog">{retirementMetrics.forceCloseRetryFailures}</span></p>
+          </div>
+        </div>
         <div className="rounded-2xl border border-white/10 bg-ink/60 p-3 space-y-2">
           <p className="text-sm text-fog">{t('nodeRetirement.channelTimelineTitle')}</p>
           <p className="text-xs text-fog/60">{t('nodeRetirement.channelTimelineSubtitle')}</p>
@@ -749,6 +867,14 @@ export default function NodeRetirement() {
                       {t('nodeRetirement.channelPendingHtlcs')}:{' '}
                       <span className="text-fog">{item.initialPendingHTLCs ?? '-'} {'->'} {item.currentPendingHTLCs ?? '-'}</span>
                     </p>
+                    <p>{t('nodeRetirement.channelPendingAge')}: <span className="text-fog">{formatDurationSeconds(item.pendingAgeSec)}</span></p>
+                    <p>{t('nodeRetirement.channelPendingSince')}: <span className="text-fog">{formatTs(item.pendingSince)}</span></p>
+                    <p>
+                      {t('nodeRetirement.channelStuckState')}:{' '}
+                      <span className={item.stuckHTLC ? 'text-amber-200' : 'text-fog'}>
+                        {item.stuckHTLC ? t('nodeRetirement.channelStuck') : t('nodeRetirement.channelNotStuck')}
+                      </span>
+                    </p>
                     <p>{t('nodeRetirement.channelCloseMode')}: <span className="text-fog">{item.closeMode || '-'}</span></p>
                     <p className="break-all">{t('nodeRetirement.channelCloseTxid')}: <span className="text-fog">{item.closeTxid || '-'}</span></p>
                     <p>{t('nodeRetirement.channelDecisionLabel')}: <span className="text-fog">{item.decision || '-'}</span></p>
@@ -767,11 +893,17 @@ export default function NodeRetirement() {
             <p className="text-xs text-fog/60">{t('nodeRetirement.eventsEmpty')}</p>
           ) : (
             <div className="max-h-56 overflow-y-auto space-y-2">
-              {events.map((evt) => (
-                <p key={evt.id} className="text-xs text-fog/70">
-                  [{formatTs(evt.created_at)}] {evt.event_type} ({evt.severity})
-                </p>
-              ))}
+              {events.map((evt) => {
+                const detail = describeEventPayload(evt)
+                return (
+                  <div key={evt.id} className="space-y-0.5">
+                    <p className="text-xs text-fog/70">
+                      [{formatTs(evt.created_at)}] {evt.event_type} ({evt.severity})
+                    </p>
+                    {detail && <p className="text-[11px] text-fog/55">{detail}</p>}
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>

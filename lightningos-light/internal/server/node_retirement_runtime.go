@@ -15,18 +15,20 @@ import (
 )
 
 const (
-	nodeRetirementLoopInterval  = 12 * time.Second
-	nodeRetirementStepTimeout   = 25 * time.Second
-	nodeRetirementTransferRetry = 2 * time.Minute
+	nodeRetirementLoopInterval                       = 12 * time.Second
+	nodeRetirementStepTimeout                        = 25 * time.Second
+	nodeRetirementTransferRetry                      = 2 * time.Minute
+	nodeRetirementDefaultStuckHTLCThresholdSec int64 = 86400
 )
 
 type nodeRetirementRuntimeConfig struct {
-	AutoConfirmCoopClose bool
-	PreapproveFCOffline  bool
-	PreapproveFCStuck    bool
-	DestinationAddress   string
-	SweepMinConfs        int
-	SweepSatPerVbyte     int64
+	AutoConfirmCoopClose  bool
+	PreapproveFCOffline   bool
+	PreapproveFCStuck     bool
+	StuckHTLCThresholdSec int64
+	DestinationAddress    string
+	SweepMinConfs         int
+	SweepSatPerVbyte      int64
 }
 
 func (s *NodeRetirementService) runLoop() {
@@ -241,24 +243,89 @@ func (s *NodeRetirementService) stepDrainHTLCs(ctx context.Context, session Node
 	if s.lnd == nil {
 		return s.failSession(ctx, session.SessionID, "lnd unavailable while draining htlcs")
 	}
+	cfg := parseNodeRetirementRuntimeConfig(session.Config)
 	channels, err := s.lnd.ListChannels(ctx)
 	if err != nil {
 		return s.failSession(ctx, session.SessionID, "failed to list channels while draining htlcs: "+err.Error())
 	}
 
+	sessionRows, err := s.ListSessionChannels(ctx, session.SessionID)
+	if err != nil {
+		return s.failSession(ctx, session.SessionID, "failed to read session channels while draining htlcs: "+err.Error())
+	}
+	existingByPoint := make(map[string]NodeRetirementChannel, len(sessionRows))
+	for _, row := range sessionRows {
+		point := strings.TrimSpace(row.ChannelPoint)
+		if point == "" {
+			continue
+		}
+		existingByPoint[point] = row
+	}
+
+	now := time.Now().UTC()
 	pendingCount := 0
+	pendingChannels := 0
+	stuckCandidates := make([]string, 0, 8)
+	stuckChannels := make([]map[string]any, 0, 8)
 	for _, ch := range channels {
 		pendingCount += ch.PendingHtlcCount
+		point := strings.TrimSpace(ch.ChannelPoint)
+		firstSeen := time.Time{}
+		if existing, ok := existingByPoint[point]; ok {
+			prev := parseNodeRetirementJSONMap(existing.CurrentState)
+			if value, ok := parseNodeRetirementTime(prev["pending_htlc_first_seen_at"]); ok {
+				firstSeen = value
+			}
+		}
+		if ch.PendingHtlcCount > 0 {
+			pendingChannels++
+			if firstSeen.IsZero() {
+				firstSeen = now
+			}
+		}
+		ageSec := int64(0)
+		if !firstSeen.IsZero() {
+			ageSec = int64(now.Sub(firstSeen).Seconds())
+			if ageSec < 0 {
+				ageSec = 0
+			}
+		}
 		state := map[string]any{
 			"active":             ch.Active,
 			"peer_alias":         ch.PeerAlias,
 			"pending_htlc_count": ch.PendingHtlcCount,
-			"updated_at":         time.Now().UTC().Format(time.RFC3339),
+			"updated_at":         now.Format(time.RFC3339),
+		}
+		if !firstSeen.IsZero() && ch.PendingHtlcCount > 0 {
+			state["pending_htlc_first_seen_at"] = firstSeen.Format(time.RFC3339)
+			state["pending_htlc_age_sec"] = ageSec
+			if cfg.PreapproveFCStuck && ageSec >= cfg.StuckHTLCThresholdSec {
+				stuckCandidates = append(stuckCandidates, point)
+				stuckChannels = append(stuckChannels, map[string]any{
+					"channel_point": point,
+					"peer_alias":    ch.PeerAlias,
+					"pending_htlcs": ch.PendingHtlcCount,
+					"age_sec":       ageSec,
+				})
+				state["stuck_htlc"] = true
+			}
 		}
 		_ = s.upsertSessionChannel(ctx, session.SessionID, ch.ChannelPoint, int64(ch.ChannelID), nil, state)
 	}
 	if pendingCount > 0 {
-		_ = s.updateSessionLastError(ctx, session.SessionID, fmt.Sprintf("%d pending htlcs", pendingCount))
+		msg := fmt.Sprintf("%d pending htlcs across %d channels", pendingCount, pendingChannels)
+		_ = s.updateSessionLastError(ctx, session.SessionID, msg)
+		if cfg.PreapproveFCStuck && len(stuckCandidates) > 0 {
+			for _, point := range stuckCandidates {
+				_ = s.updateSessionChannelCloseResult(ctx, session.SessionID, point, "", "", "pending htlcs exceeded configured stuck threshold", nodeRetirementDecisionForceClose)
+			}
+			_ = s.insertEvent(ctx, session.SessionID, "stuck_htlc_force_preapproved", "warn", map[string]any{
+				"threshold_sec": cfg.StuckHTLCThresholdSec,
+				"channels":      stuckChannels,
+				"count":         len(stuckCandidates),
+			})
+			return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateClosingCoop, msg)
+		}
 		return nil
 	}
 	_ = s.updateSessionLastError(ctx, session.SessionID, "")
@@ -386,6 +453,7 @@ func (s *NodeRetirementService) stepForceClose(ctx context.Context, session Node
 	}
 
 	remainingDecision := 0
+	forceFailures := 0
 	for _, item := range channels {
 		point := strings.TrimSpace(item.ChannelPoint)
 		if point == "" {
@@ -403,13 +471,22 @@ func (s *NodeRetirementService) stepForceClose(ctx context.Context, session Node
 		txid, closeErr := s.lnd.CloseChannel(ctx, point, true, 0)
 		if closeErr != nil && !isNodeRetirementAlreadyClosing(closeErr) {
 			_ = s.updateSessionChannelCloseResult(ctx, session.SessionID, point, "", "", closeErr.Error(), nodeRetirementDecisionForceClose)
+			forceFailures++
 			continue
 		}
 		_ = s.updateSessionChannelCloseResult(ctx, session.SessionID, point, "force", strings.TrimSpace(txid), "", nodeRetirementDecisionForceClose)
 	}
+	if forceFailures > 0 {
+		_ = s.updateSessionLastError(ctx, session.SessionID, fmt.Sprintf("%d force-close attempts failed and will be retried", forceFailures))
+		_ = s.insertEvent(ctx, session.SessionID, "force_close_retry_needed", "warn", map[string]any{
+			"failed_count": forceFailures,
+		})
+		return nil
+	}
 	if remainingDecision > 0 {
 		return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateAwaitingDecision, "")
 	}
+	_ = s.updateSessionLastError(ctx, session.SessionID, "")
 	return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateMonitoring, "")
 }
 
@@ -448,9 +525,12 @@ func (s *NodeRetirementService) stepMonitor(ctx context.Context, session NodeRet
 		return err
 	}
 	openCount := 0
+	openByPoint := make(map[string]struct{}, len(openChannels))
 	for _, ch := range openChannels {
-		if _, ok := points[strings.TrimSpace(ch.ChannelPoint)]; ok {
+		point := strings.TrimSpace(ch.ChannelPoint)
+		if _, ok := points[point]; ok {
 			openCount++
+			openByPoint[point] = struct{}{}
 		}
 	}
 
@@ -466,6 +546,14 @@ func (s *NodeRetirementService) stepMonitor(ctx context.Context, session NodeRet
 	}
 
 	if openCount > 0 || pendingCount > 0 {
+		for _, item := range rows {
+			if strings.TrimSpace(item.Decision) != nodeRetirementDecisionForceClose {
+				continue
+			}
+			if _, ok := openByPoint[strings.TrimSpace(item.ChannelPoint)]; ok {
+				return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateForceClosing, "retrying force close on channels still open")
+			}
+		}
 		return nil
 	}
 
@@ -830,7 +918,9 @@ func (s *NodeRetirementService) sendTelegram(message string) error {
 }
 
 func parseNodeRetirementRuntimeConfig(raw json.RawMessage) nodeRetirementRuntimeConfig {
-	cfg := nodeRetirementRuntimeConfig{}
+	cfg := nodeRetirementRuntimeConfig{
+		StuckHTLCThresholdSec: nodeRetirementDefaultStuckHTLCThresholdSec,
+	}
 	if len(raw) == 0 {
 		return cfg
 	}
@@ -841,9 +931,13 @@ func parseNodeRetirementRuntimeConfig(raw json.RawMessage) nodeRetirementRuntime
 	cfg.AutoConfirmCoopClose = parseBoolAny(parsed["auto_confirm_coop_close"])
 	cfg.PreapproveFCOffline = parseBoolAny(parsed["preapprove_fc_offline"])
 	cfg.PreapproveFCStuck = parseBoolAny(parsed["preapprove_fc_stuck_htlc"])
+	cfg.StuckHTLCThresholdSec = parseInt64Any(parsed["stuck_htlc_threshold_sec"], nodeRetirementDefaultStuckHTLCThresholdSec)
 	cfg.DestinationAddress = parseStringAny(parsed["destination_address"])
 	cfg.SweepMinConfs = parseIntAny(parsed["sweep_min_confs"], 3)
 	cfg.SweepSatPerVbyte = parseInt64Any(parsed["sweep_sat_per_vbyte"], 0)
+	if cfg.StuckHTLCThresholdSec <= 0 {
+		cfg.StuckHTLCThresholdSec = nodeRetirementDefaultStuckHTLCThresholdSec
+	}
 	if cfg.SweepMinConfs <= 0 {
 		cfg.SweepMinConfs = 3
 	}
@@ -851,6 +945,33 @@ func parseNodeRetirementRuntimeConfig(raw json.RawMessage) nodeRetirementRuntime
 		cfg.SweepSatPerVbyte = 0
 	}
 	return cfg
+}
+
+func parseNodeRetirementJSONMap(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed == nil {
+		return map[string]any{}
+	}
+	return parsed
+}
+
+func parseNodeRetirementTime(value any) (time.Time, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339, trimmed)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func parseBoolAny(value any) bool {
