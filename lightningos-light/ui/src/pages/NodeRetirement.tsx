@@ -275,7 +275,7 @@ export default function NodeRetirement() {
     setSuccessionForm(next)
   }
 
-  const loadAll = async (silent = false) => {
+  const loadAll = async (silent = false, forceSelectActive = false) => {
     if (!silent) setLoading(true)
     try {
       const [statusRes, sessionsRes, successionRes, telegramRes] = await Promise.all([
@@ -302,7 +302,12 @@ export default function NodeRetirement() {
 
       const activeID = statusData.active_session_id || sessionItems[0]?.session_id || ''
       if (activeID) {
-        setSelectedSessionID((prev) => prev || activeID)
+        setSelectedSessionID((prev) => {
+          if (forceSelectActive) return activeID
+          if (!prev) return activeID
+          const exists = sessionItems.some((item) => item.session_id === prev)
+          return exists ? prev : activeID
+        })
       } else {
         setSelectedSessionID('')
         setEvents([])
@@ -456,7 +461,7 @@ export default function NodeRetirement() {
       })
       setSessionStatus(t('nodeRetirement.sessionCreated'))
       setDisclaimerAccepted(false)
-      await loadAll(true)
+      await loadAll(true, true)
     } catch (err) {
       setSessionStatus(err instanceof Error ? err.message : t('nodeRetirement.createFailed'))
     } finally {
@@ -550,7 +555,7 @@ export default function NodeRetirement() {
     try {
       await successionSimulate({ action, source: 'ui' })
       setSuccessionStatus(action === 'alive' ? t('nodeRetirement.simulateAliveOk') : t('nodeRetirement.simulateNotAliveOk'))
-      await loadAll(true)
+      await loadAll(true, action === 'not_alive')
     } catch (err) {
       setSuccessionStatus(err instanceof Error ? err.message : t('nodeRetirement.simulateFailed'))
     } finally {
