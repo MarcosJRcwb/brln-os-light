@@ -62,6 +62,29 @@ func FetchOnchainFeeMetrics(ctx context.Context, lnd *lndclient.Client, startUni
 	return totals, err
 }
 
+func FetchOnchainFeeMetricsFast(ctx context.Context, lnd *lndclient.Client, startUnix uint64, endUnix uint64) (OnchainOverride, error) {
+	if lnd == nil {
+		return OnchainOverride{}, fmt.Errorf("lnd client unavailable")
+	}
+	items, err := lnd.ListOnchainTransactions(ctx, 0)
+	if err != nil {
+		return OnchainOverride{}, err
+	}
+	totals := OnchainOverride{}
+	for _, tx := range items {
+		tsUnix := tx.Timestamp.Unix()
+		if tsUnix < int64(startUnix) || tsUnix > int64(endUnix) {
+			continue
+		}
+		if tx.FeeSat <= 0 {
+			continue
+		}
+		totals.FeeMsat += tx.FeeSat * 1000
+		totals.Count++
+	}
+	return totals, nil
+}
+
 func FetchOnchainFeesByDay(ctx context.Context, lnd *lndclient.Client, startUnix uint64, endUnix uint64, loc *time.Location) (map[time.Time]OnchainOverride, error) {
 	if loc == nil {
 		loc = time.Local
@@ -125,15 +148,18 @@ func fetchOnchainFees(ctx context.Context, lnd *lndclient.Client, startUnix uint
 	lookup := newOnchainTxLookupClient()
 	for txid, bucket := range closureTypeByTxid {
 		meta, found := txMetaByID[txid]
+		if !found {
+			// Only supplement fees for wallet-known transactions.
+			// If the tx is absent from GetTransactions, fee is likely not ours.
+			continue
+		}
 
 		feeSat := int64(0)
 		timestamp := time.Time{}
 		hasTime := false
-		if found {
-			feeSat = meta.FeeSat
-			timestamp = meta.Timestamp
-			hasTime = meta.HasTime
-		}
+		feeSat = meta.FeeSat
+		timestamp = meta.Timestamp
+		hasTime = meta.HasTime
 
 		if feeSat <= 0 {
 			lookupFee, lookupTime, ok := lookup.Lookup(ctx, txid)

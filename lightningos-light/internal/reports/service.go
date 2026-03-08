@@ -135,7 +135,14 @@ func (s *Service) Live(ctx context.Context, now time.Time, loc *time.Location, l
 	s.liveMu.Unlock()
 
 	tr := BuildTimeRangeForLookback(now, loc, lookbackHours)
-	metrics, err := ComputeMetrics(ctx, s.lnd, tr, false, nil, nil, nil, nil)
+	onchainOverride := OnchainOverride{}
+	if quickOnchain, onchainErr := FetchOnchainFeeMetricsFast(ctx, s.lnd, tr.StartUnix(), tr.EndUnixInclusive()); onchainErr == nil {
+		onchainOverride = quickOnchain
+	} else if s.logger != nil {
+		s.logger.Printf("reports: live onchain quick scan failed, defaulting to 0 onchain cost: %v", onchainErr)
+	}
+
+	metrics, err := ComputeMetrics(ctx, s.lnd, tr, false, nil, nil, nil, &onchainOverride)
 	if err != nil {
 		return TimeRange{}, Metrics{}, err
 	}
