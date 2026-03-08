@@ -140,6 +140,16 @@ func (s *Server) routes() http.Handler {
 		r.Post("/balanced-open/sessions/{id}/execute", s.handleBalancedOpenSessionExecutePost)
 		r.Post("/balanced-open/sessions/{id}/recover", s.handleBalancedOpenSessionRecoverPost)
 		r.Post("/balanced-open/sessions/{id}/cancel", s.handleBalancedOpenSessionCancelPost)
+		r.Get("/node-retirement/status", s.handleNodeRetirementStatusGet)
+		r.Get("/node-retirement/sessions", s.handleNodeRetirementSessionsGet)
+		r.Post("/node-retirement/sessions", s.handleNodeRetirementSessionsPost)
+		r.Get("/node-retirement/sessions/{id}", s.handleNodeRetirementSessionGet)
+		r.Get("/node-retirement/sessions/{id}/events", s.handleNodeRetirementSessionEventsGet)
+		r.Get("/succession/status", s.handleSuccessionStatusGet)
+		r.Get("/succession/config", s.handleSuccessionConfigGet)
+		r.Post("/succession/config", s.handleSuccessionConfigPost)
+		r.Post("/succession/alive", s.handleSuccessionAlivePost)
+		r.Post("/succession/simulate", s.handleSuccessionSimulatePost)
 	})
 
 	r.Route("/api/rebalance", func(r chi.Router) {

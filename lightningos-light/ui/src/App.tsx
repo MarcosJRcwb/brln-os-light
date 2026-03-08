@@ -23,6 +23,7 @@ import Terminal from './pages/Terminal'
 import BuyDepix from './pages/BuyDepix'
 import Shortcuts from './pages/Shortcuts'
 import PayBoleto from './pages/PayBoleto'
+import NodeRetirement from './pages/NodeRetirement'
 import { getBitcoinLocalStatus, getBoletoConfig, getDepixConfig, getLndStatus, getWizardStatus } from './api'
 import { defaultPalette, paletteOrder, resolvePalette, resolveTheme, type PaletteKey, type ThemeMode } from './theme'
 
@@ -192,7 +193,8 @@ export default function App() {
       { key: 'disks', label: t('nav.disks'), element: <Disks /> },
       { key: 'terminal', label: t('nav.terminal'), element: <Terminal /> },
       { key: 'shortcuts', label: t('nav.shortcuts'), element: <Shortcuts /> },
-      { key: 'logs', label: t('nav.logs'), element: <Logs /> }
+      { key: 'logs', label: t('nav.logs'), element: <Logs /> },
+      { key: 'node-retirement', label: t('nav.nodeRetirement'), element: <NodeRetirement /> }
     ]
   }, [depixEnabled, boletoEnabled, externalBitcoinDetected, i18n.language, t])
   const baseRouteKeys = useMemo(() => baseRoutes.map((item) => item.key), [baseRoutes])

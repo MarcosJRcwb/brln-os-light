@@ -154,6 +154,35 @@ export const getLnTorPeerCheckerLogs = (limit = 100) =>
   request(`/api/lnops/channel/tor-peers/logs?limit=${encodeURIComponent(String(limit))}`)
 export const restoreLnScb = (payload: { multi_chan_backup: string; confirm_phrase: string }) =>
   request('/api/lnops/channel/scb/restore', { method: 'POST', body: JSON.stringify(payload) })
+export const getNodeRetirementStatus = () => request('/api/lnops/node-retirement/status')
+export const getNodeRetirementSessions = (limit = 50) =>
+  request(`/api/lnops/node-retirement/sessions?limit=${encodeURIComponent(String(limit))}`)
+export const createNodeRetirementSession = (payload: {
+  source?: string
+  dry_run?: boolean
+  disclaimer_accepted?: boolean
+  config?: Record<string, any>
+}) => request('/api/lnops/node-retirement/sessions', { method: 'POST', body: JSON.stringify(payload) })
+export const getNodeRetirementSession = (sessionID: string) =>
+  request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}`)
+export const getNodeRetirementSessionEvents = (sessionID: string, limit = 100) =>
+  request(`/api/lnops/node-retirement/sessions/${encodeURIComponent(sessionID)}/events?limit=${encodeURIComponent(String(limit))}`)
+export const getSuccessionStatus = () => request('/api/lnops/succession/status')
+export const getSuccessionConfig = () => request('/api/lnops/succession/config')
+export const updateSuccessionConfig = (payload: {
+  enabled?: boolean
+  dry_run?: boolean
+  destination_address?: string
+  preapprove_fc_offline?: boolean
+  preapprove_fc_stuck_htlc?: boolean
+  stuck_htlc_threshold_sec?: number
+  check_period_days?: number
+  reminder_period_days?: number
+}) => request('/api/lnops/succession/config', { method: 'POST', body: JSON.stringify(payload) })
+export const successionAlive = (payload: { source?: string }) =>
+  request('/api/lnops/succession/alive', { method: 'POST', body: JSON.stringify(payload) })
+export const successionSimulate = (payload: { action: 'alive' | 'not_alive'; source?: string }) =>
+  request('/api/lnops/succession/simulate', { method: 'POST', body: JSON.stringify(payload) })
 export const getAutofeeConfig = () => request('/api/lnops/autofee/config')
 export const updateAutofeeConfig = (payload: {
   enabled?: boolean

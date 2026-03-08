@@ -57,6 +57,14 @@ type Server struct {
 	balancedOpenMu       sync.Mutex
 	balancedOpen         *BalancedOpenService
 	balancedOpenErr      string
+	nodeRetirementInitAt time.Time
+	nodeRetirementMu     sync.Mutex
+	nodeRetirement       *NodeRetirementService
+	nodeRetirementErr    string
+	successionInitAt     time.Time
+	successionMu         sync.Mutex
+	succession           *SuccessionService
+	successionErr        string
 	scbRestoreMu         sync.Mutex
 	lndRestartMu         sync.RWMutex
 	lastLNDRestart       time.Time
@@ -87,6 +95,8 @@ func (s *Server) Run() error {
 	s.initAutofee()
 	s.initShortcuts()
 	s.initBalancedOpen()
+	s.initNodeRetirement()
+	s.initSuccession()
 	if s.chat != nil {
 		s.chat.Start()
 	}
@@ -110,6 +120,12 @@ func (s *Server) Run() error {
 	}
 	if s.balancedOpen != nil {
 		s.balancedOpen.Start()
+	}
+	if s.nodeRetirement != nil {
+		s.nodeRetirement.Start()
+	}
+	if s.succession != nil {
+		s.succession.Start()
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
