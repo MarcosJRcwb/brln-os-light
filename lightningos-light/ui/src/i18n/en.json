@@ -681,6 +681,10 @@
     "paymentCount": "Payment count",
     "payments": "Payments",
     "includeOnchainCost": "Include on-chain cost in cost chart",
+    "includeOnchainBreakdown": "Show on-chain close breakdown",
+    "cooperativeCloseCost": "Cooperative close cost",
+    "localForceCloseCost": "Local force close cost",
+    "remoteForceCloseCost": "Remote force close cost",
     "progressPct": "Progress {{value}}%",
     "range": {
       "d-1": "D-1",

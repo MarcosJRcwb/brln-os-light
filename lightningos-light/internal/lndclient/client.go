@@ -1800,6 +1800,48 @@ func (c *Client) ListPendingChannels(ctx context.Context) ([]PendingChannelInfo,
 	return pending, nil
 }
 
+func (c *Client) ListClosedChannels(ctx context.Context) ([]ClosedChannelInfo, error) {
+	conn, err := c.dial(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	client := lnrpc.NewLightningClient(conn)
+	resp, err := client.ClosedChannels(ctx, &lnrpc.ClosedChannelsRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]ClosedChannelInfo, 0, len(resp.GetChannels()))
+	for _, ch := range resp.GetChannels() {
+		if ch == nil {
+			continue
+		}
+		resolutions := make([]ClosedChannelResolutionInfo, 0, len(ch.GetResolutions()))
+		for _, res := range ch.GetResolutions() {
+			if res == nil {
+				continue
+			}
+			resolutions = append(resolutions, ClosedChannelResolutionInfo{
+				ResolutionType: int32(res.GetResolutionType()),
+				SweepTxid:      strings.ToLower(strings.TrimSpace(res.GetSweepTxid())),
+			})
+		}
+		items = append(items, ClosedChannelInfo{
+			ChanID:         ch.GetChanId(),
+			ClosingTxHash:  strings.ToLower(strings.TrimSpace(ch.GetClosingTxHash())),
+			CloseType:      int32(ch.GetCloseType()),
+			OpenInitiator:  int32(ch.GetOpenInitiator()),
+			CloseInitiator: int32(ch.GetCloseInitiator()),
+			CloseHeight:    ch.GetCloseHeight(),
+			Resolutions:    resolutions,
+		})
+	}
+
+	return items, nil
+}
+
 func (c *Client) ListPeers(ctx context.Context) ([]PeerInfo, error) {
 	conn, err := c.dial(ctx, true)
 	if err != nil {
@@ -3357,6 +3399,21 @@ type PendingChannelInfo struct {
 	ConfirmationsUntilActive uint32 `json:"confirmations_until_active,omitempty"`
 	ConfirmationHeight       uint32 `json:"confirmation_height,omitempty"`
 	Private                  bool   `json:"private"`
+}
+
+type ClosedChannelResolutionInfo struct {
+	ResolutionType int32  `json:"resolution_type"`
+	SweepTxid      string `json:"sweep_txid,omitempty"`
+}
+
+type ClosedChannelInfo struct {
+	ChanID         uint64                        `json:"chan_id"`
+	ClosingTxHash  string                        `json:"closing_tx_hash,omitempty"`
+	CloseType      int32                         `json:"close_type"`
+	OpenInitiator  int32                         `json:"open_initiator"`
+	CloseInitiator int32                         `json:"close_initiator"`
+	CloseHeight    uint32                        `json:"close_height"`
+	Resolutions    []ClosedChannelResolutionInfo `json:"resolutions,omitempty"`
 }
 
 type RecentActivity struct {

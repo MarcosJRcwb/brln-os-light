@@ -273,6 +273,9 @@ type reportSeriesItem struct {
 	RebalanceFeeCostSat        float64 `json:"rebalance_fee_cost_sats"`
 	PaymentFeeCostSat          float64 `json:"payment_fee_cost_sats"`
 	OnchainFeeCostSat          float64 `json:"onchain_fee_cost_sats"`
+	OnchainCoopCloseCostSat    float64 `json:"onchain_coop_close_cost_sats"`
+	OnchainLocalForceCostSat   float64 `json:"onchain_local_force_cost_sats"`
+	OnchainRemoteForceCostSat  float64 `json:"onchain_remote_force_cost_sats"`
 	OffchainFeeCostSat         float64 `json:"offchain_fee_cost_sats"`
 	KeysendReceivedSat         float64 `json:"keysend_received_sats"`
 	KeysendReceivedCount       int64   `json:"keysend_received_count"`
@@ -317,6 +320,9 @@ type reportMetricsPayload struct {
 	RebalanceFeeCostSat        float64 `json:"rebalance_fee_cost_sats"`
 	PaymentFeeCostSat          float64 `json:"payment_fee_cost_sats"`
 	OnchainFeeCostSat          float64 `json:"onchain_fee_cost_sats"`
+	OnchainCoopCloseCostSat    float64 `json:"onchain_coop_close_cost_sats"`
+	OnchainLocalForceCostSat   float64 `json:"onchain_local_force_cost_sats"`
+	OnchainRemoteForceCostSat  float64 `json:"onchain_remote_force_cost_sats"`
 	OffchainFeeCostSat         float64 `json:"offchain_fee_cost_sats"`
 	KeysendReceivedSat         float64 `json:"keysend_received_sats"`
 	KeysendReceivedCount       int64   `json:"keysend_received_count"`
@@ -345,6 +351,9 @@ func mapSeries(items []reports.Row) []reportSeriesItem {
 			RebalanceFeeCostSat:        metricSats(item.Metrics.RebalanceFeeCostMsat, item.Metrics.RebalanceFeeCostSat),
 			PaymentFeeCostSat:          metricSats(item.Metrics.PaymentFeeCostMsat, item.Metrics.PaymentFeeCostSat),
 			OnchainFeeCostSat:          metricSats(item.Metrics.OnchainFeeCostMsat, item.Metrics.OnchainFeeCostSat),
+			OnchainCoopCloseCostSat:    metricSats(item.Metrics.OnchainCoopCloseCostMsat, item.Metrics.OnchainCoopCloseCostSat),
+			OnchainLocalForceCostSat:   metricSats(item.Metrics.OnchainLocalForceCostMsat, item.Metrics.OnchainLocalForceCostSat),
+			OnchainRemoteForceCostSat:  metricSats(item.Metrics.OnchainRemoteForceCostMsat, item.Metrics.OnchainRemoteForceCostSat),
 			OffchainFeeCostSat:         offchainFeeCostSats(item.Metrics),
 			KeysendReceivedSat:         metricSats(item.Metrics.KeysendReceivedMsat, item.Metrics.KeysendReceivedSat),
 			KeysendReceivedCount:       item.Metrics.KeysendReceivedCount,
@@ -370,6 +379,9 @@ func metricsPayload(metrics reports.Metrics) reportMetricsPayload {
 		RebalanceFeeCostSat:        metricSats(metrics.RebalanceFeeCostMsat, metrics.RebalanceFeeCostSat),
 		PaymentFeeCostSat:          metricSats(metrics.PaymentFeeCostMsat, metrics.PaymentFeeCostSat),
 		OnchainFeeCostSat:          metricSats(metrics.OnchainFeeCostMsat, metrics.OnchainFeeCostSat),
+		OnchainCoopCloseCostSat:    metricSats(metrics.OnchainCoopCloseCostMsat, metrics.OnchainCoopCloseCostSat),
+		OnchainLocalForceCostSat:   metricSats(metrics.OnchainLocalForceCostMsat, metrics.OnchainLocalForceCostSat),
+		OnchainRemoteForceCostSat:  metricSats(metrics.OnchainRemoteForceCostMsat, metrics.OnchainRemoteForceCostSat),
 		OffchainFeeCostSat:         offchainFeeCostSats(metrics),
 		KeysendReceivedSat:         metricSats(metrics.KeysendReceivedMsat, metrics.KeysendReceivedSat),
 		KeysendReceivedCount:       metrics.KeysendReceivedCount,

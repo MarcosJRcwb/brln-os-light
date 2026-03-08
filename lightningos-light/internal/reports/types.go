@@ -3,29 +3,35 @@ package reports
 import "time"
 
 type Metrics struct {
-	ForwardFeeRevenueSat  int64
-	ForwardFeeRevenueMsat int64
-	RebalanceFeeCostSat   int64
-	RebalanceFeeCostMsat  int64
-	PaymentFeeCostSat     int64
-	PaymentFeeCostMsat    int64
-	OnchainFeeCostSat     int64
-	OnchainFeeCostMsat    int64
-	KeysendReceivedSat    int64
-	KeysendReceivedMsat   int64
-	KeysendReceivedCount  int64
-	NetRoutingProfitSat   int64
-	NetRoutingProfitMsat  int64
-	NetWithKeysendSat     int64
-	NetWithKeysendMsat    int64
-	ForwardCount          int64
-	RebalanceCount        int64
-	PaymentCount          int64
-	RoutedVolumeSat       int64
-	RoutedVolumeMsat      int64
-	OnchainBalanceSat     *int64
-	LightningBalanceSat   *int64
-	TotalBalanceSat       *int64
+	ForwardFeeRevenueSat       int64
+	ForwardFeeRevenueMsat      int64
+	RebalanceFeeCostSat        int64
+	RebalanceFeeCostMsat       int64
+	PaymentFeeCostSat          int64
+	PaymentFeeCostMsat         int64
+	OnchainFeeCostSat          int64
+	OnchainFeeCostMsat         int64
+	OnchainCoopCloseCostSat    int64
+	OnchainCoopCloseCostMsat   int64
+	OnchainLocalForceCostSat   int64
+	OnchainLocalForceCostMsat  int64
+	OnchainRemoteForceCostSat  int64
+	OnchainRemoteForceCostMsat int64
+	KeysendReceivedSat         int64
+	KeysendReceivedMsat        int64
+	KeysendReceivedCount       int64
+	NetRoutingProfitSat        int64
+	NetRoutingProfitMsat       int64
+	NetWithKeysendSat          int64
+	NetWithKeysendMsat         int64
+	ForwardCount               int64
+	RebalanceCount             int64
+	PaymentCount               int64
+	RoutedVolumeSat            int64
+	RoutedVolumeMsat           int64
+	OnchainBalanceSat          *int64
+	LightningBalanceSat        *int64
+	TotalBalanceSat            *int64
 }
 
 func (m Metrics) OffchainFeeCostSat() int64 {
@@ -50,6 +56,14 @@ func (m Metrics) TotalFeeCostWithOnchainSat() int64 {
 
 func (m Metrics) TotalFeeCostWithOnchainMsat() int64 {
 	return m.OffchainFeeCostMsat() + m.OnchainFeeCostMsat
+}
+
+func (m Metrics) OnchainCloseCostSat() int64 {
+	return m.OnchainCoopCloseCostSat + m.OnchainLocalForceCostSat + m.OnchainRemoteForceCostSat
+}
+
+func (m Metrics) OnchainCloseCostMsat() int64 {
+	return m.OnchainCoopCloseCostMsat + m.OnchainLocalForceCostMsat + m.OnchainRemoteForceCostMsat
 }
 
 type Row struct {

@@ -681,6 +681,10 @@
     "paymentCount": "Contagem de Pagamentos",
     "payments": "Pagamentos",
     "includeOnchainCost": "Incluir custo on-chain no gráfico de custo",
+    "includeOnchainBreakdown": "Mostrar breakdown de fechamento on-chain",
+    "cooperativeCloseCost": "Custo de fechamento cooperativo",
+    "localForceCloseCost": "Custo de fechamento forçado local",
+    "remoteForceCloseCost": "Custo de fechamento forçado remoto",
     "progressPct": "Progresso {{value}}%",
     "range": {
       "d-1": "D-1",

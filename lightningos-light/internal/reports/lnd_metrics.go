@@ -29,8 +29,11 @@ type KeysendReceivedOverride struct {
 }
 
 type OnchainOverride struct {
-	FeeMsat int64
-	Count   int64
+	FeeMsat            int64
+	Count              int64
+	CoopCloseFeeMsat   int64
+	LocalForceFeeMsat  int64
+	RemoteForceFeeMsat int64
 }
 
 func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, memoMatch bool, rebalanceOverride *RebalanceOverride, paymentOverride *PaymentOverride, keysendOverride *KeysendReceivedOverride, onchainOverride *OnchainOverride) (Metrics, error) {
@@ -85,39 +88,54 @@ func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, me
 	}
 
 	onchainCostMsat := int64(0)
+	onchainCoopCloseCostMsat := int64(0)
+	onchainLocalForceCostMsat := int64(0)
+	onchainRemoteForceCostMsat := int64(0)
 	if onchainOverride != nil {
 		onchainCostMsat = onchainOverride.FeeMsat
+		onchainCoopCloseCostMsat = onchainOverride.CoopCloseFeeMsat
+		onchainLocalForceCostMsat = onchainOverride.LocalForceFeeMsat
+		onchainRemoteForceCostMsat = onchainOverride.RemoteForceFeeMsat
 	} else {
 		onchain, err := FetchOnchainFeeMetrics(ctx, lnd, tr.StartUnix(), tr.EndUnixInclusive())
 		if err != nil {
 			return Metrics{}, err
 		}
 		onchainCostMsat = onchain.FeeMsat
+		onchainCoopCloseCostMsat = onchain.CoopCloseFeeMsat
+		onchainLocalForceCostMsat = onchain.LocalForceFeeMsat
+		onchainRemoteForceCostMsat = onchain.RemoteForceFeeMsat
 	}
 
 	netMsat := forwardRevenueMsat - rebalanceCostMsat - paymentCostMsat
 	netWithKeysendMsat := netMsat + keysendReceivedMsat
 	metrics := Metrics{
-		ForwardFeeRevenueSat:  forwardRevenueMsat / 1000,
-		ForwardFeeRevenueMsat: forwardRevenueMsat,
-		RebalanceFeeCostSat:   rebalanceCostMsat / 1000,
-		RebalanceFeeCostMsat:  rebalanceCostMsat,
-		PaymentFeeCostSat:     paymentCostMsat / 1000,
-		PaymentFeeCostMsat:    paymentCostMsat,
-		OnchainFeeCostSat:     onchainCostMsat / 1000,
-		OnchainFeeCostMsat:    onchainCostMsat,
-		KeysendReceivedSat:    keysendReceivedMsat / 1000,
-		KeysendReceivedMsat:   keysendReceivedMsat,
-		KeysendReceivedCount:  keysendReceivedCount,
-		NetRoutingProfitSat:   netMsat / 1000,
-		NetRoutingProfitMsat:  netMsat,
-		NetWithKeysendSat:     netWithKeysendMsat / 1000,
-		NetWithKeysendMsat:    netWithKeysendMsat,
-		ForwardCount:          forwardCount,
-		RebalanceCount:        rebalanceCount,
-		PaymentCount:          paymentCount,
-		RoutedVolumeSat:       routedVolumeMsat / 1000,
-		RoutedVolumeMsat:      routedVolumeMsat,
+		ForwardFeeRevenueSat:       forwardRevenueMsat / 1000,
+		ForwardFeeRevenueMsat:      forwardRevenueMsat,
+		RebalanceFeeCostSat:        rebalanceCostMsat / 1000,
+		RebalanceFeeCostMsat:       rebalanceCostMsat,
+		PaymentFeeCostSat:          paymentCostMsat / 1000,
+		PaymentFeeCostMsat:         paymentCostMsat,
+		OnchainFeeCostSat:          onchainCostMsat / 1000,
+		OnchainFeeCostMsat:         onchainCostMsat,
+		OnchainCoopCloseCostSat:    onchainCoopCloseCostMsat / 1000,
+		OnchainCoopCloseCostMsat:   onchainCoopCloseCostMsat,
+		OnchainLocalForceCostSat:   onchainLocalForceCostMsat / 1000,
+		OnchainLocalForceCostMsat:  onchainLocalForceCostMsat,
+		OnchainRemoteForceCostSat:  onchainRemoteForceCostMsat / 1000,
+		OnchainRemoteForceCostMsat: onchainRemoteForceCostMsat,
+		KeysendReceivedSat:         keysendReceivedMsat / 1000,
+		KeysendReceivedMsat:        keysendReceivedMsat,
+		KeysendReceivedCount:       keysendReceivedCount,
+		NetRoutingProfitSat:        netMsat / 1000,
+		NetRoutingProfitMsat:       netMsat,
+		NetWithKeysendSat:          netWithKeysendMsat / 1000,
+		NetWithKeysendMsat:         netWithKeysendMsat,
+		ForwardCount:               forwardCount,
+		RebalanceCount:             rebalanceCount,
+		PaymentCount:               paymentCount,
+		RoutedVolumeSat:            routedVolumeMsat / 1000,
+		RoutedVolumeMsat:           routedVolumeMsat,
 	}
 	return metrics, nil
 }

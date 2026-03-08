@@ -33,6 +33,9 @@ type ReportSeriesItem = {
   rebalance_fee_cost_sats: number
   payment_fee_cost_sats?: number
   onchain_fee_cost_sats?: number
+  onchain_coop_close_cost_sats?: number
+  onchain_local_force_cost_sats?: number
+  onchain_remote_force_cost_sats?: number
   offchain_fee_cost_sats?: number
   keysend_received_sats?: number
   keysend_received_count?: number
@@ -54,6 +57,9 @@ type ReportMetrics = {
   rebalance_fee_cost_sats: number
   payment_fee_cost_sats?: number
   onchain_fee_cost_sats?: number
+  onchain_coop_close_cost_sats?: number
+  onchain_local_force_cost_sats?: number
+  onchain_remote_force_cost_sats?: number
   offchain_fee_cost_sats?: number
   keysend_received_sats?: number
   keysend_received_count?: number
@@ -131,6 +137,9 @@ type ChartDataPoint = {
   paymentCost: number
   offchainCost: number
   onchainCost: number
+  onchainCoopCloseCost: number
+  onchainLocalForceCost: number
+  onchainRemoteForceCost: number
   costWithOnchain: number
   costForChart: number
   onchain: number | null
@@ -151,6 +160,9 @@ const COLORS = {
   costPayment: '#fbbf24',
   cost: '#f59e0b',
   onchain: '#22c55e',
+  onchainCoop: '#22c55e',
+  onchainLocalForce: '#f97316',
+  onchainRemoteForce: '#ef4444',
   lightning: '#fb7185',
   total: '#eab308'
 }
@@ -169,6 +181,18 @@ const tooltipLabelStyle = {
 
 const tooltipItemStyle = {
   color: '#f8fafc'
+}
+
+const buildYAxisTicks = (maxValue: number, segments: number) => {
+  if (!Number.isFinite(maxValue) || maxValue <= 0 || segments < 2) {
+    return [0]
+  }
+  const step = maxValue / segments
+  const ticks: number[] = []
+  for (let idx = 0; idx <= segments; idx += 1) {
+    ticks.push(step * idx)
+  }
+  return ticks
 }
 
 export default function Reports() {
@@ -201,6 +225,7 @@ export default function Reports() {
   const [runTimeout, setRunTimeout] = useState('')
   const [chartGranularity, setChartGranularity] = useState<ChartGranularity>('day')
   const [includeOnchainCostInCharts, setIncludeOnchainCostInCharts] = useState(false)
+  const [includeOnchainBreakdownInCharts, setIncludeOnchainBreakdownInCharts] = useState(false)
 
   const formatter = useMemo(() => new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }), [locale])
   const compactFormatter = useMemo(() => new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 2 }), [locale])
@@ -388,6 +413,12 @@ export default function Reports() {
   }
 
   useEffect(() => {
+    if (!includeOnchainCostInCharts && includeOnchainBreakdownInCharts) {
+      setIncludeOnchainBreakdownInCharts(false)
+    }
+  }, [includeOnchainBreakdownInCharts, includeOnchainCostInCharts])
+
+  useEffect(() => {
     const selectedToday = range === 'date' && isTodaySelection(customDate, movementLive?.date)
     if (selectedToday) {
       setSeriesError('')
@@ -443,6 +474,9 @@ export default function Reports() {
       rebalance_fee_cost_sats: live.rebalance_fee_cost_sats,
       payment_fee_cost_sats: live.payment_fee_cost_sats ?? 0,
       onchain_fee_cost_sats: live.onchain_fee_cost_sats ?? 0,
+      onchain_coop_close_cost_sats: live.onchain_coop_close_cost_sats ?? 0,
+      onchain_local_force_cost_sats: live.onchain_local_force_cost_sats ?? 0,
+      onchain_remote_force_cost_sats: live.onchain_remote_force_cost_sats ?? 0,
       offchain_fee_cost_sats: live.offchain_fee_cost_sats ?? (live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0))),
       keysend_received_sats: live.keysend_received_sats ?? 0,
       keysend_received_count: live.keysend_received_count ?? 0,
@@ -465,6 +499,9 @@ export default function Reports() {
       rebalance_fee_cost_sats: live.rebalance_fee_cost_sats,
       payment_fee_cost_sats: live.payment_fee_cost_sats ?? 0,
       onchain_fee_cost_sats: live.onchain_fee_cost_sats ?? 0,
+      onchain_coop_close_cost_sats: live.onchain_coop_close_cost_sats ?? 0,
+      onchain_local_force_cost_sats: live.onchain_local_force_cost_sats ?? 0,
+      onchain_remote_force_cost_sats: live.onchain_remote_force_cost_sats ?? 0,
       offchain_fee_cost_sats: live.offchain_fee_cost_sats ?? (live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0))),
       keysend_received_sats: live.keysend_received_sats ?? 0,
       keysend_received_count: live.keysend_received_count ?? 0,
@@ -601,6 +638,9 @@ export default function Reports() {
       paymentCost: item.payment_fee_cost_sats ?? 0,
       offchainCost: item.offchain_fee_cost_sats ?? item.total_fee_cost_sats ?? ((item.rebalance_fee_cost_sats ?? 0) + (item.payment_fee_cost_sats ?? 0)),
       onchainCost: item.onchain_fee_cost_sats ?? 0,
+      onchainCoopCloseCost: item.onchain_coop_close_cost_sats ?? 0,
+      onchainLocalForceCost: item.onchain_local_force_cost_sats ?? 0,
+      onchainRemoteForceCost: item.onchain_remote_force_cost_sats ?? 0,
       costWithOnchain: item.total_fee_cost_with_onchain_sats ?? ((item.offchain_fee_cost_sats ?? item.total_fee_cost_sats ?? ((item.rebalance_fee_cost_sats ?? 0) + (item.payment_fee_cost_sats ?? 0))) + (item.onchain_fee_cost_sats ?? 0)),
       costForChart: 0,
       onchain: item.onchain_balance_sats ?? null,
@@ -653,6 +693,9 @@ export default function Reports() {
       current.paymentCost += item.paymentCost
       current.offchainCost += item.offchainCost
       current.onchainCost += item.onchainCost
+      current.onchainCoopCloseCost += item.onchainCoopCloseCost
+      current.onchainLocalForceCost += item.onchainLocalForceCost
+      current.onchainRemoteForceCost += item.onchainRemoteForceCost
       current.costWithOnchain += item.costWithOnchain
       current.endDate = item.date
       if (item.onchain !== null) current.onchain = item.onchain
@@ -681,18 +724,48 @@ export default function Reports() {
     let cumulativeRevenue = 0
     let cumulativeOffchain = 0
     let cumulativeOnchain = 0
+    let cumulativeOnchainCoop = 0
+    let cumulativeOnchainLocalForce = 0
+    let cumulativeOnchainRemoteForce = 0
     return chartData.map((item) => {
       cumulativeRevenue += item.revenue
       cumulativeOffchain += item.offchainCost
       cumulativeOnchain += item.onchainCost
+      cumulativeOnchainCoop += item.onchainCoopCloseCost
+      cumulativeOnchainLocalForce += item.onchainLocalForceCost
+      cumulativeOnchainRemoteForce += item.onchainRemoteForceCost
       return {
         label: item.label,
         cumulativeRevenue,
         cumulativeOffchain,
-        cumulativeOnchain
+        cumulativeOnchain,
+        cumulativeOnchainCoop,
+        cumulativeOnchainLocalForce,
+        cumulativeOnchainRemoteForce
       }
     })
   }, [chartData])
+  const cumulativeYAxisTicks = useMemo(() => {
+    if (cumulativeCostData.length === 0) {
+      return [0]
+    }
+    let maxValue = 0
+    for (const item of cumulativeCostData) {
+      maxValue = Math.max(maxValue, item.cumulativeRevenue, item.cumulativeOffchain)
+      if (includeOnchainCostInCharts) {
+        maxValue = Math.max(maxValue, item.cumulativeOnchain)
+        if (includeOnchainBreakdownInCharts) {
+          maxValue = Math.max(
+            maxValue,
+            item.cumulativeOnchainCoop,
+            item.cumulativeOnchainLocalForce,
+            item.cumulativeOnchainRemoteForce
+          )
+        }
+      }
+    }
+    return buildYAxisTicks(maxValue, 22)
+  }, [cumulativeCostData, includeOnchainBreakdownInCharts, includeOnchainCostInCharts])
 
   const liveChartData = useMemo(() => {
     if (!live) return []
@@ -1163,13 +1236,23 @@ export default function Reports() {
               />
               <span>{t('reports.includeOnchainCost')}</span>
             </label>
+            <label className={`inline-flex items-center gap-2 text-sm ${includeOnchainCostInCharts ? 'text-fog/70' : 'text-fog/40'}`}>
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-emerald-500"
+                checked={includeOnchainBreakdownInCharts}
+                disabled={!includeOnchainCostInCharts}
+                onChange={(e) => setIncludeOnchainBreakdownInCharts(e.target.checked)}
+              />
+              <span>{t('reports.includeOnchainBreakdown')}</span>
+            </label>
             {renderGranularityToggle()}
           </div>
         </div>
         {cumulativeCostData.length === 0 && !seriesLoading && !seriesError ? (
           <p className="text-sm text-fog/60">{t('reports.noData')}</p>
         ) : (
-          <div className="h-[52rem]">
+          <div className="h-[60rem]">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={cumulativeCostData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                 <defs>
@@ -1185,10 +1268,28 @@ export default function Reports() {
                     <stop offset="5%" stopColor={COLORS.onchain} stopOpacity={0.35} />
                     <stop offset="95%" stopColor={COLORS.onchain} stopOpacity={0.04} />
                   </linearGradient>
+                  <linearGradient id="cumulativeOnchainCoopGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS.onchainCoop} stopOpacity={0.3} />
+                    <stop offset="95%" stopColor={COLORS.onchainCoop} stopOpacity={0.03} />
+                  </linearGradient>
+                  <linearGradient id="cumulativeOnchainLocalForceGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS.onchainLocalForce} stopOpacity={0.3} />
+                    <stop offset="95%" stopColor={COLORS.onchainLocalForce} stopOpacity={0.03} />
+                  </linearGradient>
+                  <linearGradient id="cumulativeOnchainRemoteForceGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS.onchainRemoteForce} stopOpacity={0.3} />
+                    <stop offset="95%" stopColor={COLORS.onchainRemoteForce} stopOpacity={0.03} />
+                  </linearGradient>
                 </defs>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
+                <YAxis
+                  tick={{ fill: '#cbd5f5', fontSize: 11 }}
+                  tickFormatter={formatCompact}
+                  axisLine={false}
+                  tickLine={false}
+                  ticks={cumulativeYAxisTicks}
+                />
                 <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
                 <Tooltip
                   cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
@@ -1223,6 +1324,39 @@ export default function Reports() {
                     name={t('reports.onchainCost')}
                     stroke={COLORS.onchain}
                     fill="url(#cumulativeOnchainGradient)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                )}
+                {includeOnchainCostInCharts && includeOnchainBreakdownInCharts && (
+                  <Area
+                    type="monotone"
+                    dataKey="cumulativeOnchainCoop"
+                    name={t('reports.cooperativeCloseCost')}
+                    stroke={COLORS.onchainCoop}
+                    fill="url(#cumulativeOnchainCoopGradient)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                )}
+                {includeOnchainCostInCharts && includeOnchainBreakdownInCharts && (
+                  <Area
+                    type="monotone"
+                    dataKey="cumulativeOnchainLocalForce"
+                    name={t('reports.localForceCloseCost')}
+                    stroke={COLORS.onchainLocalForce}
+                    fill="url(#cumulativeOnchainLocalForceGradient)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                )}
+                {includeOnchainCostInCharts && includeOnchainBreakdownInCharts && (
+                  <Area
+                    type="monotone"
+                    dataKey="cumulativeOnchainRemoteForce"
+                    name={t('reports.remoteForceCloseCost')}
+                    stroke={COLORS.onchainRemoteForce}
+                    fill="url(#cumulativeOnchainRemoteForceGradient)"
                     strokeWidth={2}
                     dot={false}
                   />
