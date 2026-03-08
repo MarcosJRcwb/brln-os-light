@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   confirmNodeRetirementCoopClose,
@@ -233,6 +233,7 @@ const formatDelta = (initial: number | null, current: number | null) => {
 
 export default function NodeRetirement() {
   const { t } = useTranslation()
+  const successionFormDirtyRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [status, setStatus] = useState<NodeRetirementStatus | null>(null)
   const [sessions, setSessions] = useState<NodeRetirementSession[]>([])
@@ -264,6 +265,16 @@ export default function NodeRetirement() {
     status: 'disabled',
   })
 
+  const patchSuccessionForm = (patch: Partial<SuccessionConfig>) => {
+    successionFormDirtyRef.current = true
+    setSuccessionForm((prev) => ({ ...prev, ...patch }))
+  }
+
+  const syncSuccessionForm = (next: SuccessionConfig) => {
+    successionFormDirtyRef.current = false
+    setSuccessionForm(next)
+  }
+
   const loadAll = async (silent = false) => {
     if (!silent) setLoading(true)
     try {
@@ -284,7 +295,9 @@ export default function NodeRetirement() {
       setStatus(statusData)
       setSessions(sessionItems)
       setSuccession(successionData)
-      setSuccessionForm(successionData)
+      if (!successionFormDirtyRef.current) {
+        setSuccessionForm(successionData)
+      }
       setTelegramMirrorEnabled(Boolean(telegramData?.activity_mirror_enabled))
 
       const activeID = statusData.active_session_id || sessionItems[0]?.session_id || ''
@@ -337,8 +350,12 @@ export default function NodeRetirement() {
       }
     }
     void loadSessionData()
+    const timer = window.setInterval(() => {
+      void loadSessionData()
+    }, 5000)
     return () => {
       mounted = false
+      window.clearInterval(timer)
     }
   }, [selectedSessionID])
 
@@ -499,7 +516,7 @@ export default function NodeRetirement() {
         reminder_period_days: successionForm.reminder_period_days,
       })
       setSuccession(next as SuccessionConfig)
-      setSuccessionForm(next as SuccessionConfig)
+      syncSuccessionForm(next as SuccessionConfig)
       setSuccessionStatus(t('nodeRetirement.successionSaved'))
     } catch (err) {
       setSuccessionStatus(err instanceof Error ? err.message : t('nodeRetirement.successionSaveFailed'))
@@ -514,7 +531,7 @@ export default function NodeRetirement() {
     try {
       const next = await successionAlive({ source: 'ui' })
       setSuccession(next as SuccessionConfig)
-      setSuccessionForm(next as SuccessionConfig)
+      syncSuccessionForm(next as SuccessionConfig)
       setSuccessionStatus(t('nodeRetirement.aliveConfirmed'))
     } catch (err) {
       setSuccessionStatus(err instanceof Error ? err.message : t('nodeRetirement.aliveFailed'))
@@ -529,6 +546,7 @@ export default function NodeRetirement() {
     try {
       await successionSimulate({ action, source: 'ui' })
       setSuccessionStatus(action === 'alive' ? t('nodeRetirement.simulateAliveOk') : t('nodeRetirement.simulateNotAliveOk'))
+      await loadAll(true)
     } catch (err) {
       setSuccessionStatus(err instanceof Error ? err.message : t('nodeRetirement.simulateFailed'))
     } finally {
@@ -870,7 +888,7 @@ export default function NodeRetirement() {
                   setSuccessionStatus(t('nodeRetirement.telegramMirrorRequiredError'))
                   return
                 }
-                setSuccessionForm((prev) => ({ ...prev, enabled: checked }))
+                patchSuccessionForm({ enabled: checked })
               }}
             />
             {t('nodeRetirement.successionEnabled')}
@@ -880,7 +898,7 @@ export default function NodeRetirement() {
               className="mr-2"
               type="checkbox"
               checked={successionForm.dry_run}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, dry_run: e.target.checked }))}
+              onChange={(e) => patchSuccessionForm({ dry_run: e.target.checked })}
             />
             {t('nodeRetirement.successionDryRun')}
           </label>
@@ -894,7 +912,7 @@ export default function NodeRetirement() {
             <input
               className="input-field mt-1"
               value={successionForm.destination_address}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, destination_address: e.target.value }))}
+              onChange={(e) => patchSuccessionForm({ destination_address: e.target.value })}
               placeholder="bc1..."
             />
           </label>
@@ -905,7 +923,7 @@ export default function NodeRetirement() {
               type="number"
               min={1}
               value={successionForm.check_period_days}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, check_period_days: Number(e.target.value) || 1 }))}
+              onChange={(e) => patchSuccessionForm({ check_period_days: Number(e.target.value) || 1 })}
             />
             <p className="mt-1 text-xs text-fog/55">{t('nodeRetirement.checkPeriodHint')}</p>
           </label>
@@ -916,7 +934,7 @@ export default function NodeRetirement() {
               type="number"
               min={1}
               value={successionForm.reminder_period_days}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, reminder_period_days: Number(e.target.value) || 1 }))}
+              onChange={(e) => patchSuccessionForm({ reminder_period_days: Number(e.target.value) || 1 })}
             />
             <p className="mt-1 text-xs text-fog/55">{t('nodeRetirement.reminderDaysHint')}</p>
           </label>
@@ -927,7 +945,7 @@ export default function NodeRetirement() {
               type="number"
               min={1}
               value={successionForm.sweep_min_confs}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, sweep_min_confs: Number(e.target.value) || 1 }))}
+              onChange={(e) => patchSuccessionForm({ sweep_min_confs: Number(e.target.value) || 1 })}
             />
             <p className="mt-1 text-xs text-fog/55">{t('nodeRetirement.sweepMinConfsHint')}</p>
           </label>
@@ -938,7 +956,7 @@ export default function NodeRetirement() {
               type="number"
               min={0}
               value={successionForm.sweep_sat_per_vbyte}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, sweep_sat_per_vbyte: Number(e.target.value) || 0 }))}
+              onChange={(e) => patchSuccessionForm({ sweep_sat_per_vbyte: Number(e.target.value) || 0 })}
             />
             <p className="mt-1 text-xs text-fog/55">{t('nodeRetirement.sweepSatPerVbyteHint')}</p>
           </label>
@@ -947,7 +965,7 @@ export default function NodeRetirement() {
               className="mr-2"
               type="checkbox"
               checked={successionForm.preapprove_fc_offline}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, preapprove_fc_offline: e.target.checked }))}
+              onChange={(e) => patchSuccessionForm({ preapprove_fc_offline: e.target.checked })}
             />
             {t('nodeRetirement.preapproveOffline')}
           </label>
@@ -956,7 +974,7 @@ export default function NodeRetirement() {
               className="mr-2"
               type="checkbox"
               checked={successionForm.preapprove_fc_stuck_htlc}
-              onChange={(e) => setSuccessionForm((prev) => ({ ...prev, preapprove_fc_stuck_htlc: e.target.checked }))}
+              onChange={(e) => patchSuccessionForm({ preapprove_fc_stuck_htlc: e.target.checked })}
             />
             {t('nodeRetirement.preapproveStuck')}
           </label>

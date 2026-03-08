@@ -666,9 +666,64 @@ func (s *SuccessionService) Simulate(ctx context.Context, action string, source 
 	if normalized != "alive" && normalized != "not_alive" {
 		return ErrSuccessionInvalidAction
 	}
-	return s.insertEvent(ctx, "simulate_"+normalized, normalizeSuccessionSource(source), map[string]any{
+	src := normalizeSuccessionSource(source)
+	if err := s.insertEvent(ctx, "simulate_"+normalized, src, map[string]any{
 		"action": normalized,
+	}); err != nil {
+		return err
+	}
+
+	if normalized == "alive" {
+		_, err := s.MarkAlive(ctx, src)
+		return err
+	}
+
+	cfg, err := s.GetConfig(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+
+	// Simulation always triggers a dry-run retirement session.
+	configRaw, _ := json.Marshal(map[string]any{
+		"trigger":                  "succession_simulate_not_alive",
+		"triggered_at":             now.Format(time.RFC3339),
+		"check_period_days":        cfg.CheckPeriodDays,
+		"reminder_period_days":     cfg.ReminderPeriodDays,
+		"destination_address":      cfg.DestinationAddress,
+		"preapprove_fc_offline":    cfg.PreapproveFCOffline,
+		"preapprove_fc_stuck_htlc": cfg.PreapproveFCStuckHTLC,
+		"stuck_htlc_threshold_sec": cfg.StuckHTLCThresholdSec,
+		"sweep_min_confs":          cfg.SweepMinConfs,
+		"sweep_sat_per_vbyte":      cfg.SweepSatPerVbyte,
+		"succession_dry_run":       true,
 	})
+
+	retirement := NewNodeRetirementService(s.db, s.logger, nil, nil, nil)
+	session, createErr := retirement.CreateSession(ctx, NodeRetirementCreateParams{
+		Source:             nodeRetirementSourceSuccession,
+		DryRun:             true,
+		DisclaimerAccepted: true,
+		Config:             configRaw,
+	})
+	if createErr != nil {
+		if errors.Is(createErr, ErrNodeRetirementActiveSession) {
+			_ = s.updateStatus(ctx, "retirement_waiting")
+			_ = s.insertEvent(ctx, "retirement_waiting_active_session", src, map[string]any{
+				"error": createErr.Error(),
+			})
+			return nil
+		}
+		return createErr
+	}
+
+	_ = s.updateStatus(ctx, "dry_run_triggered")
+	_ = s.insertEvent(ctx, "retirement_triggered", src, map[string]any{
+		"session_id": session.SessionID,
+		"dry_run":    session.DryRun,
+		"simulated":  true,
+	})
+	return nil
 }
 
 func (s *SuccessionService) insertEvent(ctx context.Context, eventType string, source string, payload any) error {
