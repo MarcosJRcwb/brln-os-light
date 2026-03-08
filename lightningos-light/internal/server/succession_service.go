@@ -29,6 +29,7 @@ var (
 	ErrSuccessionDBUnavailable          = errors.New("succession db unavailable")
 	ErrSuccessionInvalidAction          = errors.New("invalid succession simulation action")
 	ErrSuccessionTelegramMirrorRequired = errors.New("enable Telegram activity mirror in Notifications before enabling succession mode")
+	ErrSuccessionDestinationRequired    = errors.New("set an external on-chain destination address before enabling succession mode")
 )
 
 type SuccessionService struct {
@@ -552,6 +553,9 @@ func (s *SuccessionService) UpdateConfig(ctx context.Context, update SuccessionC
 		if !mirrorEnabled {
 			return SuccessionConfig{}, ErrSuccessionTelegramMirrorRequired
 		}
+	}
+	if cfg.Enabled && strings.TrimSpace(cfg.DestinationAddress) == "" {
+		return SuccessionConfig{}, ErrSuccessionDestinationRequired
 	}
 
 	if cfg.CheckPeriodDays <= 0 {

@@ -17,7 +17,7 @@ LightningOS Light is a Full Lightning Node Daemon Installer, Lightning node mana
 - LND managed via systemd, gRPC on localhost
 - Seed phrase is never persisted or logged
 - Wizard for Bitcoin RPC credentials and wallet setup
-- Lightning Ops suite: peers/channels, Rebalance Center, Autofee, HTLC signals, and Channel Auto Heal
+- Lightning Ops suite: peers/channels, Rebalance Center, Autofee, Node Retirement, HTLC signals, and Channel Auto Heal
 - Keysend Chat: 1 sat per message + routing fees, unread indicators, 30-day retention
 - Real-time notifications (on-chain, Lightning, channels, forwards, rebalances)
 - Telegram notifications: SCB backups, financial summaries, on-demand `/scb` and `/balances`
@@ -203,6 +203,7 @@ API endpoints:
 - Channel management: peer/channel controls, policy updates, and channel card/balance refinements.
 - Rebalance Center: manual + auto rebalances with score-based targeting, watchdogs, pre-probing, ROI guardrails, and optional manual auto-restart.
 - Autofee: per-channel fee automation with cost anchors, Amboss seeding, HTLC signal integration, calibration by node size/liquidity, scheduler/manual runs, and detailed run history.
+- Node Retirement: guided safe node decommission workflow with session timeline, cooperative close controls, exception handling, and on-chain reconciliation.
 - HTLC Manager: hysteresis-based HTLC telemetry used by Autofee and liquidity decisions.
 - Channel Auto Heal + Tor peers checker: operational guardrails for peer/channel reliability.
 - Health checks: optional follow-bitcoin checks for LND/node health workflows.
@@ -413,6 +414,102 @@ Meaning: Autofee detected missing reliable signal and avoided blind upward repri
 keep 1461 ppm | target 1139 | out_ratio 0.35 | ... stagnation normalize-out stagnation-r5 stagnation-cap-1139 stagnation-floor peg-paused-stagnation ...
 ```
 Meaning: stagnation logic is actively trying to normalize down while preventing conflicting peg pressure.
+
+## Node Retirement
+Node Retirement is a guided workflow to safely decommission an LND node, close channels in an orderly way, and provide an auditable recovery trail.
+
+Goals:
+- Stop new operational activity before channel closure.
+- Drain in-flight HTLC pressure before cooperative closes.
+- Close what is possible cooperatively, then handle exceptions explicitly.
+- Track final on-chain reconciliation and (for succession) transfer recovery status.
+
+Core model:
+- The flow is session-based (`manual` or `succession` source).
+- Only one active retirement session can run at a time.
+- Every step writes events and state to Postgres so progress survives UI refresh/restart.
+- A mandatory disclaimer gate exists for manual sessions.
+
+State machine (high level):
+- `created`: session accepted.
+- `snapshot_taken`: baseline balances/channels captured.
+- `quiescing`: best-effort stop of rebalance/autofee + forwarding disable.
+- `draining_htlcs`: waits until pending HTLC count reaches zero.
+- `ready_for_coop_confirmation`: manual confirmation gate before cooperative close.
+- `closing_coop`: cooperative close attempts for eligible channels.
+- `awaiting_user_decision`: channels that need operator decision (`wait` vs `force_close`).
+- `force_closing`: applies force-close where explicitly approved.
+- `monitoring_onchain`: waits for all tracked channels to finish close lifecycle.
+- terminal states: `completed`, `dry_run_completed`, `failed`, `canceled`.
+
+Cooperative close fee policy:
+- Node Retirement currently calls LND cooperative close with `sat_per_vbyte=0` (LND dynamic estimator/default confirmation target).
+- This keeps retirement behavior consistent with LND fee estimation and avoids external fee dependency during decommission.
+
+UI components:
+- Disclaimer + session creation panel:
+- choose `Dry-run mode (simulate only)` or live run.
+- Retirement steps board:
+- badge per step (`Completed`, `In progress`, `Pending`).
+- Sessions list:
+- shows source, run mode, state, timestamps, and last error.
+- Initial Snapshot panel:
+- baseline at session start (open/pending channels, HTLC count, on-chain and Lightning balances).
+- Reconciliation panel:
+- final summary when finished (balances/channels) and transfer result when applicable.
+- Channel timeline (initial vs current):
+- per-channel comparison from captured initial state to latest state (active flags, local/remote balances, pending HTLCs, close mode/txid, decision, errors).
+- Session events:
+- ordered runtime event trail for diagnostics/audit.
+- Cooperative close confirmation modal:
+- explicit no-return confirmation gate for manual sessions.
+- Channel exception actions:
+- per-channel `Wait` / `Force close` decisions for offline/stuck cases.
+- Transfer audit (succession-triggered sessions):
+- destination, attempts, status badge, txid with explorer link, confirmations, fee policy, timestamps, errors.
+
+Dry-run behavior:
+- Simulates the full orchestration path without submitting real cooperative/force closes.
+- Produces snapshot, channel timeline updates, session events, and final reconciliation as `dry_run_completed`.
+- Intended to validate policy + operator understanding before live retirement.
+
+### Succession Mode (dead-man switch)
+Succession Mode automates retirement trigger when proof-of-life is not confirmed in time.
+
+Defaults and prerequisites:
+- Disabled by default.
+- Can only be armed when Telegram `Activity mirror` is enabled in Notifications.
+- Uses the same retirement engine with `source=succession`.
+
+Configuration in UI:
+- `Enable succession mode`: arms scheduler.
+- `Succession dry-run`: when enabled, scheduler-triggered retirement sessions are created as dry-run.
+- `External on-chain destination address`: sweep destination for recovered funds.
+- `Liveness check interval (days)`: delay after a valid confirmation before reminder window starts.
+- `Daily reminder grace window (days)`: deadline window after reminders begin.
+- `Min confirmations before auto-transfer`: waits for UTXOs with at least this depth before succession sweep.
+- `Auto-transfer fee rate (sat/vbyte)`: if `0`, LND estimates dynamically.
+- `Pre-approve FC for offline peers` and `Pre-approve FC for stuck HTLC channels`: exception policy for unattended flows.
+
+Proof-of-life inputs:
+- UI button: `I'm alive (UI)`.
+- Telegram command/message: `/alive` or `estou vivo`.
+- Either path resets `last_alive_at`, `next_check_at`, and `deadline_at`.
+
+Reminder and trigger cycle:
+- Scheduler checks succession status every minute.
+- Before `next_check_at`: state remains armed.
+- Between `next_check_at` and `deadline_at`: sends one Telegram reminder per day.
+- After `deadline_at`: triggers Node Retirement automatically (live or dry-run according to succession config).
+
+Simulation controls:
+- `Simulate alive`: records liveness confirmation immediately.
+- `Simulate not alive`: now triggers an immediate succession retirement session in dry-run for validation.
+
+Operational notes:
+- If another retirement session is already active, succession enters waiting mode and retries later.
+- Completion status is mirrored in succession state (`retirement_completed` / `dry_run_completed`) and can notify Telegram.
+- For live succession runs, auto-transfer monitoring tracks submission and confirmation of the sweep transaction.
 
 ## Web terminal (optional)
 LightningOS Light can expose a protected web terminal using GoTTY.

@@ -1668,6 +1668,7 @@
     "telegramMirrorRequiredHint": "Requisito: em Notificações > Telegram, habilite Espelho de atividade antes de ativar a sucessão.",
     "telegramMirrorReady": "Espelho de atividade no Telegram habilitado. O modo sucessão pode ser ativado.",
     "telegramMirrorRequiredError": "Habilite o Espelho de atividade no Telegram antes de ativar o modo sucessão.",
+    "destinationRequiredError": "Defina a carteira externa de destino on-chain antes de ativar o modo sucessão.",
     "destinationAddress": "Carteira externa de destino on-chain",
     "checkPeriodDays": "Intervalo da prova de vida (dias)",
     "checkPeriodHint": "Depois de uma confirmação válida, o sistema espera este prazo antes de iniciar os lembretes.",

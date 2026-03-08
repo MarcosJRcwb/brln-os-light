@@ -17,7 +17,7 @@ LightningOS Light é um instalador completo de daemon de nó Lightning, com gere
 - LND gerenciado via systemd, gRPC em localhost
 - A seed phrase nunca é persistida nem registrada em logs
 - Assistente para credenciais RPC do Bitcoin e setup de carteira
-- Suite Lightning Ops: peers/canais, Rebalance Center, Autofee, sinais HTLC e Channel Auto Heal
+- Suite Lightning Ops: peers/canais, Rebalance Center, Autofee, Aposentar Node, sinais HTLC e Channel Auto Heal
 - Chat Keysend: 1 sat por mensagem + taxas de roteamento, indicadores de não lidas, retenção de 30 dias
 - Notificações em tempo real (on-chain, Lightning, canais, forwards, rebalances)
 - Notificações Telegram: backups SCB, resumos financeiros, comandos sob demanda `/scb` e `/balances`
@@ -190,6 +190,7 @@ Endpoints de API:
 - Gestão de canais: controles de peer/canal, atualizações de policy e refinamentos de card/saldo de canal.
 - Rebalance Center: rebalances manuais + automáticos com targeting por score, watchdogs, pre-probing, guardrails de ROI e auto-restart opcional no modo manual.
 - Autofee: automação de taxas por canal com âncoras de custo, seed Amboss, integração de sinais HTLC, calibração por tamanho/liquidez do nó, scheduler/manual run e histórico detalhado.
+- Aposentar Node (Node Retirement): fluxo guiado de descomissionamento seguro com linha do tempo de sessão, controle de fechamento cooperativo, tratamento de exceções e reconciliação on-chain.
 - HTLC Manager: telemetria HTLC com histerese usada pelo Autofee e por decisões de liquidez.
 - Channel Auto Heal + Tor peers checker: guardrails operacionais para confiabilidade de peer/canal.
 - Health checks: opção de follow-bitcoin para fluxos de saúde de LND/nó.
@@ -400,6 +401,102 @@ Leitura: sem sinal confiavel, o algoritmo evita aumentar fee no escuro.
 keep 1461 ppm | target 1139 | out_ratio 0.35 | ... stagnation normalize-out stagnation-r5 stagnation-cap-1139 stagnation-floor peg-paused-stagnation ...
 ```
 Leitura: modo de estagnacao tentando normalizar para baixo sem contradicao com peg.
+
+## Aposentar Node (Node Retirement)
+Aposentar Node é um fluxo guiado para descomissionar um nó LND com segurança, fechar canais de forma ordenada e manter trilha auditável de recuperação.
+
+Objetivos:
+- Parar novas atividades operacionais antes de fechar canais.
+- Drenar HTLCs em voo antes dos fechamentos cooperativos.
+- Fechar cooperativamente tudo o que for possível e tratar exceções de forma explícita.
+- Monitorar reconciliação final on-chain e, em sucessão, o status da auto-transferência.
+
+Modelo central:
+- O fluxo é orientado a sessões (`manual` ou `succession`).
+- Apenas uma sessão ativa pode rodar por vez.
+- Cada etapa registra eventos e estado no Postgres para sobreviver a refresh/restart da UI.
+- Sessão manual exige aceite de disclaimer antes da execução.
+
+Máquina de estados (alto nível):
+- `created`: sessão aceita.
+- `snapshot_taken`: baseline de saldos/canais capturado.
+- `quiescing`: tentativa best-effort de parar rebalance/autofee e bloquear forwards.
+- `draining_htlcs`: aguarda HTLCs pendentes chegarem a zero.
+- `ready_for_coop_confirmation`: gate de confirmação antes de fechar cooperativamente.
+- `closing_coop`: tentativas de fechamento cooperativo dos canais elegíveis.
+- `awaiting_user_decision`: canais que exigem decisão do operador (`aguardar` vs `force_close`).
+- `force_closing`: aplica force close apenas onde houver aprovação explícita.
+- `monitoring_onchain`: aguarda fechamento completo de todos os canais rastreados.
+- estados terminais: `completed`, `dry_run_completed`, `failed`, `canceled`.
+
+Política de taxa no fechamento cooperativo:
+- Hoje o Aposentar Node chama o fechamento cooperativo no LND com `sat_per_vbyte=0` (estimativa dinâmica/alvo padrão do LND).
+- Isso mantém consistência com o estimador do LND e evita dependência externa de fee durante o descomissionamento.
+
+Componentes de UI:
+- Painel de disclaimer + criação de sessão:
+- escolhe entre `Modo dry-run (somente simulação)` ou execução real.
+- Quadro de etapas:
+- badge por etapa (`Concluída`, `Em andamento`, `Pendente`).
+- Lista de sessões:
+- origem, modo, estado, timestamps e último erro.
+- Painel Snapshot inicial:
+- baseline no início da sessão (canais abertos/pendentes, HTLCs, saldo on-chain e Lightning).
+- Painel de reconciliação:
+- resumo final (saldos/canais) e resultado de transferência quando aplicável.
+- Linha do tempo de canais (inicial vs atual):
+- compara por canal o estado inicial com o atual (ativo, saldos local/remoto, HTLCs, modo/txid de fechamento, decisão, erros).
+- Eventos da sessão:
+- trilha cronológica de execução para diagnóstico/auditoria.
+- Modal de confirmação para fechamento cooperativo:
+- confirmação explícita sem volta para sessões manuais.
+- Ações de exceção por canal:
+- decisões `Aguardar` / `Force close` para peer offline ou HTLC travado.
+- Auditoria de transferência (sessões disparadas por sucessão):
+- destino, tentativas, status, txid com explorer, confirmações, política de fee, timestamps e erros.
+
+Comportamento do dry-run:
+- Simula o fluxo completo sem enviar fechamentos cooperativos/forçados reais.
+- Gera snapshot, atualiza linha do tempo dos canais, registra eventos e conclui como `dry_run_completed`.
+- Serve para validar política e entendimento operacional antes da execução real.
+
+### Modo de Sucessão (dead-man switch)
+O Modo de Sucessão automatiza o disparo da aposentadoria quando a prova de vida não é confirmada no prazo.
+
+Padrões e pré-requisitos:
+- Desabilitado por padrão.
+- Só pode ser armado quando o `Espelho de atividade no Telegram` estiver habilitado em Notificações.
+- Usa o mesmo motor de aposentadoria com `source=succession`.
+
+Configuração na UI:
+- `Ativar modo sucessão`: arma o agendador.
+- `Succession em dry-run`: quando habilitado, sessões automáticas de aposentadoria rodam em simulação.
+- `Carteira externa de destino on-chain`: destino dos fundos recuperados.
+- `Intervalo da prova de vida (dias)`: prazo entre confirmações válidas e início dos lembretes.
+- `Janela de lembrete diário (dias)`: prazo final após início dos lembretes.
+- `Mínimo de confirmações para auto-transferência`: aguarda UTXOs com essa profundidade antes do sweep.
+- `Taxa da auto-transferência (sat/vbyte)`: se `0`, o LND estima dinamicamente.
+- `Pré-aprovar FC para peers offline` e `Pré-aprovar FC para canais com HTLC travado`: política de exceção para fluxo sem operador.
+
+Entradas de prova de vida:
+- Botão na UI: `Estou vivo (UI)`.
+- Comando/mensagem no Telegram: `/alive` ou `estou vivo`.
+- Qualquer caminho reseta `last_alive_at`, `next_check_at` e `deadline_at`.
+
+Ciclo de lembrete e disparo:
+- O scheduler verifica sucessão a cada minuto.
+- Antes de `next_check_at`: estado permanece armado.
+- Entre `next_check_at` e `deadline_at`: envia um lembrete no Telegram por dia.
+- Depois de `deadline_at`: dispara Aposentar Node automaticamente (real ou dry-run conforme configuração).
+
+Controles de simulação:
+- `Simular vivo`: registra confirmação de vida imediatamente.
+- `Simular não vivo`: dispara imediatamente uma sessão de aposentadoria por sucessão em dry-run para validação.
+
+Notas operacionais:
+- Se já existir sessão de aposentadoria ativa, a sucessão entra em espera e tenta novamente depois.
+- O status final é espelhado no estado da sucessão (`retirement_completed` / `dry_run_completed`) e pode notificar no Telegram.
+- Em sucessão real, o monitoramento da auto-transferência acompanha envio e confirmações da transação de sweep.
 
 ## Terminal web (opcional)
 LightningOS Light pode expor um terminal web protegido usando GoTTY.

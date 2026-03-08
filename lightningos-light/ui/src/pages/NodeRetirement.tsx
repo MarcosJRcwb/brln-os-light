@@ -501,6 +501,10 @@ export default function NodeRetirement() {
       setSuccessionStatus(t('nodeRetirement.telegramMirrorRequiredError'))
       return
     }
+    if (successionForm.enabled && !String(successionForm.destination_address || '').trim()) {
+      setSuccessionStatus(t('nodeRetirement.destinationRequiredError'))
+      return
+    }
     setSuccessionBusy(true)
     try {
       const next = await updateSuccessionConfig({

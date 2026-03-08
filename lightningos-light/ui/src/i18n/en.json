@@ -1668,6 +1668,7 @@
     "telegramMirrorRequiredHint": "Requirement: in Notifications > Telegram, enable Activity mirror before arming succession mode.",
     "telegramMirrorReady": "Telegram Activity mirror is enabled. Succession mode can be armed.",
     "telegramMirrorRequiredError": "Enable Telegram Activity mirror before turning on succession mode.",
+    "destinationRequiredError": "Set an external on-chain destination address before enabling succession mode.",
     "destinationAddress": "External on-chain destination address",
     "checkPeriodDays": "Liveness check interval (days)",
     "checkPeriodHint": "After a valid confirmation, the system waits this many days before starting reminders.",
