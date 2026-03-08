@@ -32,9 +32,12 @@ type ReportSeriesItem = {
   forward_fee_revenue_sats: number
   rebalance_fee_cost_sats: number
   payment_fee_cost_sats?: number
+  onchain_fee_cost_sats?: number
+  offchain_fee_cost_sats?: number
   keysend_received_sats?: number
   keysend_received_count?: number
   total_fee_cost_sats?: number
+  total_fee_cost_with_onchain_sats?: number
   net_routing_profit_sats: number
   net_with_keysend_sats?: number
   forward_count: number
@@ -50,9 +53,12 @@ type ReportMetrics = {
   forward_fee_revenue_sats: number
   rebalance_fee_cost_sats: number
   payment_fee_cost_sats?: number
+  onchain_fee_cost_sats?: number
+  offchain_fee_cost_sats?: number
   keysend_received_sats?: number
   keysend_received_count?: number
   total_fee_cost_sats?: number
+  total_fee_cost_with_onchain_sats?: number
   net_routing_profit_sats: number
   net_with_keysend_sats?: number
   forward_count: number
@@ -123,7 +129,10 @@ type ChartDataPoint = {
   revenue: number
   rebalanceCost: number
   paymentCost: number
-  cost: number
+  offchainCost: number
+  onchainCost: number
+  costWithOnchain: number
+  costForChart: number
   onchain: number | null
   lightning: number | null
   total: number | null
@@ -191,6 +200,7 @@ export default function Reports() {
   const [liveLookback, setLiveLookback] = useState('')
   const [runTimeout, setRunTimeout] = useState('')
   const [chartGranularity, setChartGranularity] = useState<ChartGranularity>('day')
+  const [includeOnchainCostInCharts, setIncludeOnchainCostInCharts] = useState(false)
 
   const formatter = useMemo(() => new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }), [locale])
   const compactFormatter = useMemo(() => new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 2 }), [locale])
@@ -432,9 +442,12 @@ export default function Reports() {
       forward_fee_revenue_sats: live.forward_fee_revenue_sats,
       rebalance_fee_cost_sats: live.rebalance_fee_cost_sats,
       payment_fee_cost_sats: live.payment_fee_cost_sats ?? 0,
+      onchain_fee_cost_sats: live.onchain_fee_cost_sats ?? 0,
+      offchain_fee_cost_sats: live.offchain_fee_cost_sats ?? (live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0))),
       keysend_received_sats: live.keysend_received_sats ?? 0,
       keysend_received_count: live.keysend_received_count ?? 0,
       total_fee_cost_sats: live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0)),
+      total_fee_cost_with_onchain_sats: live.total_fee_cost_with_onchain_sats ?? ((live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0))) + (live.onchain_fee_cost_sats ?? 0)),
       net_routing_profit_sats: live.net_routing_profit_sats,
       net_with_keysend_sats: live.net_with_keysend_sats ?? ((live.net_routing_profit_sats ?? 0) + (live.keysend_received_sats ?? 0)),
       forward_count: live.forward_count,
@@ -451,9 +464,12 @@ export default function Reports() {
       forward_fee_revenue_sats: live.forward_fee_revenue_sats,
       rebalance_fee_cost_sats: live.rebalance_fee_cost_sats,
       payment_fee_cost_sats: live.payment_fee_cost_sats ?? 0,
+      onchain_fee_cost_sats: live.onchain_fee_cost_sats ?? 0,
+      offchain_fee_cost_sats: live.offchain_fee_cost_sats ?? (live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0))),
       keysend_received_sats: live.keysend_received_sats ?? 0,
       keysend_received_count: live.keysend_received_count ?? 0,
       total_fee_cost_sats: live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0)),
+      total_fee_cost_with_onchain_sats: live.total_fee_cost_with_onchain_sats ?? ((live.total_fee_cost_sats ?? ((live.rebalance_fee_cost_sats ?? 0) + (live.payment_fee_cost_sats ?? 0))) + (live.onchain_fee_cost_sats ?? 0)),
       net_routing_profit_sats: live.net_routing_profit_sats,
       net_with_keysend_sats: live.net_with_keysend_sats ?? ((live.net_routing_profit_sats ?? 0) + (live.keysend_received_sats ?? 0)),
       forward_count: live.forward_count,
@@ -583,7 +599,10 @@ export default function Reports() {
       revenue: item.forward_fee_revenue_sats,
       rebalanceCost: item.rebalance_fee_cost_sats ?? 0,
       paymentCost: item.payment_fee_cost_sats ?? 0,
-      cost: item.total_fee_cost_sats ?? ((item.rebalance_fee_cost_sats ?? 0) + (item.payment_fee_cost_sats ?? 0)),
+      offchainCost: item.offchain_fee_cost_sats ?? item.total_fee_cost_sats ?? ((item.rebalance_fee_cost_sats ?? 0) + (item.payment_fee_cost_sats ?? 0)),
+      onchainCost: item.onchain_fee_cost_sats ?? 0,
+      costWithOnchain: item.total_fee_cost_with_onchain_sats ?? ((item.offchain_fee_cost_sats ?? item.total_fee_cost_sats ?? ((item.rebalance_fee_cost_sats ?? 0) + (item.payment_fee_cost_sats ?? 0))) + (item.onchain_fee_cost_sats ?? 0)),
+      costForChart: 0,
       onchain: item.onchain_balance_sats ?? null,
       lightning: item.lightning_balance_sats ?? null,
       total: item.total_balance_sats ?? null
@@ -632,7 +651,9 @@ export default function Reports() {
       current.revenue += item.revenue
       current.rebalanceCost += item.rebalanceCost
       current.paymentCost += item.paymentCost
-      current.cost += item.cost
+      current.offchainCost += item.offchainCost
+      current.onchainCost += item.onchainCost
+      current.costWithOnchain += item.costWithOnchain
       current.endDate = item.date
       if (item.onchain !== null) current.onchain = item.onchain
       if (item.lightning !== null) current.lightning = item.lightning
@@ -647,6 +668,31 @@ export default function Reports() {
         label: formatRangeLabel(item.startDate, item.endDate, chartGranularity)
       }))
   }, [chartGranularity, locale, rawChartData])
+
+  const chartDataWithCost = useMemo<ChartDataPoint[]>(
+    () => chartData.map((item) => ({
+      ...item,
+      costForChart: includeOnchainCostInCharts ? item.costWithOnchain : item.offchainCost
+    })),
+    [chartData, includeOnchainCostInCharts]
+  )
+
+  const cumulativeCostData = useMemo(() => {
+    let cumulativeRevenue = 0
+    let cumulativeOffchain = 0
+    let cumulativeOnchain = 0
+    return chartData.map((item) => {
+      cumulativeRevenue += item.revenue
+      cumulativeOffchain += item.offchainCost
+      cumulativeOnchain += item.onchainCost
+      return {
+        label: item.label,
+        cumulativeRevenue,
+        cumulativeOffchain,
+        cumulativeOnchain
+      }
+    })
+  }, [chartData])
 
   const liveChartData = useMemo(() => {
     if (!live) return []
@@ -680,9 +726,17 @@ export default function Reports() {
   const summaryMovementTone = summaryMovementPct >= 75 ? 'bg-emerald-500' : summaryMovementPct >= 50 ? 'bg-amber-400' : 'bg-rose-500'
   const liveRebalanceCost = live?.rebalance_fee_cost_sats ?? 0
   const livePaymentCost = live?.payment_fee_cost_sats ?? 0
-  const liveTotalCost = live?.total_fee_cost_sats ?? (liveRebalanceCost + livePaymentCost)
+  const liveOffchainCost = live?.offchain_fee_cost_sats ?? live?.total_fee_cost_sats ?? (liveRebalanceCost + livePaymentCost)
+  const liveOnchainCost = live?.onchain_fee_cost_sats ?? 0
+  const liveTotalCostWithOnchain = live?.total_fee_cost_with_onchain_sats ?? (liveOffchainCost + liveOnchainCost)
   const liveKeysendReceived = live?.keysend_received_sats ?? 0
   const liveNetWithKeysend = live?.net_with_keysend_sats ?? ((live?.net_routing_profit_sats ?? 0) + liveKeysendReceived)
+  const summaryTotalsOffchainCost = summary?.totals.offchain_fee_cost_sats ?? summary?.totals.total_fee_cost_sats ?? ((summary?.totals.rebalance_fee_cost_sats ?? 0) + (summary?.totals.payment_fee_cost_sats ?? 0))
+  const summaryTotalsOnchainCost = summary?.totals.onchain_fee_cost_sats ?? 0
+  const summaryTotalsCostWithOnchain = summary?.totals.total_fee_cost_with_onchain_sats ?? (summaryTotalsOffchainCost + summaryTotalsOnchainCost)
+  const summaryAveragesOffchainCost = summary?.averages.offchain_fee_cost_sats ?? summary?.averages.total_fee_cost_sats ?? ((summary?.averages.rebalance_fee_cost_sats ?? 0) + (summary?.averages.payment_fee_cost_sats ?? 0))
+  const summaryAveragesOnchainCost = summary?.averages.onchain_fee_cost_sats ?? 0
+  const summaryAveragesCostWithOnchain = summary?.averages.total_fee_cost_with_onchain_sats ?? (summaryAveragesOffchainCost + summaryAveragesOnchainCost)
   const renderGranularityToggle = () => (
     <div className="inline-flex items-center gap-1 rounded-full bg-white/10 p-1">
       {chartGranularityOptions.map((option) => (
@@ -726,11 +780,11 @@ export default function Reports() {
                   <p className="text-lg font-semibold text-fog">{formatSats(live.forward_fee_revenue_sats)}</p>
                 </div>
                 <div className="rounded-2xl bg-white/5 p-4">
-                  <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.cost')}</p>
+                  <p className="text-xs uppercase tracking-wide text-fog/60">{t('reports.totalCostWithOnchain')}</p>
                   <div className="flex items-baseline justify-between gap-3">
-                    <p className="text-lg font-semibold text-fog">{formatSats(liveTotalCost)}</p>
+                    <p className="text-lg font-semibold text-fog">{formatSats(liveTotalCostWithOnchain)}</p>
                     <p className="text-xs text-fog/60">
-                      {t('reports.rebalances')} {formatSats(liveRebalanceCost)} | {t('reports.payments')} {formatSats(livePaymentCost)}
+                      {t('reports.offchainCost')} {formatSats(liveOffchainCost)} | {t('reports.onchainCost')} {formatSats(liveOnchainCost)}
                     </p>
                   </div>
                 </div>
@@ -840,7 +894,9 @@ export default function Reports() {
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.totals')}</p>
                 <p className="text-fog">{t('reports.revenue')} {formatSats(summary.totals.forward_fee_revenue_sats)}</p>
-                <p className="text-fog">{t('reports.cost')} {formatSats(summary.totals.total_fee_cost_sats ?? ((summary.totals.rebalance_fee_cost_sats ?? 0) + (summary.totals.payment_fee_cost_sats ?? 0)))}</p>
+                <p className="text-fog">{t('reports.offchainCost')} {formatSats(summaryTotalsOffchainCost)}</p>
+                <p className="text-fog">{t('reports.onchainCost')} {formatSats(summaryTotalsOnchainCost)}</p>
+                <p className="text-fog">{t('reports.totalCostWithOnchain')} {formatSats(summaryTotalsCostWithOnchain)}</p>
                 <p className="text-fog/80">{t('reports.rebalances')} {formatSats(summary.totals.rebalance_fee_cost_sats ?? 0)}</p>
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.totals.payment_fee_cost_sats ?? 0)}</p>
                 <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.totals.keysend_received_sats ?? 0)}</p>
@@ -850,7 +906,9 @@ export default function Reports() {
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.averagesPerDay')}</p>
                 <p className="text-fog">{t('reports.revenue')} {formatSats(summary.averages.forward_fee_revenue_sats)}</p>
-                <p className="text-fog">{t('reports.cost')} {formatSats(summary.averages.total_fee_cost_sats ?? ((summary.averages.rebalance_fee_cost_sats ?? 0) + (summary.averages.payment_fee_cost_sats ?? 0)))}</p>
+                <p className="text-fog">{t('reports.offchainCost')} {formatSats(summaryAveragesOffchainCost)}</p>
+                <p className="text-fog">{t('reports.onchainCost')} {formatSats(summaryAveragesOnchainCost)}</p>
+                <p className="text-fog">{t('reports.totalCostWithOnchain')} {formatSats(summaryAveragesCostWithOnchain)}</p>
                 <p className="text-fog/80">{t('reports.rebalances')} {formatSats(summary.averages.rebalance_fee_cost_sats ?? 0)}</p>
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.averages.payment_fee_cost_sats ?? 0)}</p>
                 <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.averages.keysend_received_sats ?? 0)}</p>
@@ -1005,12 +1063,21 @@ export default function Reports() {
             <h3 className="text-lg font-semibold">{t('reports.revenueVsCost')}</h3>
             {renderGranularityToggle()}
           </div>
+          <label className="inline-flex items-center gap-2 text-sm text-fog/70">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-emerald-500"
+              checked={includeOnchainCostInCharts}
+              onChange={(e) => setIncludeOnchainCostInCharts(e.target.checked)}
+            />
+            <span>{t('reports.includeOnchainCost')}</span>
+          </label>
           {chartData.length === 0 && !seriesLoading && !seriesError ? (
             <p className="text-sm text-fog/60">{t('reports.noData')}</p>
           ) : (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
+                <LineChart data={chartDataWithCost} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
                   <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
@@ -1024,7 +1091,7 @@ export default function Reports() {
                     labelFormatter={(value) => String(value)}
                   />
                   <Line type="monotone" dataKey="revenue" name={t('reports.revenue')} stroke={COLORS.revenue} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="cost" name={t('reports.cost')} stroke={COLORS.cost} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="costForChart" name={t('reports.cost')} stroke={COLORS.cost} strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1061,6 +1128,38 @@ export default function Reports() {
                 <Line type="monotone" dataKey="onchain" name={t('reports.onchain')} stroke={COLORS.onchain} strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="lightning" name={t('reports.lightning')} stroke={COLORS.lightning} strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="total" name={t('reports.total')} stroke={COLORS.total} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      <div className="section-card space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-lg font-semibold">{t('reports.cumulativeRevenueCosts')}</h3>
+          {renderGranularityToggle()}
+        </div>
+        {cumulativeCostData.length === 0 && !seriesLoading && !seriesError ? (
+          <p className="text-sm text-fog/60">{t('reports.noData')}</p>
+        ) : (
+          <div className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={cumulativeCostData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                <XAxis dataKey="label" tick={{ fill: '#cbd5f5', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: '#cbd5f5', fontSize: 11 }} tickFormatter={formatCompact} axisLine={false} tickLine={false} />
+                <Legend verticalAlign="top" height={24} formatter={(value) => <span className="text-xs text-fog/60">{value}</span>} />
+                <Tooltip
+                  cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                  contentStyle={tooltipContentStyle}
+                  labelStyle={tooltipLabelStyle}
+                  itemStyle={tooltipItemStyle}
+                  formatter={(value) => formatSats(Number(value))}
+                  labelFormatter={(value) => String(value)}
+                />
+                <Line type="monotone" dataKey="cumulativeRevenue" name={t('reports.revenue')} stroke={COLORS.revenue} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="cumulativeOffchain" name={t('reports.offchainCost')} stroke={COLORS.cost} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="cumulativeOnchain" name={t('reports.onchainCost')} stroke={COLORS.onchain} strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>

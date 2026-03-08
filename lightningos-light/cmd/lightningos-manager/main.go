@@ -91,7 +91,7 @@ func runReports(args []string) {
 		reportDate = parsed
 	}
 
-	row, err := svc.RunDaily(ctx, reportDate, loc, nil, nil, nil)
+	row, err := svc.RunDaily(ctx, reportDate, loc, nil, nil, nil, nil)
 	if err != nil {
 		logger.Fatalf("reports-run failed: %v", err)
 	}
@@ -100,10 +100,12 @@ func runReports(args []string) {
 	}
 
 	logger.Printf(
-		"reports: stored %s (revenue %d sats, cost %d sats, net %d sats)",
+		"reports: stored %s (revenue %d sats, offchain cost %d sats, onchain cost %d sats, total cost %d sats, net %d sats)",
 		row.ReportDate.Format("2006-01-02"),
 		row.Metrics.ForwardFeeRevenueSat,
 		row.Metrics.TotalFeeCostSat(),
+		row.Metrics.OnchainFeeCostSat,
+		row.Metrics.TotalFeeCostWithOnchainSat(),
 		row.Metrics.NetRoutingProfitSat,
 	)
 }
@@ -183,22 +185,29 @@ func runReportsBackfill(args []string) {
 	if err != nil {
 		logger.Fatalf("reports-backfill failed: %v", err)
 	}
+	onchainByDay, err := reports.FetchOnchainFeesByDay(context.Background(), lnd, uint64(startLocal.UTC().Unix()), uint64(endLocal.UTC().Unix()), loc)
+	if err != nil {
+		logger.Fatalf("reports-backfill failed: %v", err)
+	}
 	for day := startDate; !day.After(endDate); day = day.AddDate(0, 0, 1) {
 		dayCtx, dayCancel := context.WithTimeout(context.Background(), reportsRunTimeout())
 		dayKey := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
 		rebalanceOverride := rebalanceByDay[dayKey]
 		paymentOverride := paymentByDay[dayKey]
 		keysendOverride := keysendByDay[dayKey]
-		row, err := svc.RunDaily(dayCtx, day, loc, &rebalanceOverride, &paymentOverride, &keysendOverride)
+		onchainOverride := onchainByDay[dayKey]
+		row, err := svc.RunDaily(dayCtx, day, loc, &rebalanceOverride, &paymentOverride, &keysendOverride, &onchainOverride)
 		dayCancel()
 		if err != nil {
 			logger.Fatalf("reports-backfill failed on %s: %v", day.Format("2006-01-02"), err)
 		}
 		logger.Printf(
-			"reports: stored %s (revenue %d sats, cost %d sats, net %d sats)",
+			"reports: stored %s (revenue %d sats, offchain cost %d sats, onchain cost %d sats, total cost %d sats, net %d sats)",
 			row.ReportDate.Format("2006-01-02"),
 			row.Metrics.ForwardFeeRevenueSat,
 			row.Metrics.TotalFeeCostSat(),
+			row.Metrics.OnchainFeeCostSat,
+			row.Metrics.TotalFeeCostWithOnchainSat(),
 			row.Metrics.NetRoutingProfitSat,
 		)
 	}

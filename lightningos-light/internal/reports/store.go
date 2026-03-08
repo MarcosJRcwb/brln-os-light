@@ -23,6 +23,8 @@ create table if not exists reports_daily (
   rebalance_fee_cost_msat bigint not null default 0,
   payment_fee_cost_sats bigint not null default 0,
   payment_fee_cost_msat bigint not null default 0,
+  onchain_fee_cost_sats bigint not null default 0,
+  onchain_fee_cost_msat bigint not null default 0,
   keysend_received_sats bigint not null default 0,
   keysend_received_msat bigint not null default 0,
   keysend_received_count integer not null default 0,
@@ -53,6 +55,8 @@ alter table reports_daily add column if not exists forward_fee_revenue_msat bigi
 alter table reports_daily add column if not exists rebalance_fee_cost_msat bigint not null default 0;
 alter table reports_daily add column if not exists payment_fee_cost_sats bigint not null default 0;
 alter table reports_daily add column if not exists payment_fee_cost_msat bigint not null default 0;
+alter table reports_daily add column if not exists onchain_fee_cost_sats bigint not null default 0;
+alter table reports_daily add column if not exists onchain_fee_cost_msat bigint not null default 0;
 alter table reports_daily add column if not exists keysend_received_sats bigint not null default 0;
 alter table reports_daily add column if not exists keysend_received_msat bigint not null default 0;
 alter table reports_daily add column if not exists keysend_received_count integer not null default 0;
@@ -86,6 +90,8 @@ func buildUpsertDaily(row Row) (string, []any) {
 		metrics.RebalanceFeeCostMsat,
 		metrics.PaymentFeeCostSat,
 		metrics.PaymentFeeCostMsat,
+		metrics.OnchainFeeCostSat,
+		metrics.OnchainFeeCostMsat,
 		metrics.KeysendReceivedSat,
 		metrics.KeysendReceivedMsat,
 		metrics.KeysendReceivedCount,
@@ -112,6 +118,8 @@ insert into reports_daily (
   rebalance_fee_cost_msat,
   payment_fee_cost_sats,
   payment_fee_cost_msat,
+  onchain_fee_cost_sats,
+  onchain_fee_cost_msat,
   keysend_received_sats,
   keysend_received_msat,
   keysend_received_count,
@@ -127,7 +135,7 @@ insert into reports_daily (
   onchain_balance_sats,
   lightning_balance_sats,
   total_balance_sats
-) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 on conflict (report_date) do update set
   forward_fee_revenue_sats = excluded.forward_fee_revenue_sats,
   forward_fee_revenue_msat = excluded.forward_fee_revenue_msat,
@@ -135,6 +143,8 @@ on conflict (report_date) do update set
   rebalance_fee_cost_msat = excluded.rebalance_fee_cost_msat,
   payment_fee_cost_sats = excluded.payment_fee_cost_sats,
   payment_fee_cost_msat = excluded.payment_fee_cost_msat,
+  onchain_fee_cost_sats = excluded.onchain_fee_cost_sats,
+  onchain_fee_cost_msat = excluded.onchain_fee_cost_msat,
   keysend_received_sats = excluded.keysend_received_sats,
   keysend_received_msat = excluded.keysend_received_msat,
   keysend_received_count = excluded.keysend_received_count,
@@ -232,6 +242,8 @@ select report_date,
   rebalance_fee_cost_msat,
   payment_fee_cost_sats,
   payment_fee_cost_msat,
+  onchain_fee_cost_sats,
+  onchain_fee_cost_msat,
   keysend_received_sats,
   keysend_received_msat,
   keysend_received_count,
@@ -279,6 +291,8 @@ select report_date,
   rebalance_fee_cost_msat,
   payment_fee_cost_sats,
   payment_fee_cost_msat,
+  onchain_fee_cost_sats,
+  onchain_fee_cost_msat,
   keysend_received_sats,
   keysend_received_msat,
   keysend_received_count,
@@ -328,6 +342,8 @@ select
   coalesce(sum(rebalance_fee_cost_msat), 0),
   coalesce(sum(payment_fee_cost_sats), 0),
   coalesce(sum(payment_fee_cost_msat), 0),
+  coalesce(sum(onchain_fee_cost_sats), 0),
+  coalesce(sum(onchain_fee_cost_msat), 0),
   coalesce(sum(keysend_received_sats), 0),
   coalesce(sum(keysend_received_msat), 0),
   coalesce(sum(keysend_received_count), 0),
@@ -350,6 +366,8 @@ where report_date >= $1 and report_date <= $2
 		&totals.RebalanceFeeCostMsat,
 		&totals.PaymentFeeCostSat,
 		&totals.PaymentFeeCostMsat,
+		&totals.OnchainFeeCostSat,
+		&totals.OnchainFeeCostMsat,
 		&totals.KeysendReceivedSat,
 		&totals.KeysendReceivedMsat,
 		&totals.KeysendReceivedCount,
@@ -386,6 +404,8 @@ select
   coalesce(sum(rebalance_fee_cost_msat), 0),
   coalesce(sum(payment_fee_cost_sats), 0),
   coalesce(sum(payment_fee_cost_msat), 0),
+  coalesce(sum(onchain_fee_cost_sats), 0),
+  coalesce(sum(onchain_fee_cost_msat), 0),
   coalesce(sum(keysend_received_sats), 0),
   coalesce(sum(keysend_received_msat), 0),
   coalesce(sum(keysend_received_count), 0),
@@ -407,6 +427,8 @@ from reports_daily
 		&totals.RebalanceFeeCostMsat,
 		&totals.PaymentFeeCostSat,
 		&totals.PaymentFeeCostMsat,
+		&totals.OnchainFeeCostSat,
+		&totals.OnchainFeeCostMsat,
 		&totals.KeysendReceivedSat,
 		&totals.KeysendReceivedMsat,
 		&totals.KeysendReceivedCount,
@@ -439,6 +461,8 @@ func averageMetrics(totals Metrics, days int64) Metrics {
 		RebalanceFeeCostMsat:  totals.RebalanceFeeCostMsat / days,
 		PaymentFeeCostSat:     totals.PaymentFeeCostSat / days,
 		PaymentFeeCostMsat:    totals.PaymentFeeCostMsat / days,
+		OnchainFeeCostSat:     totals.OnchainFeeCostSat / days,
+		OnchainFeeCostMsat:    totals.OnchainFeeCostMsat / days,
 		KeysendReceivedSat:    totals.KeysendReceivedSat / days,
 		KeysendReceivedMsat:   totals.KeysendReceivedMsat / days,
 		KeysendReceivedCount:  totals.KeysendReceivedCount / days,
@@ -472,6 +496,8 @@ func scanRow(scanner rowScanner) (Row, error) {
 		&metrics.RebalanceFeeCostMsat,
 		&metrics.PaymentFeeCostSat,
 		&metrics.PaymentFeeCostMsat,
+		&metrics.OnchainFeeCostSat,
+		&metrics.OnchainFeeCostMsat,
 		&metrics.KeysendReceivedSat,
 		&metrics.KeysendReceivedMsat,
 		&metrics.KeysendReceivedCount,
@@ -530,6 +556,9 @@ func fillMsatFromSat(metrics *Metrics) {
 	}
 	if metrics.PaymentFeeCostMsat == 0 && metrics.PaymentFeeCostSat != 0 {
 		metrics.PaymentFeeCostMsat = metrics.PaymentFeeCostSat * 1000
+	}
+	if metrics.OnchainFeeCostMsat == 0 && metrics.OnchainFeeCostSat != 0 {
+		metrics.OnchainFeeCostMsat = metrics.OnchainFeeCostSat * 1000
 	}
 	if metrics.KeysendReceivedMsat == 0 && metrics.KeysendReceivedSat != 0 {
 		metrics.KeysendReceivedMsat = metrics.KeysendReceivedSat * 1000

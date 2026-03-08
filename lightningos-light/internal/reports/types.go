@@ -9,6 +9,8 @@ type Metrics struct {
 	RebalanceFeeCostMsat  int64
 	PaymentFeeCostSat     int64
 	PaymentFeeCostMsat    int64
+	OnchainFeeCostSat     int64
+	OnchainFeeCostMsat    int64
 	KeysendReceivedSat    int64
 	KeysendReceivedMsat   int64
 	KeysendReceivedCount  int64
@@ -26,12 +28,28 @@ type Metrics struct {
 	TotalBalanceSat       *int64
 }
 
-func (m Metrics) TotalFeeCostSat() int64 {
+func (m Metrics) OffchainFeeCostSat() int64 {
 	return m.RebalanceFeeCostSat + m.PaymentFeeCostSat
 }
 
-func (m Metrics) TotalFeeCostMsat() int64 {
+func (m Metrics) OffchainFeeCostMsat() int64 {
 	return m.RebalanceFeeCostMsat + m.PaymentFeeCostMsat
+}
+
+func (m Metrics) TotalFeeCostSat() int64 {
+	return m.OffchainFeeCostSat()
+}
+
+func (m Metrics) TotalFeeCostMsat() int64 {
+	return m.OffchainFeeCostMsat()
+}
+
+func (m Metrics) TotalFeeCostWithOnchainSat() int64 {
+	return m.OffchainFeeCostSat() + m.OnchainFeeCostSat
+}
+
+func (m Metrics) TotalFeeCostWithOnchainMsat() int64 {
+	return m.OffchainFeeCostMsat() + m.OnchainFeeCostMsat
 }
 
 type Row struct {

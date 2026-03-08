@@ -28,7 +28,12 @@ type KeysendReceivedOverride struct {
 	Count      int64
 }
 
-func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, memoMatch bool, rebalanceOverride *RebalanceOverride, paymentOverride *PaymentOverride, keysendOverride *KeysendReceivedOverride) (Metrics, error) {
+type OnchainOverride struct {
+	FeeMsat int64
+	Count   int64
+}
+
+func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, memoMatch bool, rebalanceOverride *RebalanceOverride, paymentOverride *PaymentOverride, keysendOverride *KeysendReceivedOverride, onchainOverride *OnchainOverride) (Metrics, error) {
 	if lnd == nil {
 		return Metrics{}, fmt.Errorf("lnd client unavailable")
 	}
@@ -79,6 +84,17 @@ func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, me
 		keysendReceivedCount = keysend.Count
 	}
 
+	onchainCostMsat := int64(0)
+	if onchainOverride != nil {
+		onchainCostMsat = onchainOverride.FeeMsat
+	} else {
+		onchain, err := FetchOnchainFeeMetrics(ctx, lnd, tr.StartUnix(), tr.EndUnixInclusive())
+		if err != nil {
+			return Metrics{}, err
+		}
+		onchainCostMsat = onchain.FeeMsat
+	}
+
 	netMsat := forwardRevenueMsat - rebalanceCostMsat - paymentCostMsat
 	netWithKeysendMsat := netMsat + keysendReceivedMsat
 	metrics := Metrics{
@@ -88,6 +104,8 @@ func ComputeMetrics(ctx context.Context, lnd *lndclient.Client, tr TimeRange, me
 		RebalanceFeeCostMsat:  rebalanceCostMsat,
 		PaymentFeeCostSat:     paymentCostMsat / 1000,
 		PaymentFeeCostMsat:    paymentCostMsat,
+		OnchainFeeCostSat:     onchainCostMsat / 1000,
+		OnchainFeeCostMsat:    onchainCostMsat,
 		KeysendReceivedSat:    keysendReceivedMsat / 1000,
 		KeysendReceivedMsat:   keysendReceivedMsat,
 		KeysendReceivedCount:  keysendReceivedCount,
