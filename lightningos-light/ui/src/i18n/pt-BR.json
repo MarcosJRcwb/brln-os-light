@@ -670,6 +670,7 @@
     "keysendCount": "Contagem de Keysend",
     "net": "Líquido",
     "netWithKeysend": "Líquido (roteamento + keysend)",
+    "netWithOnchain": "Líquido (roteamento + keysend - on-chain)",
     "offchainCost": "Custo offchain",
     "routingNet": "Líquido de roteamento",
     "netRoutingProfit": "Lucro líquido de roteamento",

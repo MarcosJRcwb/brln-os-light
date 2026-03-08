@@ -734,9 +734,13 @@ export default function Reports() {
   const summaryTotalsOffchainCost = summary?.totals.offchain_fee_cost_sats ?? summary?.totals.total_fee_cost_sats ?? ((summary?.totals.rebalance_fee_cost_sats ?? 0) + (summary?.totals.payment_fee_cost_sats ?? 0))
   const summaryTotalsOnchainCost = summary?.totals.onchain_fee_cost_sats ?? 0
   const summaryTotalsCostWithOnchain = summary?.totals.total_fee_cost_with_onchain_sats ?? (summaryTotalsOffchainCost + summaryTotalsOnchainCost)
+  const summaryTotalsNetWithKeysend = summary?.totals.net_with_keysend_sats ?? ((summary?.totals.net_routing_profit_sats ?? 0) + (summary?.totals.keysend_received_sats ?? 0))
+  const summaryTotalsNetWithOnchain = summaryTotalsNetWithKeysend - summaryTotalsOnchainCost
   const summaryAveragesOffchainCost = summary?.averages.offchain_fee_cost_sats ?? summary?.averages.total_fee_cost_sats ?? ((summary?.averages.rebalance_fee_cost_sats ?? 0) + (summary?.averages.payment_fee_cost_sats ?? 0))
   const summaryAveragesOnchainCost = summary?.averages.onchain_fee_cost_sats ?? 0
   const summaryAveragesCostWithOnchain = summary?.averages.total_fee_cost_with_onchain_sats ?? (summaryAveragesOffchainCost + summaryAveragesOnchainCost)
+  const summaryAveragesNetWithKeysend = summary?.averages.net_with_keysend_sats ?? ((summary?.averages.net_routing_profit_sats ?? 0) + (summary?.averages.keysend_received_sats ?? 0))
+  const summaryAveragesNetWithOnchain = summaryAveragesNetWithKeysend - summaryAveragesOnchainCost
   const renderGranularityToggle = () => (
     <div className="inline-flex items-center gap-1 rounded-full bg-white/10 p-1">
       {chartGranularityOptions.map((option) => (
@@ -901,7 +905,10 @@ export default function Reports() {
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.totals.payment_fee_cost_sats ?? 0)}</p>
                 <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.totals.keysend_received_sats ?? 0)}</p>
                 <p className="text-fog">{t('reports.routingNet')} {formatSats(summary.totals.net_routing_profit_sats)}</p>
-                <p className="text-fog/80">{t('reports.netWithKeysend')} {formatSats(summary.totals.net_with_keysend_sats ?? ((summary.totals.net_routing_profit_sats ?? 0) + (summary.totals.keysend_received_sats ?? 0)))}</p>
+                <p className="text-fog/80">{t('reports.netWithKeysend')} {formatSats(summaryTotalsNetWithKeysend)}</p>
+                <p className={summaryTotalsNetWithOnchain < 0 ? 'text-rose-400' : 'text-fog/80'}>
+                  {t('reports.netWithOnchain')} {formatSats(summaryTotalsNetWithOnchain)}
+                </p>
               </div>
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.averagesPerDay')}</p>
@@ -913,7 +920,10 @@ export default function Reports() {
                 <p className="text-fog/80">{t('reports.payments')} {formatSats(summary.averages.payment_fee_cost_sats ?? 0)}</p>
                 <p style={{ color: COLORS.keysend }}>{t('reports.keysendReceived')} {formatSats(summary.averages.keysend_received_sats ?? 0)}</p>
                 <p className="text-fog">{t('reports.routingNet')} {formatSats(summary.averages.net_routing_profit_sats)}</p>
-                <p className="text-fog/80">{t('reports.netWithKeysend')} {formatSats(summary.averages.net_with_keysend_sats ?? ((summary.averages.net_routing_profit_sats ?? 0) + (summary.averages.keysend_received_sats ?? 0)))}</p>
+                <p className="text-fog/80">{t('reports.netWithKeysend')} {formatSats(summaryAveragesNetWithKeysend)}</p>
+                <p className={summaryAveragesNetWithOnchain < 0 ? 'text-rose-400' : 'text-fog/80'}>
+                  {t('reports.netWithOnchain')} {formatSats(summaryAveragesNetWithOnchain)}
+                </p>
               </div>
               <div className="rounded-2xl bg-white/5 px-4 py-3">
                 <p className="text-xs uppercase tracking-wide text-fog/50">{t('reports.activity')}</p>
@@ -1153,7 +1163,7 @@ export default function Reports() {
         {cumulativeCostData.length === 0 && !seriesLoading && !seriesError ? (
           <p className="text-sm text-fog/60">{t('reports.noData')}</p>
         ) : (
-          <div className="h-[26rem]">
+          <div className="h-[52rem]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={cumulativeCostData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />

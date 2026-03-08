@@ -670,6 +670,7 @@
     "keysendCount": "Keysend count",
     "net": "Net",
     "netWithKeysend": "Net (routing + keysend)",
+    "netWithOnchain": "Net (routing + keysend - on-chain)",
     "offchainCost": "Offchain cost",
     "routingNet": "Routing net",
     "netRoutingProfit": "Net routing profit",
