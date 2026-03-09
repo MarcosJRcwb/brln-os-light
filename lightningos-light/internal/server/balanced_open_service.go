@@ -1555,32 +1555,7 @@ func (s *BalancedOpenService) CancelSession(ctx context.Context, sessionID strin
 	if isBalancedOpenTerminalState(current.State) {
 		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 	}
-
-	meta, _ := decodeBalancedOpenMetadata(current.Metadata)
-	pendingChanIDHex := strings.TrimSpace(meta.PendingChanID)
-	if normalizeBalancedExecutionMode(meta.ExecutionMode) == balancedOpenExecutionModeDual &&
-		pendingChanIDHex != "" &&
-		current.State != balancedOpenStateActive {
-		if pendingChanID, decodeErr := hex.DecodeString(pendingChanIDHex); decodeErr == nil && len(pendingChanID) > 0 {
-			if shimErr := s.lnd.CancelFundingShim(ctx, pendingChanID); shimErr != nil && !isBalancedOpenShimCancelIgnorable(shimErr) {
-				_, _ = s.transitionSessionWithMetadata(ctx, current.SessionID, current.State, shimErr.Error(), "funding_shim_cancel_failed", map[string]any{
-					"execution_mode":  balancedOpenExecutionModeDual,
-					"pending_chan_id": pendingChanIDHex,
-				}, map[string]any{
-					"last_execution_err":        shimErr.Error(),
-					"last_execution_error_unix": time.Now().UTC().Unix(),
-				})
-			} else if shimErr == nil {
-				_, _ = s.transitionSessionWithMetadata(ctx, current.SessionID, current.State, "", "funding_shim_canceled", map[string]any{
-					"execution_mode":  balancedOpenExecutionModeDual,
-					"pending_chan_id": pendingChanIDHex,
-				}, map[string]any{
-					"last_execution_err":        "",
-					"last_execution_error_unix": int64(0),
-				})
-			}
-		}
-	}
+	s.tryCancelDualFundingShim(ctx, current)
 
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -1635,6 +1610,39 @@ returning
 	}
 
 	return session, nil
+}
+
+func (s *BalancedOpenService) tryCancelDualFundingShim(ctx context.Context, session BalancedOpenSession) {
+	meta, _ := decodeBalancedOpenMetadata(session.Metadata)
+	pendingChanIDHex := strings.TrimSpace(meta.PendingChanID)
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual ||
+		pendingChanIDHex == "" ||
+		session.State == balancedOpenStateActive {
+		return
+	}
+	pendingChanID, decodeErr := hex.DecodeString(pendingChanIDHex)
+	if decodeErr != nil || len(pendingChanID) == 0 {
+		return
+	}
+	if shimErr := s.lnd.CancelFundingShim(ctx, pendingChanID); shimErr != nil {
+		if !isBalancedOpenShimCancelIgnorable(shimErr) {
+			_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, shimErr.Error(), "funding_shim_cancel_failed", map[string]any{
+				"execution_mode":  balancedOpenExecutionModeDual,
+				"pending_chan_id": pendingChanIDHex,
+			}, map[string]any{
+				"last_execution_err":        shimErr.Error(),
+				"last_execution_error_unix": time.Now().UTC().Unix(),
+			})
+		}
+		return
+	}
+	_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "funding_shim_canceled", map[string]any{
+		"execution_mode":  balancedOpenExecutionModeDual,
+		"pending_chan_id": pendingChanIDHex,
+	}, map[string]any{
+		"last_execution_err":        "",
+		"last_execution_error_unix": int64(0),
+	})
 }
 
 func isBalancedOpenShimCancelIgnorable(err error) bool {
@@ -2125,8 +2133,10 @@ func (s *BalancedOpenService) markCanceledFromPeer(ctx context.Context, sender s
 		return BalancedOpenSession{}, ErrBalancedOpenInvalidPeerKey
 	}
 	if isBalancedOpenTerminalState(session.State) {
+		s.tryCancelDualFundingShim(ctx, session)
 		return session, nil
 	}
+	s.tryCancelDualFundingShim(ctx, session)
 
 	reason := strings.TrimSpace(msg.Reason)
 	if reason == "" {
