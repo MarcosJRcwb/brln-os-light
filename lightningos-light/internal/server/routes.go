@@ -138,6 +138,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/balanced-open/sessions/{id}/propose", s.handleBalancedOpenSessionProposePost)
 		r.Post("/balanced-open/sessions/{id}/accept", s.handleBalancedOpenSessionAcceptPost)
 		r.Post("/balanced-open/sessions/{id}/execute", s.handleBalancedOpenSessionExecutePost)
+		r.Post("/balanced-open/sessions/{id}/retry-broadcast", s.handleBalancedOpenSessionRetryBroadcastPost)
 		r.Post("/balanced-open/sessions/{id}/recover", s.handleBalancedOpenSessionRecoverPost)
 		r.Post("/balanced-open/sessions/{id}/cancel", s.handleBalancedOpenSessionCancelPost)
 		r.Get("/node-retirement/status", s.handleNodeRetirementStatusGet)

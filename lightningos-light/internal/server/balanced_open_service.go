@@ -905,7 +905,11 @@ func (s *BalancedOpenService) ensureInitiatorDualBroadcastFromMetadata(ctx conte
 		return updated, publishErr
 	}
 
-	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateFundingBroadcasted, "", "funding_broadcasted_reconcile", map[string]any{
+	nextState := balancedOpenStateFundingBroadcasted
+	if session.State == balancedOpenStatePendingOpenDetected {
+		nextState = balancedOpenStatePendingOpenDetected
+	}
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, nextState, "", "funding_broadcasted_reconcile", map[string]any{
 		"execution_mode": balancedOpenExecutionModeDual,
 		"funding_tx_id":  strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
 		"funding_tx_vout": meta.FundingTxVout,
@@ -1643,6 +1647,48 @@ func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, session
 	}, patch)
 	if err != nil {
 		return BalancedOpenSession{}, err
+	}
+	return updated, nil
+}
+
+func (s *BalancedOpenService) RetrySessionBroadcast(ctx context.Context, sessionID string) (BalancedOpenSession, error) {
+	if s == nil || s.db == nil {
+		return BalancedOpenSession{}, ErrBalancedOpenDBUnavailable
+	}
+
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if isBalancedOpenTerminalState(session.State) {
+		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
+	}
+	if session.Role != balancedOpenRoleInitiator {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if session.State != balancedOpenStateChannelProposed &&
+		session.State != balancedOpenStatePendingOpenDetected &&
+		session.State != balancedOpenStateRecoveryRequired {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if strings.TrimSpace(meta.ChannelPoint) == "" {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+	if !balancedTxHexAppearsSigned(meta.FundingTxHex) {
+		return BalancedOpenSession{}, ErrBalancedOpenInvalidAction
+	}
+
+	updated, err := s.ensureInitiatorDualBroadcastFromMetadata(ctx, session)
+	if err != nil {
+		return updated, err
 	}
 	return updated, nil
 }

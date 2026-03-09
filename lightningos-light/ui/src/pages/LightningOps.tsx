@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { acceptBalancedOpenSession, addLnWatchtower, boostPeers, cancelBalancedOpenSession, closeChannel, connectPeer, createBalancedOpenSession, disconnectPeer, executeBalancedOpenSession, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBalancedOpenSessionEvents, getBalancedOpenSessions, getBalancedOpenStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, proposeBalancedOpenSession, recoverBalancedOpenSession, removeLnWatchtower, restoreLnScb, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
+import { acceptBalancedOpenSession, addLnWatchtower, boostPeers, cancelBalancedOpenSession, closeChannel, connectPeer, createBalancedOpenSession, disconnectPeer, executeBalancedOpenSession, getAmbossHealth, getAutofeeChannels, getAutofeeConfig, getAutofeeResults, getAutofeeStatus, getBalancedOpenSessionEvents, getBalancedOpenSessions, getBalancedOpenStatus, getBitcoinLocalStatus, getLnChanHeal, getLnChannelFees, getLnChannels, getLnHtlcManager, getLnHtlcManagerFailed, getLnHtlcManagerLogs, getLnPeers, getLnTorPeerChecker, getLnTorPeerCheckerLogs, getLnWatchtowers, getMempoolFees, openBatchChannels, openChannel, proposeBalancedOpenSession, recoverBalancedOpenSession, removeLnWatchtower, restoreLnScb, retryBalancedOpenSessionBroadcast, runAutofee, signLnMessage, updateAmbossHealth, updateAutofeeChannels, updateAutofeeConfig, updateChannelFees, updateLnChanHeal, updateLnChannelStatus, updateLnHtlcManager, updateLnTorPeerChecker } from '../api'
 
 type Channel = {
   channel_point: string
@@ -2513,6 +2513,28 @@ export default function LightningOps() {
     return session.role === 'initiator' && isBalancedOpenProposeEligible(session.state)
   }
 
+  const balancedOpenHasSignedFundingTxHex = (session: BalancedOpenSession) => {
+    const txHex = balancedOpenMetadataString(session, 'funding_tx_hex').toLowerCase()
+    if (!txHex) return false
+    if (txHex.length < 200 || txHex.length % 2 !== 0) return false
+    return /^[0-9a-f]+$/.test(txHex)
+  }
+
+  const canRetryBalancedBroadcastSession = (session: BalancedOpenSession) => {
+    if (session.role !== 'initiator') return false
+    if (balancedOpenSessionExecutionMode(session) !== 'dual_funded_v1') return false
+    if (
+      session.state !== 'channel_proposed_to_lnd' &&
+      session.state !== 'pending_open_detected' &&
+      session.state !== 'recovery_required'
+    ) {
+      return false
+    }
+    if (!balancedOpenSessionChannelPoint(session)) return false
+    if (!balancedOpenHasSignedFundingTxHex(session)) return false
+    return true
+  }
+
   const balancedOpenSessionExecutionMode = (session: BalancedOpenSession) => {
     const raw = session?.metadata?.execution_mode
     if (typeof raw !== 'string') return ''
@@ -2641,8 +2663,13 @@ export default function LightningOps() {
         return t('lightningOps.balancedOpenEventAccepted')
       case 'channel_open_submitted':
         return t('lightningOps.balancedOpenEventOpenSubmitted')
+      case 'channel_open_acknowledged':
+        return t('lightningOps.balancedOpenEventOpenAcknowledged')
       case 'funding_broadcasted_local':
+      case 'funding_broadcasted_reconcile':
         return t('lightningOps.balancedOpenEventFundingBroadcasted')
+      case 'funding_broadcast_retry_failed':
+        return t('lightningOps.balancedOpenEventFundingBroadcastRetryFailed')
       case 'pending_open_detected':
         return t('lightningOps.balancedOpenEventPendingDetected')
       case 'channel_active_detected':
@@ -3466,7 +3493,7 @@ export default function LightningOps() {
     }
   }
 
-  const handleBalancedOpenAction = async (session: BalancedOpenSession, action: 'propose' | 'accept' | 'execute' | 'recover' | 'cancel') => {
+  const handleBalancedOpenAction = async (session: BalancedOpenSession, action: 'propose' | 'accept' | 'execute' | 'retry_broadcast' | 'recover' | 'cancel') => {
     if (balancedOpenActionBusyID) return
     const sessionID = String(session.session_id || '').trim()
     if (!sessionID) return
@@ -3485,6 +3512,10 @@ export default function LightningOps() {
         setBalancedOpenStatus(t('lightningOps.balancedOpenExecuting'))
         await executeBalancedOpenSession(sessionID)
         setBalancedOpenStatus(t('lightningOps.balancedOpenExecutionSubmitted'))
+      } else if (action === 'retry_broadcast') {
+        setBalancedOpenStatus(t('lightningOps.balancedOpenRetryBroadcasting'))
+        await retryBalancedOpenSessionBroadcast(sessionID)
+        setBalancedOpenStatus(t('lightningOps.balancedOpenRetryBroadcastSubmitted'))
       } else if (action === 'recover') {
         const confirmed = window.confirm(t('lightningOps.balancedOpenRecoverConfirm'))
         if (!confirmed) return
@@ -5303,6 +5334,11 @@ export default function LightningOps() {
                     {canExecuteBalancedSession(session) && (
                       <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'execute')} disabled={sessionBusy}>
                         {t('lightningOps.balancedOpenActionExecute')}
+                      </button>
+                    )}
+                    {canRetryBalancedBroadcastSession(session) && (
+                      <button className="btn-secondary text-xs px-3 py-1.5" type="button" onClick={() => handleBalancedOpenAction(session, 'retry_broadcast')} disabled={sessionBusy}>
+                        {t('lightningOps.balancedOpenActionRetryBroadcast')}
                       </button>
                     )}
                     {canRecoverBalancedSession(session) && (
