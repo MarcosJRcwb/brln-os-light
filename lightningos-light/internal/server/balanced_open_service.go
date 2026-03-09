@@ -837,25 +837,37 @@ func (s *BalancedOpenService) ProposeSession(ctx context.Context, sessionID stri
 	}
 
 	if mode == balancedOpenExecutionModeDual {
+		localFundingSat := session.CapacitySat
 		artifactsReady := isValidPubkeyHex(meta.InitiatorMultisigKey.PublicKey) && hasBalancedTransit(meta.InitiatorTransit, true)
+		preflightSpendingSat := localFundingSat
+		prefundTransitSat := int64(0)
 		if !artifactsReady {
-			localFundingSat := session.CapacitySat
-			budget, precheckErr := s.ensureBalancedOnchainBudget(ctx, localFundingSat, balancedOpenAnchorSafetySat)
-			if precheckErr != nil {
-				_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, precheckErr.Error(), "proposal_preflight_failed", map[string]any{
-					"execution_mode":          balancedOpenExecutionModeDual,
-					"local_funding_sat":       localFundingSat,
-					"estimated_spendable_sat": budget.EstimatedSpendableSat,
-					"total_sat":               budget.TotalSat,
-					"locked_sat":              budget.LockedSat,
-					"reserved_anchor_sat":     budget.ReservedAnchorSat,
-					"required_remaining_sat":  balancedOpenAnchorSafetySat,
-				}, map[string]any{
-					"last_execution_err":        precheckErr.Error(),
-					"last_execution_error_unix": time.Now().UTC().Unix(),
-				})
-				return BalancedOpenSession{}, precheckErr
+			feeRate := balancedEffectiveFeeRate(session.FeeRateSatVb)
+			transitSat, transitErr := balancedTransitContribution(session.CapacitySat, feeRate)
+			if transitErr != nil {
+				return BalancedOpenSession{}, transitErr
 			}
+			prefundTransitSat = transitSat
+			preflightSpendingSat += transitSat
+		}
+
+		budget, precheckErr := s.ensureBalancedOnchainBudget(ctx, preflightSpendingSat, balancedOpenAnchorSafetySat)
+		if precheckErr != nil {
+			_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, precheckErr.Error(), "proposal_preflight_failed", map[string]any{
+				"execution_mode":          balancedOpenExecutionModeDual,
+				"local_funding_sat":       localFundingSat,
+				"preflight_spending_sat":  preflightSpendingSat,
+				"prefund_transit_sat":     prefundTransitSat,
+				"estimated_spendable_sat": budget.EstimatedSpendableSat,
+				"total_sat":               budget.TotalSat,
+				"locked_sat":              budget.LockedSat,
+				"reserved_anchor_sat":     budget.ReservedAnchorSat,
+				"required_remaining_sat":  balancedOpenAnchorSafetySat,
+			}, map[string]any{
+				"last_execution_err":        precheckErr.Error(),
+				"last_execution_error_unix": time.Now().UTC().Unix(),
+			})
+			return BalancedOpenSession{}, precheckErr
 		}
 
 		nextMeta, created, err := s.ensureInitiatorDualArtifacts(ctx, session, meta)
