@@ -2668,8 +2668,16 @@ export default function LightningOps() {
       case 'funding_broadcasted_local':
       case 'funding_broadcasted_reconcile':
         return t('lightningOps.balancedOpenEventFundingBroadcasted')
+      case 'funding_broadcast_observed_after_error':
+        return t('lightningOps.balancedOpenEventFundingObservedAfterError')
+      case 'funding_broadcast_observed_after_retry_error':
+        return t('lightningOps.balancedOpenEventFundingObservedAfterRetryError')
       case 'funding_broadcast_retry_failed':
         return t('lightningOps.balancedOpenEventFundingBroadcastRetryFailed')
+      case 'proposal_preflight_failed':
+        return t('lightningOps.balancedOpenEventProposalPreflightFailed')
+      case 'accept_preflight_failed':
+        return t('lightningOps.balancedOpenEventAcceptPreflightFailed')
       case 'pending_open_detected':
         return t('lightningOps.balancedOpenEventPendingDetected')
       case 'channel_active_detected':

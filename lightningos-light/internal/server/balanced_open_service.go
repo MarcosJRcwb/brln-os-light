@@ -698,20 +698,29 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 	}
 
 	if err := s.lnd.PublishTransaction(ctx, finalTxHex, fmt.Sprintf("balanced-open-%s", submitted.SessionID)); err != nil {
-		errText := strings.ToLower(strings.TrimSpace(err.Error()))
-		alreadyPublished := strings.Contains(errText, "already have transaction") ||
-			strings.Contains(errText, "transaction already in block chain") ||
-			strings.Contains(errText, "already exists")
-		if !alreadyPublished {
-			_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "funding_broadcast_failed", map[string]any{
+		if !isBalancedOpenAlreadyPublishedError(err) {
+			channelPointHint := balancedOpenCanonicalChannelPointFromString(channelPoint)
+			observed := s.isBalancedOpenFundingObserved(ctx, submitted, channelPointHint, plan.FundingTxID, meta.InitiatorTransit, meta.AccepterTransit)
+			if !observed {
+				_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "funding_broadcast_failed", map[string]any{
+					"execution_mode": balancedOpenExecutionModeDual,
+					"funding_tx_id":  plan.FundingTxID,
+				}, map[string]any{
+					"last_execution_err":        err.Error(),
+					"last_execution_error_unix": time.Now().UTC().Unix(),
+					"funding_tx_hex":            finalTxHex,
+				})
+				return BalancedOpenSession{}, err
+			}
+			_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, submitted.State, "", "funding_broadcast_observed_after_error", map[string]any{
 				"execution_mode": balancedOpenExecutionModeDual,
 				"funding_tx_id":  plan.FundingTxID,
+				"channel_point":  channelPointHint,
+				"publish_error":  err.Error(),
 			}, map[string]any{
-				"last_execution_err":        err.Error(),
-				"last_execution_error_unix": time.Now().UTC().Unix(),
-				"funding_tx_hex":            finalTxHex,
+				"last_execution_err":        "",
+				"last_execution_error_unix": int64(0),
 			})
-			return BalancedOpenSession{}, err
 		}
 	}
 
@@ -874,6 +883,52 @@ func (s *BalancedOpenService) canPromoteBalancedPending(ctx context.Context, ses
 	return true
 }
 
+func (s *BalancedOpenService) isBalancedOpenFundingObserved(
+	ctx context.Context,
+	session BalancedOpenSession,
+	channelPointHint string,
+	fundingTxID string,
+	localTransit balancedOpenTransitDetails,
+	peerTransit balancedOpenTransitDetails,
+) bool {
+	point := balancedOpenCanonicalChannelPointFromString(channelPointHint)
+	if point != "" {
+		pending, err := s.lnd.ListPendingChannels(ctx)
+		if err == nil {
+			if _, found := matchBalancedOpenPendingChannel(session, point, pending); found {
+				return true
+			}
+		}
+		active, err := s.lnd.ListChannels(ctx)
+		if err == nil {
+			if _, found := matchBalancedOpenActiveChannel(session, point, active); found {
+				return true
+			}
+		}
+	}
+
+	expectedFundingTxID := strings.ToLower(strings.TrimSpace(fundingTxID))
+	if expectedFundingTxID == "" {
+		return false
+	}
+	if hasBalancedTransit(localTransit, false) {
+		if spendingTxid, found, err := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout); err == nil && found {
+			if strings.EqualFold(strings.TrimSpace(spendingTxid), expectedFundingTxID) {
+				return true
+			}
+		}
+	}
+	if hasBalancedTransit(peerTransit, false) {
+		if spendingTxid, found, err := s.lnd.FindSpendingTransactionByOutpoint(ctx, peerTransit.TxID, peerTransit.Vout); err == nil && found {
+			if strings.EqualFold(strings.TrimSpace(spendingTxid), expectedFundingTxID) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func (s *BalancedOpenService) ensureInitiatorDualBroadcastFromMetadata(ctx context.Context, session BalancedOpenSession) (BalancedOpenSession, error) {
 	meta, err := decodeBalancedOpenMetadata(session.Metadata)
 	if err != nil {
@@ -892,17 +947,29 @@ func (s *BalancedOpenService) ensureInitiatorDualBroadcastFromMetadata(ctx conte
 
 	publishErr := s.lnd.PublishTransaction(ctx, txHex, fmt.Sprintf("balanced-open-reconcile-%s", session.SessionID))
 	if publishErr != nil && !isBalancedOpenAlreadyPublishedError(publishErr) {
-		updated, txErr := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecoveryRequired, publishErr.Error(), "funding_broadcast_retry_failed", map[string]any{
+		observed := s.isBalancedOpenFundingObserved(ctx, session, strings.TrimSpace(meta.ChannelPoint), meta.FundingTxID, meta.InitiatorTransit, meta.AccepterTransit)
+		if !observed {
+			updated, txErr := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecoveryRequired, publishErr.Error(), "funding_broadcast_retry_failed", map[string]any{
+				"execution_mode": balancedOpenExecutionModeDual,
+				"funding_tx_id":  strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
+			}, map[string]any{
+				"last_execution_err":        publishErr.Error(),
+				"last_execution_error_unix": time.Now().UTC().Unix(),
+			})
+			if txErr != nil {
+				return session, txErr
+			}
+			return updated, publishErr
+		}
+		_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "funding_broadcast_observed_after_retry_error", map[string]any{
 			"execution_mode": balancedOpenExecutionModeDual,
 			"funding_tx_id":  strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
+			"channel_point":  strings.TrimSpace(meta.ChannelPoint),
+			"publish_error":  publishErr.Error(),
 		}, map[string]any{
-			"last_execution_err":        publishErr.Error(),
-			"last_execution_error_unix": time.Now().UTC().Unix(),
+			"last_execution_err":        "",
+			"last_execution_error_unix": int64(0),
 		})
-		if txErr != nil {
-			return session, txErr
-		}
-		return updated, publishErr
 	}
 
 	nextState := balancedOpenStateFundingBroadcasted
