@@ -9,6 +9,7 @@ LightningOS Light is a Full Lightning Node Daemon Installer, Lightning node mana
 <img width="1491" height="903" alt="image" src="https://github.com/user-attachments/assets/cfda34d5-bccc-4b18-9970-bad494ae77b3" />
 <img width="1576" height="1337" alt="image" src="https://github.com/user-attachments/assets/019cfff2-f354-4c2b-a595-2a15bb228864" />
 <img width="1280" height="660" alt="image" src="https://github.com/user-attachments/assets/84489b07-8397-4195-b0d4-7e332618666d" />
+<img width="1779" height="1106" alt="image" src="https://github.com/user-attachments/assets/99f950bb-7ce0-46bf-9af0-fe12188a54cf" />
 
 
 ## Highlights
