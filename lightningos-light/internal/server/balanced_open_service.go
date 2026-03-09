@@ -680,6 +680,22 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		recoverCancel()
 		return BalancedOpenSession{}, errors.New(errMsg)
 	}
+	submitted, err = s.transitionSessionWithMetadata(ctx, submitted.SessionID, submitted.State, "", "channel_open_acknowledged", map[string]any{
+		"execution_mode": balancedOpenExecutionModeDual,
+		"channel_point":  channelPoint,
+		"funding_tx_id":  plan.FundingTxID,
+		"funding_tx_vout": plan.FundingVout,
+	}, map[string]any{
+		"channel_point":             channelPoint,
+		"funding_tx_id":             plan.FundingTxID,
+		"funding_tx_vout":           plan.FundingVout,
+		"funding_tx_hex":            finalTxHex,
+		"last_execution_err":        "",
+		"last_execution_error_unix": int64(0),
+	})
+	if err != nil {
+		return BalancedOpenSession{}, err
+	}
 
 	if err := s.lnd.PublishTransaction(ctx, finalTxHex, fmt.Sprintf("balanced-open-%s", submitted.SessionID)); err != nil {
 		errText := strings.ToLower(strings.TrimSpace(err.Error()))
@@ -766,6 +782,13 @@ func (s *BalancedOpenService) reconcileSessions(ctx context.Context) error {
 			}
 			continue
 		}
+		if session.Role == balancedOpenRoleInitiator && session.State == balancedOpenStateChannelProposed {
+			if updated, err := s.ensureInitiatorDualBroadcastFromMetadata(ctx, session); err == nil {
+				session = updated
+			} else if s.logger != nil {
+				s.logger.Printf("balanced-open: reconcile broadcast check failed session=%s err=%v", session.SessionID, err)
+			}
+		}
 
 		if err := s.tryPromoteSessionByChannelState(ctx, session, pending, active); err != nil && s.logger != nil {
 			s.logger.Printf("balanced-open: state promotion failed session=%s err=%v", session.SessionID, err)
@@ -777,10 +800,17 @@ func (s *BalancedOpenService) reconcileSessions(ctx context.Context) error {
 
 func (s *BalancedOpenService) tryPromoteSessionByChannelState(ctx context.Context, session BalancedOpenSession, pending []lndclient.PendingChannelInfo, active []lndclient.ChannelInfo) error {
 	channelPointHint := balancedOpenSessionChannelPoint(session.Metadata)
+	meta := balancedOpenMetadata{}
+	metaReady := false
 	if channelPointHint == "" {
-		if meta, err := decodeBalancedOpenMetadata(session.Metadata); err == nil {
+		if decoded, err := decodeBalancedOpenMetadata(session.Metadata); err == nil {
+			meta = decoded
+			metaReady = true
 			channelPointHint = balancedOpenCanonicalChannelPoint(meta.FundingTxID, meta.FundingTxVout)
 		}
+	} else if decoded, err := decodeBalancedOpenMetadata(session.Metadata); err == nil {
+		meta = decoded
+		metaReady = true
 	}
 
 	if activeCh, ok := matchBalancedOpenActiveChannel(session, channelPointHint, active); ok {
@@ -797,6 +827,9 @@ func (s *BalancedOpenService) tryPromoteSessionByChannelState(ctx context.Contex
 	}
 
 	if pendingCh, ok := matchBalancedOpenPendingChannel(session, channelPointHint, pending); ok {
+		if !s.canPromoteBalancedPending(ctx, session, metaReady, meta) {
+			return nil
+		}
 		if session.State != balancedOpenStatePendingOpenDetected {
 			_, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStatePendingOpenDetected, "", "pending_open_detected", map[string]any{
 				"channel_point":              pendingCh.ChannelPoint,
@@ -810,6 +843,81 @@ func (s *BalancedOpenService) tryPromoteSessionByChannelState(ctx context.Contex
 	}
 
 	return nil
+}
+
+func (s *BalancedOpenService) canPromoteBalancedPending(ctx context.Context, session BalancedOpenSession, metaReady bool, meta balancedOpenMetadata) bool {
+	if !metaReady {
+		return true
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return true
+	}
+
+	localTransit, ok := balancedOpenLocalTransitForRole(session.Role, meta)
+	if !ok {
+		return false
+	}
+	spendingTxid, found, err := s.lnd.FindSpendingTransactionByOutpoint(ctx, localTransit.TxID, localTransit.Vout)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Printf("balanced-open: pending promotion spend-check failed session=%s outpoint=%s:%d err=%v", session.SessionID, localTransit.TxID, localTransit.Vout, err)
+		}
+		return false
+	}
+	if !found || strings.TrimSpace(spendingTxid) == "" {
+		return false
+	}
+	expectedFundingTxid := strings.ToLower(strings.TrimSpace(meta.FundingTxID))
+	if expectedFundingTxid != "" && !strings.EqualFold(expectedFundingTxid, spendingTxid) {
+		return false
+	}
+	return true
+}
+
+func (s *BalancedOpenService) ensureInitiatorDualBroadcastFromMetadata(ctx context.Context, session BalancedOpenSession) (BalancedOpenSession, error) {
+	meta, err := decodeBalancedOpenMetadata(session.Metadata)
+	if err != nil {
+		return session, err
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return session, nil
+	}
+	if strings.TrimSpace(meta.ChannelPoint) == "" {
+		return session, nil
+	}
+	txHex := strings.TrimSpace(meta.FundingTxHex)
+	if !balancedTxHexAppearsSigned(txHex) {
+		return session, nil
+	}
+
+	publishErr := s.lnd.PublishTransaction(ctx, txHex, fmt.Sprintf("balanced-open-reconcile-%s", session.SessionID))
+	if publishErr != nil && !isBalancedOpenAlreadyPublishedError(publishErr) {
+		updated, txErr := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecoveryRequired, publishErr.Error(), "funding_broadcast_retry_failed", map[string]any{
+			"execution_mode": balancedOpenExecutionModeDual,
+			"funding_tx_id":  strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
+		}, map[string]any{
+			"last_execution_err":        publishErr.Error(),
+			"last_execution_error_unix": time.Now().UTC().Unix(),
+		})
+		if txErr != nil {
+			return session, txErr
+		}
+		return updated, publishErr
+	}
+
+	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateFundingBroadcasted, "", "funding_broadcasted_reconcile", map[string]any{
+		"execution_mode": balancedOpenExecutionModeDual,
+		"funding_tx_id":  strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
+		"funding_tx_vout": meta.FundingTxVout,
+		"channel_point":  strings.TrimSpace(meta.ChannelPoint),
+	}, map[string]any{
+		"last_execution_err":        "",
+		"last_execution_error_unix": int64(0),
+	})
+	if err != nil {
+		return session, err
+	}
+	return updated, nil
 }
 
 func (s *BalancedOpenService) ProposeSession(ctx context.Context, sessionID string) (BalancedOpenSession, error) {
@@ -3000,6 +3108,29 @@ func cloneBalancedWitness(src wire.TxWitness) wire.TxWitness {
 		out = append(out, append([]byte(nil), item...))
 	}
 	return out
+}
+
+func balancedTxHexAppearsSigned(txHex string) bool {
+	raw, err := hex.DecodeString(strings.TrimSpace(txHex))
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return false
+	}
+	if len(tx.TxIn) == 0 {
+		return false
+	}
+	for _, input := range tx.TxIn {
+		if input == nil {
+			return false
+		}
+		if len(input.Witness) == 0 && len(input.SignatureScript) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func balancedEffectiveFeeRate(value int64) int64 {
