@@ -1549,6 +1549,8 @@
     "balancedOpenEventFundingBroadcastRetryFailed": "Funding broadcast retry failed",
     "balancedOpenEventProposalPreflightFailed": "Proposal preflight failed",
     "balancedOpenEventAcceptPreflightFailed": "Accept preflight failed",
+    "balancedOpenEventFundingShimCanceled": "Funding shim canceled",
+    "balancedOpenEventFundingShimCancelFailed": "Funding shim cancel failed",
     "balancedOpenEventPendingDetected": "Pending open detected",
     "balancedOpenEventActiveDetected": "Channel active detected",
     "balancedOpenEventAnchorPrecheckFailed": "Anchor reserve pre-check failed",

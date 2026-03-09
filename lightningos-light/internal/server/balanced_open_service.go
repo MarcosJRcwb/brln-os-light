@@ -1556,6 +1556,32 @@ func (s *BalancedOpenService) CancelSession(ctx context.Context, sessionID strin
 		return BalancedOpenSession{}, ErrBalancedOpenTerminalState
 	}
 
+	meta, _ := decodeBalancedOpenMetadata(current.Metadata)
+	pendingChanIDHex := strings.TrimSpace(meta.PendingChanID)
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) == balancedOpenExecutionModeDual &&
+		pendingChanIDHex != "" &&
+		current.State != balancedOpenStateActive {
+		if pendingChanID, decodeErr := hex.DecodeString(pendingChanIDHex); decodeErr == nil && len(pendingChanID) > 0 {
+			if shimErr := s.lnd.CancelFundingShim(ctx, pendingChanID); shimErr != nil && !isBalancedOpenShimCancelIgnorable(shimErr) {
+				_, _ = s.transitionSessionWithMetadata(ctx, current.SessionID, current.State, shimErr.Error(), "funding_shim_cancel_failed", map[string]any{
+					"execution_mode":  balancedOpenExecutionModeDual,
+					"pending_chan_id": pendingChanIDHex,
+				}, map[string]any{
+					"last_execution_err":        shimErr.Error(),
+					"last_execution_error_unix": time.Now().UTC().Unix(),
+				})
+			} else if shimErr == nil {
+				_, _ = s.transitionSessionWithMetadata(ctx, current.SessionID, current.State, "", "funding_shim_canceled", map[string]any{
+					"execution_mode":  balancedOpenExecutionModeDual,
+					"pending_chan_id": pendingChanIDHex,
+				}, map[string]any{
+					"last_execution_err":        "",
+					"last_execution_error_unix": int64(0),
+				})
+			}
+		}
+	}
+
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return BalancedOpenSession{}, err
@@ -1609,6 +1635,17 @@ returning
 	}
 
 	return session, nil
+}
+
+func isBalancedOpenShimCancelIgnorable(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "not found") ||
+		strings.Contains(value, "unknown") ||
+		strings.Contains(value, "no shim") ||
+		strings.Contains(value, "pending chan id")
 }
 
 func (s *BalancedOpenService) RecoverSessionTransit(ctx context.Context, sessionID string, satPerVbyte int64) (BalancedOpenSession, error) {

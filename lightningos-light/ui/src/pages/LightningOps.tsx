@@ -2678,6 +2678,10 @@ export default function LightningOps() {
         return t('lightningOps.balancedOpenEventProposalPreflightFailed')
       case 'accept_preflight_failed':
         return t('lightningOps.balancedOpenEventAcceptPreflightFailed')
+      case 'funding_shim_canceled':
+        return t('lightningOps.balancedOpenEventFundingShimCanceled')
+      case 'funding_shim_cancel_failed':
+        return t('lightningOps.balancedOpenEventFundingShimCancelFailed')
       case 'pending_open_detected':
         return t('lightningOps.balancedOpenEventPendingDetected')
       case 'channel_active_detected':

@@ -1549,6 +1549,8 @@
     "balancedOpenEventFundingBroadcastRetryFailed": "Falha na nova tentativa de broadcast do funding",
     "balancedOpenEventProposalPreflightFailed": "Pre-check da proposta falhou",
     "balancedOpenEventAcceptPreflightFailed": "Pre-check do aceite falhou",
+    "balancedOpenEventFundingShimCanceled": "Funding shim cancelado",
+    "balancedOpenEventFundingShimCancelFailed": "Falha ao cancelar funding shim",
     "balancedOpenEventPendingDetected": "Pending open detectado",
     "balancedOpenEventActiveDetected": "Canal ativo detectado",
     "balancedOpenEventAnchorPrecheckFailed": "Pre-check de reserva de anchor falhou",
