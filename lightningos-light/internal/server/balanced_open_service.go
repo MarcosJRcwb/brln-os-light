@@ -1070,6 +1070,36 @@ func (s *BalancedOpenService) AcceptSession(ctx context.Context, sessionID strin
 		mode = balancedOpenExecutionModePush
 	}
 
+	if mode == balancedOpenExecutionModeDual {
+		artifactsReady := isValidPubkeyHex(meta.AccepterMultisigKey.PublicKey) &&
+			hasBalancedTransit(meta.AccepterTransit, true) &&
+			len(meta.AccepterInputWitness) > 0
+
+		if !artifactsReady {
+			feeRate := balancedEffectiveFeeRate(session.FeeRateSatVb)
+			transitSat, transitErr := balancedTransitContribution(session.CapacitySat, feeRate)
+			if transitErr != nil {
+				return BalancedOpenSession{}, transitErr
+			}
+			budget, precheckErr := s.ensureBalancedOnchainBudget(ctx, transitSat, balancedOpenAnchorSafetySat)
+			if precheckErr != nil {
+				_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, precheckErr.Error(), "accept_preflight_failed", map[string]any{
+					"execution_mode":          balancedOpenExecutionModeDual,
+					"preflight_spending_sat":  transitSat,
+					"estimated_spendable_sat": budget.EstimatedSpendableSat,
+					"total_sat":               budget.TotalSat,
+					"locked_sat":              budget.LockedSat,
+					"reserved_anchor_sat":     budget.ReservedAnchorSat,
+					"required_remaining_sat":  balancedOpenAnchorSafetySat,
+				}, map[string]any{
+					"last_execution_err":        precheckErr.Error(),
+					"last_execution_error_unix": time.Now().UTC().Unix(),
+				})
+				return BalancedOpenSession{}, precheckErr
+			}
+		}
+	}
+
 	var localWitness []string
 	if mode == balancedOpenExecutionModeDual {
 		nextMeta, witness, created, err := s.ensureAccepterDualArtifacts(ctx, session, meta)
