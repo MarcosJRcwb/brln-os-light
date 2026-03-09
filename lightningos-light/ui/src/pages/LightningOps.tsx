@@ -102,6 +102,15 @@ type BalancedOpenStatusPayload = {
   enabled: boolean
   available: boolean
   error?: string
+  wallet?: {
+    total_sat?: number
+    confirmed_sat?: number
+    unconfirmed_sat?: number
+    locked_sat?: number
+    reserved_anchor_sat?: number
+    estimated_spendable_sat?: number
+  }
+  wallet_error?: string
 }
 
 type BalancedOpenSession = {
@@ -533,6 +542,8 @@ const LIGHTNING_OPS_ROUTE_KEY = 'lightning-ops'
 const REBALANCE_ROUTE_KEY = 'rebalance-center'
 const CHANNEL_HASH_PARAM = 'channel_point'
 const SCB_RECOVERY_CONFIRM_PHRASE = 'I UNDERSTAND FORCE CLOSE'
+const BALANCED_OPEN_FUNDING_VBYTES = 190
+const BALANCED_OPEN_REQUIRED_REMAINING_SAT = 10000
 
 const readHashChannelPoint = (routeKey: string) => {
   if (typeof window === 'undefined') return ''
@@ -793,6 +804,30 @@ export default function LightningOps() {
     if (typeof value !== 'number' || value < 0) return '-'
     return value.toLocaleString()
   }
+
+  const balancedCapacitySat = Math.trunc(Number(balancedCapacity || 0))
+  const balancedFeeRateEstimateSatVb = Math.max(
+    1,
+    Math.trunc(Number(balancedFeeRate || 0)) || Math.trunc(Number(openFeeHint?.fastest || 0)) || 1,
+  )
+  const balancedTransitSatEstimate = balancedCapacitySat > 0
+    ? Math.floor((balancedCapacitySat + (BALANCED_OPEN_FUNDING_VBYTES * balancedFeeRateEstimateSatVb)) / 2)
+    : 0
+  const balancedPreflightSpendingSat = balancedCapacitySat > 0
+    ? balancedCapacitySat + balancedTransitSatEstimate
+    : 0
+  const balancedRequiredSpendableSat = balancedCapacitySat > 0
+    ? balancedPreflightSpendingSat + BALANCED_OPEN_REQUIRED_REMAINING_SAT
+    : 0
+  const balancedWalletConfirmedSat = Math.max(0, Math.trunc(Number(balancedOpenInfo?.wallet?.confirmed_sat || 0)))
+  const balancedWalletSpendableSat = Math.max(0, Math.trunc(Number(balancedOpenInfo?.wallet?.estimated_spendable_sat || 0)))
+  const balancedWalletLockedSat = Math.max(0, Math.trunc(Number(balancedOpenInfo?.wallet?.locked_sat || 0)))
+  const balancedWalletReservedAnchorSat = Math.max(0, Math.trunc(Number(balancedOpenInfo?.wallet?.reserved_anchor_sat || 0)))
+  const balancedRequiredConfirmedSat = balancedRequiredSpendableSat > 0
+    ? balancedRequiredSpendableSat + balancedWalletLockedSat + balancedWalletReservedAnchorSat
+    : 0
+  const balancedSpendableEnough = balancedRequiredSpendableSat > 0 && balancedWalletSpendableSat >= balancedRequiredSpendableSat
+  const balancedConfirmedEnough = balancedRequiredConfirmedSat > 0 && balancedWalletConfirmedSat >= balancedRequiredConfirmedSat
 
   const autofeeProfileDefaults: Record<string, { interval: number; cooldownUp: number; cooldownDown: number }> = {
     conservative: { interval: 8, cooldownUp: 6, cooldownDown: 8 },
@@ -5188,6 +5223,42 @@ export default function LightningOps() {
             {balancedOpenBusy ? t('lightningOps.balancedOpenRunning') : t('lightningOps.balancedOpenCreateAndPropose')}
           </button>
         </div>
+        {balancedOpenInfo?.enabled && balancedOpenInfo?.available && balancedCapacitySat > 0 && (
+          <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-xs space-y-1">
+            <p className="text-fog/80">
+              {t('lightningOps.balancedOpenFundsPreviewTitle', {
+                feeRate: balancedFeeRateEstimateSatVb,
+                fundingVbytes: BALANCED_OPEN_FUNDING_VBYTES,
+              })}
+            </p>
+            <p className="text-fog/70">
+              {t('lightningOps.balancedOpenFundsPreviewSpendable', {
+                required: balancedRequiredSpendableSat.toLocaleString(),
+                current: balancedWalletSpendableSat.toLocaleString(),
+              })}
+            </p>
+            <p className="text-fog/70">
+              {t('lightningOps.balancedOpenFundsPreviewConfirmed', {
+                required: balancedRequiredConfirmedSat.toLocaleString(),
+                current: balancedWalletConfirmedSat.toLocaleString(),
+              })}
+            </p>
+            <p className={balancedSpendableEnough && balancedConfirmedEnough ? 'text-emerald-200' : 'text-amber-200'}>
+              {balancedSpendableEnough && balancedConfirmedEnough
+                ? t('lightningOps.balancedOpenFundsPreviewEnough')
+                : t('lightningOps.balancedOpenFundsPreviewInsufficient')}
+            </p>
+            {!balancedSpendableEnough && (
+              <p className="text-fog/60">
+                {t('lightningOps.balancedOpenFundsPreviewWhy', {
+                  anchor: balancedWalletReservedAnchorSat.toLocaleString(),
+                  remaining: BALANCED_OPEN_REQUIRED_REMAINING_SAT.toLocaleString(),
+                })}
+              </p>
+            )}
+            {balancedOpenInfo?.wallet_error ? <p className="text-amber-200">{balancedOpenInfo.wallet_error}</p> : null}
+          </div>
+        )}
         <p className="text-xs text-fog/50">{t('lightningOps.balancedOpenNote')}</p>
         {balancedOpenInfo?.error && !balancedOpenInfo?.available && (
           <p className="text-xs text-amber-200">{balancedOpenInfo.error}</p>

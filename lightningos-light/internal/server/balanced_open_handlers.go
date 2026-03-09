@@ -33,6 +33,23 @@ func (s *Server) handleBalancedOpenStatusGet(w http.ResponseWriter, r *http.Requ
 	if errMsg != "" {
 		payload["error"] = errMsg
 	}
+	if available {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		details, detailsErr := s.lnd.GetWalletBalanceDetails(ctx)
+		cancel()
+		if detailsErr == nil {
+			payload["wallet"] = map[string]int64{
+				"total_sat":               details.TotalSat,
+				"confirmed_sat":           details.ConfirmedSat,
+				"unconfirmed_sat":         details.UnconfirmedSat,
+				"locked_sat":              details.LockedSat,
+				"reserved_anchor_sat":     details.ReservedAnchorSat,
+				"estimated_spendable_sat": details.EstimatedSpendableSat,
+			}
+		} else {
+			payload["wallet_error"] = lndStatusMessage(detailsErr)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, payload)
 }
