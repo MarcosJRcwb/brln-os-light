@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,20 +31,23 @@ import (
 )
 
 const (
-	balancedOpenDefaultListLimit  = 50
-	balancedOpenMaxListLimit      = 500
-	balancedOpenDefaultEventList  = 100
-	balancedOpenMaxEventList      = 500
-	balancedOpenMinCapacitySat    = 20000
-	balancedOpenProtocolVersion   = 1
-	balancedOpenCustomMsgType     = uint32(42069)
-	balancedOpenReconcileEvery    = 20 * time.Second
-	balancedOpenExecutionModePush = "push_sat_v1"
-	balancedOpenExecutionModeDual = "dual_funded_v1"
-	balancedOpenMultiSigKeyFamily = int32(0)
-	balancedOpenTransitKeyFamily  = int32(805)
-	balancedOpenFundingVBytes     = int64(190)
-	balancedOpenAnchorSafetySat   = int64(10000)
+	balancedOpenDefaultListLimit         = 50
+	balancedOpenMaxListLimit             = 500
+	balancedOpenDefaultEventList         = 100
+	balancedOpenMaxEventList             = 500
+	balancedOpenMinCapacitySat           = 20000
+	balancedOpenProtocolVersion          = 1
+	balancedOpenCustomMsgType            = uint32(42069)
+	balancedOpenReconcileEvery           = 20 * time.Second
+	balancedOpenExecutionModePush        = "push_sat_v1"
+	balancedOpenExecutionModeDual        = "dual_funded_v1"
+	balancedOpenMultiSigKeyFamily        = int32(0)
+	balancedOpenTransitKeyFamily         = int32(805)
+	balancedOpenFundingVBytes            = int64(190)
+	balancedOpenAnchorSafetySat          = int64(10000)
+	balancedOpenPublishMaxAttempts       = 3
+	balancedOpenPendingStuckAfter        = 20 * time.Minute
+	balancedOpenPendingAutoRetryCooldown = 10 * time.Minute
 )
 
 const (
@@ -681,9 +685,9 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		return BalancedOpenSession{}, errors.New(errMsg)
 	}
 	submitted, err = s.transitionSessionWithMetadata(ctx, submitted.SessionID, submitted.State, "", "channel_open_acknowledged", map[string]any{
-		"execution_mode": balancedOpenExecutionModeDual,
-		"channel_point":  channelPoint,
-		"funding_tx_id":  plan.FundingTxID,
+		"execution_mode":  balancedOpenExecutionModeDual,
+		"channel_point":   channelPoint,
+		"funding_tx_id":   plan.FundingTxID,
 		"funding_tx_vout": plan.FundingVout,
 	}, map[string]any{
 		"channel_point":             channelPoint,
@@ -697,31 +701,29 @@ func (s *BalancedOpenService) executeSessionDual(ctx context.Context, session Ba
 		return BalancedOpenSession{}, err
 	}
 
-	if err := s.lnd.PublishTransaction(ctx, finalTxHex, fmt.Sprintf("balanced-open-%s", submitted.SessionID)); err != nil {
-		if !isBalancedOpenAlreadyPublishedError(err) {
-			channelPointHint := balancedOpenCanonicalChannelPointFromString(channelPoint)
-			observed := s.isBalancedOpenFundingObserved(ctx, submitted, channelPointHint, plan.FundingTxID, meta.InitiatorTransit, meta.AccepterTransit)
-			if !observed {
-				_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "funding_broadcast_failed", map[string]any{
-					"execution_mode": balancedOpenExecutionModeDual,
-					"funding_tx_id":  plan.FundingTxID,
-				}, map[string]any{
-					"last_execution_err":        err.Error(),
-					"last_execution_error_unix": time.Now().UTC().Unix(),
-					"funding_tx_hex":            finalTxHex,
-				})
-				return BalancedOpenSession{}, err
-			}
-			_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, submitted.State, "", "funding_broadcast_observed_after_error", map[string]any{
+	if err := s.publishBalancedTxWithRetry(ctx, finalTxHex, fmt.Sprintf("balanced-open-%s", submitted.SessionID), balancedOpenPublishMaxAttempts); err != nil {
+		channelPointHint := balancedOpenCanonicalChannelPointFromString(channelPoint)
+		observed := s.isBalancedOpenFundingObserved(ctx, submitted, channelPointHint, plan.FundingTxID, meta.InitiatorTransit, meta.AccepterTransit)
+		if !observed {
+			_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateRecoveryRequired, err.Error(), "funding_broadcast_failed", map[string]any{
 				"execution_mode": balancedOpenExecutionModeDual,
 				"funding_tx_id":  plan.FundingTxID,
-				"channel_point":  channelPointHint,
-				"publish_error":  err.Error(),
 			}, map[string]any{
-				"last_execution_err":        "",
-				"last_execution_error_unix": int64(0),
+				"last_execution_err":        err.Error(),
+				"last_execution_error_unix": time.Now().UTC().Unix(),
+				"funding_tx_hex":            finalTxHex,
 			})
+			return BalancedOpenSession{}, err
 		}
+		_, _ = s.transitionSessionWithMetadata(ctx, submitted.SessionID, submitted.State, "", "funding_broadcast_observed_after_error", map[string]any{
+			"execution_mode": balancedOpenExecutionModeDual,
+			"funding_tx_id":  plan.FundingTxID,
+			"channel_point":  channelPointHint,
+			"publish_error":  err.Error(),
+		}, map[string]any{
+			"last_execution_err":        "",
+			"last_execution_error_unix": int64(0),
+		})
 	}
 
 	updated, err := s.transitionSessionWithMetadata(ctx, submitted.SessionID, balancedOpenStateFundingBroadcasted, "", "funding_broadcasted_local", map[string]any{
@@ -837,21 +839,153 @@ func (s *BalancedOpenService) tryPromoteSessionByChannelState(ctx context.Contex
 
 	if pendingCh, ok := matchBalancedOpenPendingChannel(session, channelPointHint, pending); ok {
 		if !s.canPromoteBalancedPending(ctx, session, metaReady, meta) {
+			if session.State == balancedOpenStatePendingOpenDetected {
+				s.maybeMarkPendingOpenStuck(ctx, session, pendingCh)
+			}
 			return nil
 		}
+		pendingSession := session
 		if session.State != balancedOpenStatePendingOpenDetected {
-			_, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStatePendingOpenDetected, "", "pending_open_detected", map[string]any{
+			updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStatePendingOpenDetected, "", "pending_open_detected", map[string]any{
 				"channel_point":              pendingCh.ChannelPoint,
 				"capacity_sat":               pendingCh.CapacitySat,
 				"confirmations_until_active": pendingCh.ConfirmationsUntilActive,
 			}, map[string]any{
 				"channel_point": pendingCh.ChannelPoint,
 			})
-			return err
+			if err != nil {
+				return err
+			}
+			pendingSession = updated
 		}
+		s.maybeMarkPendingOpenStuck(ctx, pendingSession, pendingCh)
 	}
 
 	return nil
+}
+
+func (s *BalancedOpenService) maybeMarkPendingOpenStuck(ctx context.Context, session BalancedOpenSession, pendingCh lndclient.PendingChannelInfo) {
+	if session.State != balancedOpenStatePendingOpenDetected {
+		return
+	}
+	if pendingCh.ConfirmationHeight > 0 || pendingCh.ConfirmationsUntilActive == 0 {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(pendingCh.Status), "opening") {
+		return
+	}
+	if session.StateUpdatedAt.IsZero() {
+		return
+	}
+	now := time.Now().UTC()
+	stuckFor := now.Sub(session.StateUpdatedAt)
+	if stuckFor < balancedOpenPendingStuckAfter {
+		return
+	}
+
+	metaMap, err := decodeBalancedOpenMetadataMap(session.Metadata)
+	if err != nil {
+		return
+	}
+	meta, _ := decodeBalancedOpenMetadata(session.Metadata)
+	currentPoint := balancedOpenCanonicalChannelPointFromString(pendingCh.ChannelPoint)
+	if currentPoint == "" {
+		currentPoint = strings.TrimSpace(pendingCh.ChannelPoint)
+	}
+	if currentPoint == "" {
+		return
+	}
+
+	fundingTxID := strings.ToLower(strings.TrimSpace(meta.FundingTxID))
+	if !isBalancedOpenTxID(fundingTxID) {
+		parts := strings.Split(currentPoint, ":")
+		if len(parts) == 2 && isBalancedOpenTxID(parts[0]) {
+			fundingTxID = strings.ToLower(strings.TrimSpace(parts[0]))
+		}
+	}
+	externalSeen, externalChecked := balancedOpenTxSeenOnExternalMempool(ctx, fundingTxID)
+
+	lastStuckPoint := balancedOpenMetadataString(metaMap, "pending_stuck_channel_point")
+	if !strings.EqualFold(lastStuckPoint, currentPoint) {
+		suggestion := "pending open has 0 confirmations for over 20 minutes; try Retry broadcast first. If it stays stuck, cancel on both sides, abandon pending channel in LND, then recover funds."
+		_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "pending_open_stuck_detected", map[string]any{
+			"channel_point":              pendingCh.ChannelPoint,
+			"capacity_sat":               pendingCh.CapacitySat,
+			"confirmations_until_active": pendingCh.ConfirmationsUntilActive,
+			"confirmation_height":        pendingCh.ConfirmationHeight,
+			"stuck_for_seconds":          int64(stuckFor.Seconds()),
+			"suggested_action":           suggestion,
+			"external_mempool_checked":   externalChecked,
+			"external_mempool_seen":      externalSeen,
+			"funding_tx_id":              fundingTxID,
+		}, map[string]any{
+			"pending_stuck_channel_point": currentPoint,
+			"pending_stuck_notified_unix": now.Unix(),
+		})
+	}
+
+	if session.Role != balancedOpenRoleInitiator {
+		return
+	}
+	if normalizeBalancedExecutionMode(meta.ExecutionMode) != balancedOpenExecutionModeDual {
+		return
+	}
+	if externalChecked && externalSeen {
+		return
+	}
+	channelPoint := strings.TrimSpace(meta.ChannelPoint)
+	if balancedOpenCanonicalChannelPointFromString(channelPoint) == "" {
+		channelPoint = currentPoint
+	}
+	txHex := strings.TrimSpace(meta.FundingTxHex)
+	if channelPoint == "" || !balancedTxHexAppearsSigned(txHex) {
+		return
+	}
+	lastRetryPoint := balancedOpenMetadataString(metaMap, "pending_stuck_autoretry_channel_point")
+	lastRetryUnix := int64(0)
+	if raw, ok := metaMap["pending_stuck_autoretry_unix"]; ok {
+		switch v := raw.(type) {
+		case float64:
+			lastRetryUnix = int64(v)
+		case int64:
+			lastRetryUnix = v
+		case int:
+			lastRetryUnix = int64(v)
+		case string:
+			if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(v), 10, 64); parseErr == nil {
+				lastRetryUnix = parsed
+			}
+		}
+	}
+	if strings.EqualFold(lastRetryPoint, currentPoint) && lastRetryUnix > 0 {
+		last := time.Unix(lastRetryUnix, 0).UTC()
+		if now.Sub(last) < balancedOpenPendingAutoRetryCooldown {
+			return
+		}
+	}
+
+	retryErr := s.publishBalancedTxWithRetry(ctx, txHex, fmt.Sprintf("balanced-open-stuck-retry-%s", session.SessionID), balancedOpenPublishMaxAttempts)
+	patch := map[string]any{
+		"pending_stuck_autoretry_channel_point": currentPoint,
+		"pending_stuck_autoretry_unix":          now.Unix(),
+	}
+	if retryErr != nil {
+		_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "pending_open_stuck_autoretry_failed", map[string]any{
+			"channel_point":            currentPoint,
+			"funding_tx_id":            fundingTxID,
+			"publish_error":            retryErr.Error(),
+			"external_mempool_checked": externalChecked,
+			"external_mempool_seen":    externalSeen,
+		}, patch)
+		return
+	}
+	_, _ = s.transitionSessionWithMetadata(ctx, session.SessionID, session.State, "", "pending_open_stuck_autoretry_submitted", map[string]any{
+		"channel_point":            currentPoint,
+		"funding_tx_id":            fundingTxID,
+		"external_mempool_checked": externalChecked,
+		"external_mempool_seen":    externalSeen,
+		"auto_retry_attempt":       true,
+	}, patch)
 }
 
 func (s *BalancedOpenService) canPromoteBalancedPending(ctx context.Context, session BalancedOpenSession, metaReady bool, meta balancedOpenMetadata) bool {
@@ -945,8 +1079,8 @@ func (s *BalancedOpenService) ensureInitiatorDualBroadcastFromMetadata(ctx conte
 		return session, nil
 	}
 
-	publishErr := s.lnd.PublishTransaction(ctx, txHex, fmt.Sprintf("balanced-open-reconcile-%s", session.SessionID))
-	if publishErr != nil && !isBalancedOpenAlreadyPublishedError(publishErr) {
+	publishErr := s.publishBalancedTxWithRetry(ctx, txHex, fmt.Sprintf("balanced-open-reconcile-%s", session.SessionID), balancedOpenPublishMaxAttempts)
+	if publishErr != nil {
 		observed := s.isBalancedOpenFundingObserved(ctx, session, strings.TrimSpace(meta.ChannelPoint), meta.FundingTxID, meta.InitiatorTransit, meta.AccepterTransit)
 		if !observed {
 			updated, txErr := s.transitionSessionWithMetadata(ctx, session.SessionID, balancedOpenStateRecoveryRequired, publishErr.Error(), "funding_broadcast_retry_failed", map[string]any{
@@ -977,10 +1111,10 @@ func (s *BalancedOpenService) ensureInitiatorDualBroadcastFromMetadata(ctx conte
 		nextState = balancedOpenStatePendingOpenDetected
 	}
 	updated, err := s.transitionSessionWithMetadata(ctx, session.SessionID, nextState, "", "funding_broadcasted_reconcile", map[string]any{
-		"execution_mode": balancedOpenExecutionModeDual,
-		"funding_tx_id":  strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
+		"execution_mode":  balancedOpenExecutionModeDual,
+		"funding_tx_id":   strings.ToLower(strings.TrimSpace(meta.FundingTxID)),
 		"funding_tx_vout": meta.FundingTxVout,
-		"channel_point":  strings.TrimSpace(meta.ChannelPoint),
+		"channel_point":   strings.TrimSpace(meta.ChannelPoint),
 	}, map[string]any{
 		"last_execution_err":        "",
 		"last_execution_error_unix": int64(0),
@@ -3440,6 +3574,75 @@ func isBalancedOpenAlreadyPublishedError(err error) bool {
 	return strings.Contains(value, "already have transaction") ||
 		strings.Contains(value, "transaction already in block chain") ||
 		strings.Contains(value, "already exists")
+}
+
+func (s *BalancedOpenService) publishBalancedTxWithRetry(ctx context.Context, txHex string, label string, maxAttempts int) error {
+	attempts := maxAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err := s.lnd.PublishTransaction(ctx, txHex, label)
+		if err == nil || isBalancedOpenAlreadyPublishedError(err) {
+			return nil
+		}
+		lastErr = err
+		if attempt >= attempts {
+			break
+		}
+		delay := balancedOpenPublishRetryDelay(attempt)
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func balancedOpenPublishRetryDelay(attempt int) time.Duration {
+	switch attempt {
+	case 1:
+		return 2 * time.Second
+	case 2:
+		return 5 * time.Second
+	default:
+		return 8 * time.Second
+	}
+}
+
+func balancedOpenTxSeenOnExternalMempool(ctx context.Context, txid string) (seen bool, checked bool) {
+	clean := strings.ToLower(strings.TrimSpace(txid))
+	if !isBalancedOpenTxID(clean) {
+		return false, false
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, "https://mempool.space/api/tx/"+clean, nil)
+	if err != nil {
+		return false, false
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return true, true
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, true
+	}
+	return false, false
 }
 
 func isBalancedOpenOutpointUnavailableError(err error) bool {

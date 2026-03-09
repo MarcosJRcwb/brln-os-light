@@ -2682,6 +2682,12 @@ export default function LightningOps() {
         return t('lightningOps.balancedOpenEventFundingShimCanceled')
       case 'funding_shim_cancel_failed':
         return t('lightningOps.balancedOpenEventFundingShimCancelFailed')
+      case 'pending_open_stuck_detected':
+        return t('lightningOps.balancedOpenEventPendingStuckDetected')
+      case 'pending_open_stuck_autoretry_submitted':
+        return t('lightningOps.balancedOpenEventPendingStuckAutoRetrySubmitted')
+      case 'pending_open_stuck_autoretry_failed':
+        return t('lightningOps.balancedOpenEventPendingStuckAutoRetryFailed')
       case 'pending_open_detected':
         return t('lightningOps.balancedOpenEventPendingDetected')
       case 'channel_active_detected':
