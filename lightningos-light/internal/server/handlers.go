@@ -1642,12 +1642,14 @@ func buildWaitingCloseRecoveryResponse(info waitingCloseRecoveryInfo) *waitingCl
 func shouldSuggestWaitingCloseForce(info waitingCloseRecoveryInfo) bool {
 	result := strings.TrimSpace(info.LastResult)
 	switch result {
-	case "recover_failed", "no_raw_tx_available", "recovery_submitted_no_txid":
-		return info.Attempts >= 2
+	case "recover_failed":
+		return info.Attempts >= 3
+	case "no_raw_tx_available", "recovery_submitted_no_txid", "rebroadcast_submitted_no_txid":
+		return info.Attempts >= 6
 	case "rebroadcast_ok", "closing_txid_detected":
 		return false
 	default:
-		return info.Attempts >= 3
+		return info.Attempts >= 6
 	}
 }
 

@@ -1448,7 +1448,7 @@
     "statusOpening": "Opening",
     "statusWaitingClose": "Waiting close",
     "waitingCloseNoTxTitle": "Waiting close without closing txid",
-    "waitingCloseAutoActions": "Automatic recovery already retried cooperative close updates and rebroadcast whenever raw tx was available.",
+    "waitingCloseAutoActions": "Automatic recovery monitors waiting_close and attempts rebroadcast only when closing_tx_hex is available.",
     "waitingCloseAttempts": "Automatic attempts: {{count}}",
     "waitingCloseLastAttempt": "Last attempt: {{time}}",
     "waitingCloseLastResult": "Last result: {{result}}",

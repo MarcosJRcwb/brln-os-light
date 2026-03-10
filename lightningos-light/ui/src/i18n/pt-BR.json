@@ -1448,7 +1448,7 @@
     "statusOpening": "Abrindo",
     "statusWaitingClose": "Aguardando fechamento",
     "waitingCloseNoTxTitle": "Waiting close sem closing txid",
-    "waitingCloseAutoActions": "A recuperacao automatica ja tentou reenviar fechamento cooperativo e rebroadcast quando havia transacao crua.",
+    "waitingCloseAutoActions": "A recuperacao automatica monitora o waiting_close e tenta rebroadcast apenas quando ha closing_tx_hex disponivel.",
     "waitingCloseAttempts": "Tentativas automaticas: {{count}}",
     "waitingCloseLastAttempt": "Ultima tentativa: {{time}}",
     "waitingCloseLastResult": "Ultimo resultado: {{result}}",

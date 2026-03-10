@@ -17,6 +17,7 @@ import (
 const (
 	nodeRetirementLoopInterval                       = 12 * time.Second
 	nodeRetirementStepTimeout                        = 25 * time.Second
+	nodeRetirementCoopCloseAttemptTimeout            = 12 * time.Minute
 	nodeRetirementTransferRetry                      = 2 * time.Minute
 	nodeRetirementDefaultStuckHTLCThresholdSec int64 = 86400
 )
@@ -350,12 +351,15 @@ func (s *NodeRetirementService) stepCloseCoop(ctx context.Context, session NodeR
 	if s.lnd == nil {
 		return s.failSession(ctx, session.SessionID, "lnd unavailable for cooperative close")
 	}
+	stepCtx, stepCancel := context.WithTimeout(context.WithoutCancel(ctx), nodeRetirementCoopCloseAttemptTimeout)
+	defer stepCancel()
+
 	cfg := parseNodeRetirementRuntimeConfig(session.Config)
-	channels, err := s.ListSessionChannels(ctx, session.SessionID)
+	channels, err := s.ListSessionChannels(stepCtx, session.SessionID)
 	if err != nil {
 		return s.failSession(ctx, session.SessionID, "failed to read session channels: "+err.Error())
 	}
-	openNow, err := s.lnd.ListChannels(ctx)
+	openNow, err := s.lnd.ListChannels(stepCtx)
 	if err != nil {
 		return s.failSession(ctx, session.SessionID, "failed to list open channels: "+err.Error())
 	}
@@ -367,6 +371,7 @@ func (s *NodeRetirementService) stepCloseCoop(ctx context.Context, session NodeR
 	exceptions := 0
 	autoForce := 0
 	submitted := 0
+	pendingTimeout := 0
 	for _, item := range channels {
 		point := strings.TrimSpace(item.ChannelPoint)
 		if point == "" {
@@ -377,14 +382,18 @@ func (s *NodeRetirementService) stepCloseCoop(ctx context.Context, session NodeR
 			continue
 		}
 		if session.DryRun {
-			_ = s.updateSessionChannelCloseResult(ctx, session.SessionID, point, "coop_dry_run", "dry-run", "", "")
+			_ = s.updateSessionChannelCloseResult(stepCtx, session.SessionID, point, "coop_dry_run", "dry-run", "", "")
 			submitted++
 			continue
 		}
-		txid, closeErr := s.lnd.CloseChannel(ctx, point, false, 0)
+		txid, closeErr := s.lnd.CloseChannel(stepCtx, point, false, 0)
 		if closeErr == nil || isNodeRetirementAlreadyClosing(closeErr) {
-			_ = s.updateSessionChannelCloseResult(ctx, session.SessionID, point, "coop", strings.TrimSpace(txid), "", "")
+			_ = s.updateSessionChannelCloseResult(stepCtx, session.SessionID, point, "coop", strings.TrimSpace(txid), "", "")
 			submitted++
+			continue
+		}
+		if isNodeRetirementCloseAttemptTimeout(closeErr) {
+			pendingTimeout++
 			continue
 		}
 		exceptions++
@@ -393,8 +402,8 @@ func (s *NodeRetirementService) stepCloseCoop(ctx context.Context, session NodeR
 			decision = nodeRetirementDecisionForceClose
 			autoForce++
 		}
-		_ = s.updateSessionChannelCloseResult(ctx, session.SessionID, point, "", "", closeErr.Error(), decision)
-		_ = s.insertEvent(ctx, session.SessionID, "coop_close_failed", "warn", map[string]any{
+		_ = s.updateSessionChannelCloseResult(stepCtx, session.SessionID, point, "", "", closeErr.Error(), decision)
+		_ = s.insertEvent(stepCtx, session.SessionID, "coop_close_failed", "warn", map[string]any{
 			"channel_point": point,
 			"peer_alias":    live.PeerAlias,
 			"error":         closeErr.Error(),
@@ -402,20 +411,24 @@ func (s *NodeRetirementService) stepCloseCoop(ctx context.Context, session NodeR
 		})
 	}
 
-	_ = s.insertEvent(ctx, session.SessionID, "coop_close_attempted", "info", map[string]any{
-		"submitted":  submitted,
-		"exceptions": exceptions,
-		"auto_force": autoForce,
-		"dry_run":    session.DryRun,
+	_ = s.insertEvent(stepCtx, session.SessionID, "coop_close_attempted", "info", map[string]any{
+		"submitted":       submitted,
+		"exceptions":      exceptions,
+		"pending_timeout": pendingTimeout,
+		"auto_force":      autoForce,
+		"dry_run":         session.DryRun,
 	})
 
 	if autoForce > 0 {
-		return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateForceClosing, "")
+		return s.updateSessionState(stepCtx, session.SessionID, nodeRetirementStateForceClosing, "")
 	}
 	if exceptions > 0 {
-		return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateAwaitingDecision, "")
+		return s.updateSessionState(stepCtx, session.SessionID, nodeRetirementStateAwaitingDecision, "")
 	}
-	return s.updateSessionState(ctx, session.SessionID, nodeRetirementStateMonitoring, "")
+	if pendingTimeout > 0 {
+		return nil
+	}
+	return s.updateSessionState(stepCtx, session.SessionID, nodeRetirementStateMonitoring, "")
 }
 
 func (s *NodeRetirementService) stepAwaitDecision(ctx context.Context, session NodeRetirementSession) error {
@@ -1066,4 +1079,14 @@ func isNodeRetirementLikelyOffline(err error) bool {
 		strings.Contains(value, "peer not connected") ||
 		strings.Contains(value, "peer is not online") ||
 		strings.Contains(value, "link not active")
+}
+
+func isNodeRetirementCloseAttemptTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return isTimeoutError(err)
 }

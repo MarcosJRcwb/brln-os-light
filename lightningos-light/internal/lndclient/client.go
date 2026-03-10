@@ -2705,11 +2705,11 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 		maxFeePerVbyte = deriveCloseMaxFeePerVbyte(satPerVbyte)
 	}
 
-	closingTxid, err := c.closeChannelOnce(ctx, channelPoint, force, satPerVbyte, false, maxFeePerVbyte)
+	closingTxid, err := c.closeChannelOnce(ctx, channelPoint, force, satPerVbyte, maxFeePerVbyte)
 	if err != nil && !force && isCloseFeeProposalExceedsMaxError(err) {
 		boostedMaxFee := boostedCloseMaxFeePerVbyte(maxFeePerVbyte)
 		if boostedMaxFee > maxFeePerVbyte {
-			closingTxid, err = c.closeChannelOnce(ctx, channelPoint, force, satPerVbyte, false, boostedMaxFee)
+			closingTxid, err = c.closeChannelOnce(ctx, channelPoint, force, satPerVbyte, boostedMaxFee)
 		}
 	}
 	if err != nil && isChannelClosingInProgressError(err) {
@@ -2731,7 +2731,7 @@ func (c *Client) CloseChannel(ctx context.Context, channelPoint string, force bo
 	return closingTxid, nil
 }
 
-func (c *Client) closeChannelOnce(ctx context.Context, channelPoint string, force bool, satPerVbyte int64, noWait bool, maxFeePerVbyte int64) (string, error) {
+func (c *Client) closeChannelOnce(ctx context.Context, channelPoint string, force bool, satPerVbyte int64, maxFeePerVbyte int64) (string, error) {
 	cp, err := parseChannelPoint(channelPoint)
 	if err != nil {
 		return "", err
@@ -2747,7 +2747,6 @@ func (c *Client) closeChannelOnce(ctx context.Context, channelPoint string, forc
 	req := &lnrpc.CloseChannelRequest{
 		ChannelPoint: cp,
 		Force:        force,
-		NoWait:       noWait,
 	}
 	if !force && satPerVbyte > 0 {
 		req.SatPerVbyte = uint64(satPerVbyte)
@@ -2853,20 +2852,10 @@ func (c *Client) RecoverWaitingCloseTx(ctx context.Context, channelPoint string)
 
 	txHex := strings.TrimSpace(entry.GetClosingTxHex())
 	if txHex == "" {
-		retriedTxid, retryErr := c.closeChannelOnce(ctx, channelPoint, false, 0, true, 0)
-		if retryErr != nil && !isChannelClosingInProgressError(retryErr) {
-			if txid := c.lookupPendingClosingTxid(ctx, channelPoint); txid != "" {
-				return txid, true, nil
-			}
-			return "", true, retryErr
-		}
-		if txid := strings.TrimSpace(retriedTxid); txid != "" {
-			return txid, true, nil
-		}
 		if txid := c.lookupPendingClosingTxid(ctx, channelPoint); txid != "" {
-			return txid, true, nil
+			return txid, false, nil
 		}
-		return "", true, nil
+		return "", false, nil
 	}
 
 	publishErr := c.PublishTransaction(ctx, txHex, "channel-close-recover")
