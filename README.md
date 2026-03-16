@@ -93,7 +93,7 @@ If it still fails, try:
 sudo iptables -I INPUT -i br-<id> -p tcp --dport 10009 -j ACCEPT
 ```
 
-**Attention (existing nodes):** If you already have a Lightning node with LND/Bitcoin running, do not use `install.sh`.
+**Attention (existing nodes):** If you already have a Lightning node with LND/Bitcoin running, do not use `install.sh`.  
 Follow the Existing Node Guide instead:
 - PT-BR: `docs/13_EXISTING_NODE_GUIDE_PT_BR.md`
 - EN: `docs/14_EXISTING_NODE_GUIDE_EN.md`
@@ -118,75 +118,6 @@ Notes:
 - The UI version label comes from `ui/public/version.txt`.
 - PostgreSQL uses the PGDG repository by default. Set `POSTGRES_VERSION=18` (or another major) to override.
 - Tor uses the Tor Project repository when available. If your Ubuntu codename is unsupported, it falls back to `jammy`.
-
----
-
-## ⚠️ Raspberry Pi 5 + Debian 12 (Community Fork)
-
-> **This fork** adds community-maintained support for running LightningOS Light on a
-> **Raspberry Pi 5 (8 GB RAM)** with **Debian 12 Bookworm (aarch64)** on top of an existing Bitcoin Core node.
->
-> The official `install.sh` targets Ubuntu Server 22.04/24.04. Several manual adjustments are
-> required on Debian 12. This section documents all of them.
-
-### Key differences from Ubuntu install
-
-| Topic | Ubuntu (official) | Debian 12 (this fork) |
-|---|---|---|
-| Installer | `install_existing.sh` or `install_existing_pi.sh` | Manual steps (see guide) |
-| Tor group | `tor` | `debian-tor` |
-| Go binary | Downloaded by installer | Must install `linux-arm64` manually |
-| GoTTY binary | Bundled | Must replace with `linux-arm64` build |
-| REST port | 8080 (default) | May conflict — use 8082 |
-| PostgreSQL | APT (PGDG) | Docker container (recommended) |
-| journalctl logs in UI | Works | Shows warning (cosmetic only) |
-
-### Quick start (Raspberry Pi 5 / Debian 12)
-
-For the **complete step-by-step guide with all commands and troubleshooting**, see:
-
-📄 **[`docs/INSTALL_RASPBERRYPI5_DEBIAN12.md`](docs/INSTALL_RASPBERRYPI5_DEBIAN12.md)**
-
-High-level flow:
-
-```
-1. Verify aarch64 Debian 12 + Bitcoin Core synced
-2. Add ZMQ to bitcoin.conf + create /data symlinks
-3. Install Go 1.24 linux-arm64 manually
-4. Install Node.js 20.x
-5. Deploy PostgreSQL via Docker
-6. Clone repo → compile manager (Go) → build UI (npm)
-7. Install LND v0.20.0 linux-arm64 + configure systemd
-8. Apply Debian-specific fixes (Tor group, GoTTY, port)
-9. Start services → access https://<IP>:8443 → run wizard
-```
-
-### Tested configuration
-
-| Component | Version |
-|---|---|
-| Hardware | Raspberry Pi 5 — 8 GB RAM |
-| OS | Debian 12 Bookworm (`Linux 6.12.62+rpt-rpi-2712 aarch64`) |
-| Storage | 1.8 TB SSD at `/mnt/ssd` |
-| Bitcoin Core | Fully synced, data at `/mnt/ssd/bitcoin` |
-| LND | v0.20.0-beta |
-| LightningOS | v0.3.0-beta |
-| Go | 1.24.0 linux-arm64 |
-| Node.js | 20.x |
-| PostgreSQL | 16 (Docker) |
-
-### Community support
-
-This adaptation was developed and documented by the **Brazilian Lightning Network community**.
-
-> ⚡ If this guide helped you, consider sending a donation via Lightning to the node that made it possible:
->
-> **Alias:** `RaspNode-BR`
-> **Pubkey:** `025b2f2679168c49dc72b6ac93ba8b9b7f782113eef613b7bc09bcf53ea05b792c`
-
-For questions and support: [BR⚡LN Community](https://services.br-ln.com)
-
----
 
 ## Installer permissions (what `install.sh` enforces)
 - Users:
@@ -444,6 +375,47 @@ Autofee Results lines:
 
 Tag glossary (Autofee Results):
 - Full reference: `docs/AUTOFEE_TAG_GLOSSARY_EN.md` (EN) and `docs/AUTOFEE_TAG_GLOSSARIO_PT_BR.md` (PT-BR).
+- Channel role and trend:
+- `sink`, `source`, `router`, `unknown`, `trend-up`, `trend-down`, `trend-flat`.
+- Movement controls:
+- `stepcap`, `stepcap-lock`, `floor-lock`, `floor-relax-stall`, `reversal-guard`, `reversal-confirmed`, `downcap-general`, `htlc-low-sample-downcap`, `hold-small`, `same-ppm`, `cooldown`, `cooldown-profit`, `cooldown-skip`, `rebal-recent`, `rebal-attempt`, `rebal-recent-noup`.
+- Profit and margin controls:
+- `neg-margin`, `negm+X%`, `no-down-low`, `no-down-neg-margin`, `global-neg-lock`, `lock-skip-no-chan-rebal`, `lock-skip-sink-profit`, `profit-protect-lock`, `profit-protect-relax`.
+- Outrate/floor controls:
+- `outrate-floor`, `peg`, `peg-grace`, `peg-demand`, `revfloor`, `sink-floor`.
+- Adaptive controls:
+- `circuit-breaker`, `extreme-drain`, `extreme-drain-unlock`, `extreme-drain-turbo`.
+- Stagnation and anti-lock controls:
+- `stagnation`, `stagnation-rN`, `stagnation-cap-<ppm>`, `normalize-out`, `normalize-rebal`, `stagnation-floor`, `stagnation-floor-relax`, `stagnation-neg-override`, `stagnation-pressure`, `peg-paused-stagnation`.
+- Low-out/no-signal controls:
+- `low-out-slow-up`, `low-out-noflow-cap`, `no-signal-noup`, `no-signal-floor-relax`.
+- Discovery/explorer:
+- `discovery`, `discovery-hard`, `explorer`, `surge*`.
+- HTLC signals:
+- `htlc-policy-hot`, `htlc-liquidity-hot`, `htlc-forward-hot`, `htlc-sample-low`, `htlc-neutral-lock`, `htlc-liq+X%`, `htlc-policy+X%`, `htlc-liq-nodown`, `htlc-policy-nodown`, `htlc-neutral-nodown`, `htlc-step-boost`.
+- Super-source and inbound:
+- `super-source`, `super-source-like`, `new-inbound`, `bootstrap`, `inb-<n>`.
+- Seed and fallback provenance:
+- `seed:amboss`, `seed:amboss-missing`, `seed:amboss-empty`, `seed:amboss-error`, `seed:med`, `seed:vol-<n>%`, `seed:ratio<factor>`, `seed:outrate`, `seed:mem`, `seed:default`, `seed:guard`, `seed:p95cap`, `seed:absmax`, `out-fallback-21d`, `rebal-fallback-21d`.
+
+Reading examples:
+- Example A (healthy profitable sink):
+```text
+keep 844 ppm | target 844 | out_ratio 0.21 | out_ppm7d~625 | rebal_ppm7d~513 | floor>=657(peg) | margin~61 | ... outrate-floor peg peg-demand ...
+```
+Meaning: channel is moving and profitable, floor remains anchored to market/rebalance references, no forced change.
+
+- Example B (high local ratio, idle, no quality signal):
+```text
+keep 1500 ppm | target 1500 | out_ratio 0.24 | out_ppm7d~0 | rebal_ppm7d~0 | ... low-out-slow-up no-signal-noup no-signal-floor-relax ...
+```
+Meaning: Autofee detected missing reliable signal and avoided blind upward repricing.
+
+- Example C (stagnation pressure on high local ratio):
+```text
+keep 1461 ppm | target 1139 | out_ratio 0.35 | ... stagnation normalize-out stagnation-r5 stagnation-cap-1139 stagnation-floor peg-paused-stagnation ...
+```
+Meaning: stagnation logic is actively trying to normalize down while preventing conflicting peg pressure.
 
 ## Node Retirement
 Node Retirement is a guided workflow to safely decommission an LND node, close channels in an orderly way, and provide an auditable recovery trail.
@@ -459,6 +431,87 @@ Core model:
 - Only one active retirement session can run at a time.
 - Every step writes events and state to Postgres so progress survives UI refresh/restart.
 - A mandatory disclaimer gate exists for manual sessions.
+
+State machine (high level):
+- `created`: session accepted.
+- `snapshot_taken`: baseline balances/channels captured.
+- `quiescing`: best-effort stop of rebalance/autofee + forwarding disable.
+- `draining_htlcs`: waits until pending HTLC count reaches zero.
+- `ready_for_coop_confirmation`: manual confirmation gate before cooperative close.
+- `closing_coop`: cooperative close attempts for eligible channels.
+- `awaiting_user_decision`: channels that need operator decision (`wait` vs `force_close`).
+- `force_closing`: applies force-close where explicitly approved.
+- `monitoring_onchain`: waits for all tracked channels to finish close lifecycle.
+- terminal states: `completed`, `dry_run_completed`, `failed`, `canceled`.
+
+Cooperative close fee policy:
+- Node Retirement currently calls LND cooperative close with `sat_per_vbyte=0` (LND dynamic estimator/default confirmation target).
+- This keeps retirement behavior consistent with LND fee estimation and avoids external fee dependency during decommission.
+
+UI components:
+- Disclaimer + session creation panel:
+- choose `Dry-run mode (simulate only)` or live run.
+- Retirement steps board:
+- badge per step (`Completed`, `In progress`, `Pending`).
+- Sessions list:
+- shows source, run mode, state, timestamps, and last error.
+- Initial Snapshot panel:
+- baseline at session start (open/pending channels, HTLC count, on-chain and Lightning balances).
+- Reconciliation panel:
+- final summary when finished (balances/channels) and transfer result when applicable.
+- Channel timeline (initial vs current):
+- per-channel comparison from captured initial state to latest state (active flags, local/remote balances, pending HTLCs, close mode/txid, decision, errors).
+- Session events:
+- ordered runtime event trail for diagnostics/audit.
+- Cooperative close confirmation modal:
+- explicit no-return confirmation gate for manual sessions.
+- Channel exception actions:
+- per-channel `Wait` / `Force close` decisions for offline/stuck cases.
+- Transfer audit (succession-triggered sessions):
+- destination, attempts, status badge, txid with explorer link, confirmations, fee policy, timestamps, errors.
+
+Dry-run behavior:
+- Simulates the full orchestration path without submitting real cooperative/force closes.
+- Produces snapshot, channel timeline updates, session events, and final reconciliation as `dry_run_completed`.
+- Intended to validate policy + operator understanding before live retirement.
+
+### Succession Mode (dead-man switch)
+Succession Mode automates retirement trigger when proof-of-life is not confirmed in time.
+
+Defaults and prerequisites:
+- Disabled by default.
+- Can only be armed when Telegram `Activity mirror` is enabled in Notifications.
+- Uses the same retirement engine with `source=succession`.
+
+Configuration in UI:
+- `Enable succession mode`: arms scheduler.
+- `Succession dry-run`: when enabled, scheduler-triggered retirement sessions are created as dry-run.
+- `External on-chain destination address`: sweep destination for recovered funds.
+- `Liveness check interval (days)`: delay after a valid confirmation before reminder window starts.
+- `Daily reminder grace window (days)`: deadline window after reminders begin.
+- `Min confirmations before auto-transfer`: waits for UTXOs with at least this depth before succession sweep.
+- `Auto-transfer fee rate (sat/vbyte)`: if `0`, LND estimates dynamically.
+- `Pre-approve FC for offline peers` and `Pre-approve FC for stuck HTLC channels`: exception policy for unattended flows.
+
+Proof-of-life inputs:
+- UI button: `I'm alive (UI)`.
+- Telegram command/message: `/alive` or `estou vivo`.
+- Either path resets `last_alive_at`, `next_check_at`, and `deadline_at`.
+
+Reminder and trigger cycle:
+- Scheduler checks succession status every minute.
+- Before `next_check_at`: state remains armed.
+- Between `next_check_at` and `deadline_at`: sends one Telegram reminder per day.
+- After `deadline_at`: triggers Node Retirement automatically (live or dry-run according to succession config).
+
+Simulation controls:
+- `Simulate alive`: records liveness confirmation immediately.
+- `Simulate not alive`: now triggers an immediate succession retirement session in dry-run for validation.
+
+Operational notes:
+- If another retirement session is already active, succession enters waiting mode and retries later.
+- Completion status is mirrored in succession state (`retirement_completed` / `dry_run_completed`) and can notify Telegram.
+- For live succession runs, auto-transfer monitoring tracks submission and confirmation of the sweep transaction.
 
 ## Web terminal (optional)
 LightningOS Light can expose a protected web terminal using GoTTY.
@@ -546,3 +599,5 @@ cd ..
 sudo rm -rf /opt/lightningos/ui/*
 sudo cp -a ui/dist/. /opt/lightningos/ui/
 ```
+
+
